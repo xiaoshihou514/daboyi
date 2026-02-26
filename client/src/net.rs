@@ -22,9 +22,12 @@ pub struct StateReceiver(pub Mutex<mpsc::Receiver<GameState>>);
 pub struct LatestGameState(pub Option<GameState>);
 
 /// Controls how often a `Tick` message is sent (i.e. the game speed).
-/// Modify `0.duration()` at runtime to change speed; set to very long to pause.
 #[derive(Resource)]
 pub struct GameSpeed(pub Timer);
+
+/// Whether the game is paused (no ticks sent).
+#[derive(Resource)]
+pub struct Paused(pub bool);
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
@@ -40,9 +43,9 @@ impl Plugin for NetPlugin {
         app.insert_resource(CmdSender(cmd_tx))
             .insert_resource(StateReceiver(Mutex::new(state_rx)))
             .insert_resource(LatestGameState::default())
-            // Default: one tick per second (1× speed). Adjust to taste.
             .insert_resource(GameSpeed(Timer::from_seconds(1.0, TimerMode::Repeating)))
-            .add_systems(Update, (tick_sender, state_receiver));
+            .insert_resource(Paused(true)) // Start paused
+            .add_systems(Update, (toggle_pause, tick_sender, state_receiver));
     }
 }
 
@@ -100,8 +103,28 @@ async fn ws_loop(
     }
 }
 
-/// Fires a `Tick` at the configured game speed interval.
-fn tick_sender(time: Res<Time>, mut speed: ResMut<GameSpeed>, sender: Res<CmdSender>) {
+/// Toggle pause with Space.
+fn toggle_pause(keys: Res<ButtonInput<KeyCode>>, mut paused: ResMut<Paused>) {
+    if keys.just_pressed(KeyCode::Space) {
+        paused.0 = !paused.0;
+        if paused.0 {
+            println!("Game paused");
+        } else {
+            println!("Game unpaused");
+        }
+    }
+}
+
+/// Fires a `Tick` at the configured game speed interval (only when unpaused).
+fn tick_sender(
+    time: Res<Time>,
+    mut speed: ResMut<GameSpeed>,
+    sender: Res<CmdSender>,
+    paused: Res<Paused>,
+) {
+    if paused.0 {
+        return;
+    }
     if speed.0.tick(time.delta()).just_finished() {
         sender.0.send(ClientMsg::Tick).ok();
     }

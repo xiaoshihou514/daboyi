@@ -49,12 +49,14 @@ pub async fn ws_handler(
 fn handle_msg(msg: ClientMsg, state: &AppState) -> ServerMsg {
     match msg {
         ClientMsg::Tick => {
-            // Drain command queue then advance simulation.
             let orders = state.command_queue.lock().unwrap().drain(..).collect();
             let mut gs = state.game_state.lock().unwrap();
             gs.apply_commands(orders);
             gs.advance();
-            state.db.lock().unwrap().save_state(&gs).ok();
+            // Persist every 30 ticks to avoid DB overhead each tick.
+            if gs.tick % 30 == 0 {
+                state.db.lock().unwrap().save_state(&gs).ok();
+            }
             ServerMsg::StateSnapshot(gs.clone())
         }
         ClientMsg::IssueOrder(order) => {

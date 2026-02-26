@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::map::{MapMode, MapResource, SelectedProvince};
-use crate::net::LatestGameState;
+use crate::net::{LatestGameState, Paused};
 
 pub struct UiPlugin;
 
@@ -60,13 +60,15 @@ fn setup(mut commands: Commands) {
 fn update_hud(
     state: Res<LatestGameState>,
     mode: Res<MapMode>,
+    paused: Res<Paused>,
     mut query: Query<&mut Text, With<DateLabel>>,
 ) {
     if let Some(gs) = &state.0 {
+        let pause_str = if paused.0 { "PAUSED" } else { "▶" };
         for mut text in query.iter_mut() {
             *text = Text::new(format!(
-                "Date: {}-{:02}-{:02}   Tick: {}   [{}]  (1/2/3 switch)",
-                gs.date.year, gs.date.month, gs.date.day, gs.tick, *mode
+                "Date: {}-{:02}-{:02}   Tick: {}   [{}]  {}  (Space=pause, 1/2/3=map)",
+                gs.date.year, gs.date.month, gs.date.day, gs.tick, *mode, pause_str
             ));
         }
     }
