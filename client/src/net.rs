@@ -8,7 +8,6 @@ use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
 pub struct NetPlugin;
 
 /// Send commands from Bevy systems → WS background task.
-/// `UnboundedSender<T: Send>` is Send + Sync, safe as a Bevy resource.
 #[derive(Resource)]
 pub struct CmdSender(pub tokio::sync::mpsc::UnboundedSender<ClientMsg>);
 
@@ -74,21 +73,29 @@ async fn ws_loop(
 
     loop {
         tokio::select! {
-            // Incoming message from server.
+            // Incoming message from server (now bincode binary).
             msg = stream.next() => {
                 match msg {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        match bincode::deserialize::<ServerMsg>(&bytes) {
+                            Ok(ServerMsg::StateSnapshot(gs)) => { state_tx.send(gs).ok(); }
+                            Ok(ServerMsg::Ack) => {}
+                            Err(e) => eprintln!("Bad server message (bincode): {e}"),
+                        }
+                    }
+                    // Keep JSON text fallback for backward compatibility.
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<ServerMsg>(&text) {
                             Ok(ServerMsg::StateSnapshot(gs)) => { state_tx.send(gs).ok(); }
                             Ok(ServerMsg::Ack) => {}
-                            Err(e) => eprintln!("Bad server message: {e}"),
+                            Err(e) => eprintln!("Bad server message (json): {e}"),
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
                 }
             }
-            // Outgoing command from a Bevy system.
+            // Outgoing command from a Bevy system (still JSON — small messages).
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(c) => {

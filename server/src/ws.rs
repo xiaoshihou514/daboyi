@@ -15,18 +15,24 @@ pub async fn ws_handler(
     actix_web::rt::spawn(async move {
         while let Some(Ok(msg)) = msg_stream.next().await {
             match msg {
+                // Client sends JSON text (small messages).
                 Message::Text(text) => {
-                    let reply = match serde_json::from_str::<ClientMsg>(&text) {
-                        Ok(client_msg) => handle_msg(client_msg, &state),
+                    let client_msg = match serde_json::from_str::<ClientMsg>(&text) {
+                        Ok(m) => m,
                         Err(e) => {
                             eprintln!("Malformed client message: {e}");
                             continue;
                         }
                     };
-                    if let Ok(json) = serde_json::to_string(&reply) {
-                        if session.text(json).await.is_err() {
-                            break;
+                    let reply = handle_msg(client_msg, &state);
+                    // Server replies with bincode binary for performance.
+                    match bincode::serialize(&reply) {
+                        Ok(bytes) => {
+                            if session.binary(bytes).await.is_err() {
+                                break;
+                            }
                         }
+                        Err(e) => eprintln!("bincode serialize error: {e}"),
                     }
                 }
                 Message::Ping(bytes) => {

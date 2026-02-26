@@ -22,9 +22,11 @@ impl GameSimulation for GameState {
         self.tick += 1;
         advance_date(&mut self.date);
 
-        // Clone building_types to avoid borrow conflict.
-        let bt = self.building_types.clone();
-        production::produce_all(&mut self.provinces, &bt);
+        // SAFETY: building_types and provinces are disjoint fields — use a
+        // pointer cast to avoid cloning the entire Vec<BuildingType> every tick.
+        let bt_ptr = &self.building_types as *const Vec<shared::BuildingType>;
+        let bt_ref = unsafe { &*bt_ptr };
+        production::produce_all(&mut self.provinces, bt_ref);
         population::consume_and_grow_all(&mut self.provinces);
     }
 }

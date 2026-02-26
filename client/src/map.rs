@@ -15,10 +15,6 @@ pub struct MapPlugin;
 #[derive(Resource)]
 pub struct MapResource(pub MapData);
 
-/// Tag component linking a mesh entity to a province ID.
-#[derive(Component)]
-pub struct ProvinceEntity(pub u32);
-
 /// Currently selected province.
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
@@ -42,56 +38,68 @@ impl std::fmt::Display for MapMode {
     }
 }
 
+/// Maps province_id → (start_vertex_index, vertex_count) in the merged mesh.
+#[derive(Resource)]
+struct ProvinceVertexMap {
+    ranges: Vec<(usize, usize)>,
+    mesh_handle: Handle<Mesh>,
+}
+
+/// Tracks the last state we colored for, to avoid redundant recoloring.
+#[derive(Resource, Default)]
+struct LastColorState {
+    tick: u64,
+    mode: Option<MapMode>,
+    selected: Option<u32>,
+}
+
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SelectedProvince::default())
             .insert_resource(MapMode::default())
+            .insert_resource(LastColorState::default())
             .add_systems(Startup, load_map)
-            .add_systems(Update, (
-                color_provinces,
-                camera_controls,
-                province_click,
-                map_mode_switch,
-            ));
+            .add_systems(
+                Update,
+                (
+                    color_provinces,
+                    camera_controls,
+                    province_click,
+                    map_mode_switch,
+                ),
+            );
     }
 }
 
-/// Country code → deterministic color.
-fn country_color(code: &str) -> Color {
+/// Country code → deterministic RGBA color.
+fn country_color_rgba(code: &str) -> [f32; 4] {
     let mut hasher = DefaultHasher::new();
     code.hash(&mut hasher);
     let h = hasher.finish();
     let r = ((h >> 0) & 0xFF) as f32 / 255.0 * 0.6 + 0.2;
     let g = ((h >> 8) & 0xFF) as f32 / 255.0 * 0.6 + 0.2;
     let b = ((h >> 16) & 0xFF) as f32 / 255.0 * 0.6 + 0.2;
-    Color::srgb(r, g, b)
+    [r, g, b, 1.0]
 }
 
-/// Heatmap: 0.0 → dark blue, 0.5 → green, 1.0 → red.
-fn heatmap_color(t: f32) -> Color {
+fn heatmap_rgba(t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
     let r = (2.0 * t - 0.5).clamp(0.0, 1.0);
     let g = (1.0 - (2.0 * t - 1.0).abs()).clamp(0.0, 1.0);
     let b = (1.0 - 2.0 * t).clamp(0.0, 1.0);
-    Color::srgb(r * 0.8 + 0.1, g * 0.8 + 0.1, b * 0.8 + 0.1)
+    [r * 0.8 + 0.1, g * 0.8 + 0.1, b * 0.8 + 0.1, 1.0]
 }
 
-fn build_province_mesh(mp: &MapProvince) -> Mesh {
-    let positions: Vec<[f32; 3]> = mp.vertices.iter().map(|v| [v[0], v[1], 0.0]).collect();
-    let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; positions.len()];
-    let uvs: Vec<[f32; 2]> = mp.vertices.to_vec();
-
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_indices(Indices::U32(mp.indices.clone()));
-    mesh
+fn brighten(c: [f32; 4]) -> [f32; 4] {
+    [
+        (c[0] + 0.25).min(1.0),
+        (c[1] + 0.25).min(1.0),
+        (c[2] + 0.25).min(1.0),
+        c[3],
+    ]
 }
 
+/// Build a single merged mesh for ALL provinces. CN provinces at z=0.1 (over world z=0.0).
 fn load_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -108,38 +116,97 @@ fn load_map(
 
     println!("Loaded map: {} provinces", map_data.provinces.len());
 
+    let mut all_positions: Vec<[f32; 3]> = Vec::new();
+    let mut all_normals: Vec<[f32; 3]> = Vec::new();
+    let mut all_uvs: Vec<[f32; 2]> = Vec::new();
+    let mut all_colors: Vec<[f32; 4]> = Vec::new();
+    let mut all_indices: Vec<u32> = Vec::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
     for mp in &map_data.provinces {
         if mp.vertices.is_empty() || mp.indices.is_empty() {
+            ranges.push((0, 0));
             continue;
         }
 
-        let mesh = build_province_mesh(mp);
-        let color = country_color(&mp.country_code);
+        let start = all_positions.len();
+        let color = country_color_rgba(&mp.country_code);
+        // CN provinces render above world provinces to fix Z-fighting.
+        let z: f32 = if mp.country_code == "CHN" { 0.1 } else { 0.0 };
+        let base_idx = all_positions.len() as u32;
 
-        commands.spawn((
-            Mesh2d(meshes.add(mesh)),
-            MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-            Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
-            ProvinceEntity(mp.id),
-        ));
+        for v in &mp.vertices {
+            all_positions.push([v[0], v[1], z]);
+            all_normals.push([0.0, 0.0, 1.0]);
+            all_uvs.push(*v);
+            all_colors.push(color);
+        }
+        for idx in &mp.indices {
+            all_indices.push(idx + base_idx);
+        }
+
+        ranges.push((start, mp.vertices.len()));
     }
 
+    let total_verts = all_positions.len();
+    println!(
+        "Map mesh: {} vertices, {} triangles",
+        total_verts,
+        all_indices.len() / 3
+    );
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, all_positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, all_normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, all_uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, all_colors);
+    mesh.insert_indices(Indices::U32(all_indices));
+
+    let mesh_handle = meshes.add(mesh);
+
+    commands.spawn((
+        Mesh2d(mesh_handle.clone()),
+        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::WHITE))),
+        Transform::default(),
+    ));
+
+    commands.insert_resource(ProvinceVertexMap {
+        ranges,
+        mesh_handle,
+    });
     commands.insert_resource(MapResource(map_data));
 }
 
-/// Update province colors based on game state and current map mode.
+/// Update vertex colors only when game state, map mode, or selection changes.
 fn color_provinces(
     state: Res<LatestGameState>,
     map: Option<Res<MapResource>>,
+    vertex_map: Option<Res<ProvinceVertexMap>>,
     mode: Res<MapMode>,
     selected: Res<SelectedProvince>,
-    query: Query<(&ProvinceEntity, &MeshMaterial2d<ColorMaterial>)>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut last: ResMut<LastColorState>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(gs) = &state.0 else { return };
-    let Some(_map) = map else { return };
+    let Some(map) = map else { return };
+    let Some(vm) = vertex_map else { return };
 
-    // Pre-compute max values for heatmap normalization.
+    // Skip if nothing changed.
+    if last.tick == gs.tick && last.mode == Some(*mode) && last.selected == selected.0 {
+        return;
+    }
+    last.tick = gs.tick;
+    last.mode = Some(*mode);
+    last.selected = selected.0;
+
+    let Some(mesh) = meshes.get_mut(&vm.mesh_handle) else {
+        return;
+    };
+
+    // Pre-compute heatmap normalization.
     let (max_pop, max_prod) = if *mode != MapMode::Political {
         let mut mp = 0u32;
         let mut mprod = 0.0f32;
@@ -154,51 +221,46 @@ fn color_provinces(
         (1, 1.0)
     };
 
-    for (pe, mat_handle) in query.iter() {
-        let pid = pe.0 as usize;
-        if pid >= gs.provinces.len() {
+    // Build the full color buffer.
+    let total_verts = vm.ranges.iter().map(|(_, c)| *c).sum::<usize>();
+    let mut colors = vec![[0.2f32, 0.2, 0.3, 1.0]; total_verts];
+
+    for (pid, (start, count)) in vm.ranges.iter().enumerate() {
+        if *count == 0 {
             continue;
         }
+        let is_selected = selected.0 == Some(pid as u32);
 
-        let province = &gs.provinces[pid];
-        let is_selected = selected.0 == Some(pe.0);
-
-        let base_color = match *mode {
-            MapMode::Political => {
-                let owner = province.owner.as_deref().unwrap_or("UNK");
-                country_color(owner)
-            }
-            MapMode::Population => {
-                let total: u32 = province.pops.iter().map(|p| p.size).sum();
-                heatmap_color(total as f32 / max_pop as f32)
-            }
-            MapMode::Production => {
-                let total: f32 = province.stockpile.values().sum();
-                heatmap_color(total / max_prod)
-            }
-        };
-
-        let color = if is_selected {
-            if let Color::Srgba(s) = base_color {
-                Color::srgb(
-                    (s.red + 0.25).min(1.0),
-                    (s.green + 0.25).min(1.0),
-                    (s.blue + 0.25).min(1.0),
-                )
-            } else {
-                base_color
+        let base = if pid < gs.provinces.len() {
+            let province = &gs.provinces[pid];
+            match *mode {
+                MapMode::Political => {
+                    let owner = province.owner.as_deref().unwrap_or("UNK");
+                    country_color_rgba(owner)
+                }
+                MapMode::Population => {
+                    let total: u32 = province.pops.iter().map(|p| p.size).sum();
+                    heatmap_rgba(total as f32 / max_pop as f32)
+                }
+                MapMode::Production => {
+                    let total: f32 = province.stockpile.values().sum();
+                    heatmap_rgba(total / max_prod)
+                }
             }
         } else {
-            base_color
+            country_color_rgba(&map.0.provinces[pid].country_code)
         };
 
-        if let Some(mat) = materials.get_mut(&mat_handle.0) {
-            mat.color = color;
+        let color = if is_selected { brighten(base) } else { base };
+        for i in *start..(*start + *count) {
+            colors[i] = color;
         }
     }
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
 }
 
-/// Camera pan (right-click drag) and zoom (scroll wheel via OrthographicProjection).
+/// Camera pan (right-click drag) and zoom (scroll wheel).
 fn camera_controls(
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut scroll_evts: EventReader<bevy::input::mouse::MouseWheel>,
@@ -209,7 +271,6 @@ fn camera_controls(
         return;
     };
 
-    // Pan with right mouse button.
     if mouse_input.pressed(MouseButton::Right) {
         for ev in motion_evts.read() {
             transform.translation.x -= ev.delta.x * projection.scale;
@@ -219,7 +280,6 @@ fn camera_controls(
         motion_evts.clear();
     }
 
-    // Zoom with scroll wheel.
     for ev in scroll_evts.read() {
         let zoom_factor = 1.0 - ev.y * 0.1;
         projection.scale *= zoom_factor.clamp(0.5, 2.0);
@@ -246,7 +306,6 @@ fn point_in_polygon(px: f32, py: f32, ring: &[[f32; 2]]) -> bool {
     inside
 }
 
-/// Check if a point is inside a province polygon (outer ring minus holes).
 fn point_in_province(px: f32, py: f32, mp: &MapProvince) -> bool {
     if mp.boundary.is_empty() {
         return false;
@@ -262,7 +321,8 @@ fn point_in_province(px: f32, py: f32, mp: &MapProvince) -> bool {
     true
 }
 
-/// Detect left-click on a province and update SelectedProvince.
+/// Detect left-click on a province. Uses bounding box pre-filter.
+/// Iterates in reverse so CN provinces (higher z, later IDs) are checked first.
 fn province_click(
     mouse_input: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
@@ -287,8 +347,28 @@ fn province_click(
         return;
     };
 
-    for mp in &map.0.provinces {
-        if point_in_province(world_pos.x, world_pos.y, mp) {
+    let px = world_pos.x;
+    let py = world_pos.y;
+
+    // Iterate in reverse so CN provinces (higher z, appended later) take priority.
+    for mp in map.0.provinces.iter().rev() {
+        if mp.boundary.is_empty() {
+            continue;
+        }
+        // Bounding box pre-filter.
+        let ring = &mp.boundary[0];
+        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+        for pt in ring {
+            min_x = min_x.min(pt[0]);
+            max_x = max_x.max(pt[0]);
+            min_y = min_y.min(pt[1]);
+            max_y = max_y.max(pt[1]);
+        }
+        if px < min_x || px > max_x || py < min_y || py > max_y {
+            continue;
+        }
+        if point_in_province(px, py, mp) {
             selected.0 = Some(mp.id);
             return;
         }
