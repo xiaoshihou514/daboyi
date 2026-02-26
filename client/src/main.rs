@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+mod map;
 mod net;
 mod ui;
 
@@ -13,6 +14,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(net::NetPlugin)
+        .add_plugins(map::MapPlugin)
         .add_plugins(ui::UiPlugin)
         .run();
 }

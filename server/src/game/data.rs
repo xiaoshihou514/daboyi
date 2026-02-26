@@ -1,3 +1,4 @@
+use shared::map::MapData;
 use shared::*;
 use std::collections::HashMap;
 
@@ -125,72 +126,47 @@ pub fn default_building_types() -> Vec<BuildingType> {
     ]
 }
 
-/// A small starter world for testing.
-pub fn default_world() -> GameState {
+/// Generate a full game world from map data.
+/// Each MapProvince becomes a game Province with heuristic pops/buildings.
+pub fn generate_world(map_data: &MapData) -> GameState {
     let building_types = default_building_types();
 
-    let provinces = vec![
-        Province {
-            id: 1,
-            name: "Zhongyuan".into(),
-            owner: Some("Player".into()),
-            pops: vec![
-                Pop { class: PopClass::TenantFarmer, size: 5000, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Yeoman, size: 2000, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::PetitBourgeois, size: 500, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Landlord, size: 100, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Nobility, size: 50, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Bureaucrat, size: 80, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Clergy, size: 60, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Soldier, size: 200, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Intelligentsia, size: 40, needs_satisfaction: 1.0 },
-            ],
-            buildings: vec![
-                Building { type_id: "farm".into(), level: 3 },
-                Building { type_id: "yeoman_farm".into(), level: 2 },
-                Building { type_id: "textile_workshop".into(), level: 1 },
-                Building { type_id: "charcoal_kiln".into(), level: 1 },
-                Building { type_id: "smithy".into(), level: 1 },
-            ],
-            stockpile: HashMap::from([
-                (Good::Grain, 50.0),
-                (Good::Clothing, 10.0),
-                (Good::Fuel, 5.0),
-                (Good::Tools, 5.0),
-                (Good::Metal, 3.0),
-            ]),
-        },
-        Province {
-            id: 2,
-            name: "Jiangnan".into(),
-            owner: Some("Player".into()),
-            pops: vec![
-                Pop { class: PopClass::TenantFarmer, size: 3000, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Yeoman, size: 1500, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::PetitBourgeois, size: 800, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Capitalist, size: 50, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Landlord, size: 80, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Nobility, size: 30, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Clergy, size: 40, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Soldier, size: 100, needs_satisfaction: 1.0 },
-                Pop { class: PopClass::Intelligentsia, size: 60, needs_satisfaction: 1.0 },
-            ],
-            buildings: vec![
-                Building { type_id: "farm".into(), level: 2 },
-                Building { type_id: "yeoman_farm".into(), level: 2 },
-                Building { type_id: "textile_workshop".into(), level: 2 },
-                Building { type_id: "luxury_workshop".into(), level: 1 },
-                Building { type_id: "mine".into(), level: 1 },
-            ],
-            stockpile: HashMap::from([
-                (Good::Grain, 40.0),
-                (Good::Clothing, 15.0),
-                (Good::Metal, 5.0),
-                (Good::Tools, 3.0),
-                (Good::Luxuries, 2.0),
-            ]),
-        },
-    ];
+    let provinces: Vec<Province> = map_data
+        .provinces
+        .iter()
+        .map(|mp| {
+            // Simple heuristic: base pop scales with polygon vertex count
+            // (rough proxy for area/importance).
+            let area_factor = (mp.vertices.len() as f32 / 50.0).clamp(0.5, 5.0);
+            let base_pop = (500.0 * area_factor) as u32;
+
+            Province {
+                id: mp.id,
+                name: mp.name.clone(),
+                owner: Some(mp.country_code.clone()),
+                pops: vec![
+                    Pop { class: PopClass::TenantFarmer, size: base_pop, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Yeoman, size: base_pop / 3, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::PetitBourgeois, size: base_pop / 8, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Landlord, size: base_pop / 30, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Clergy, size: base_pop / 40, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Bureaucrat, size: base_pop / 50, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Nobility, size: base_pop / 80, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Soldier, size: base_pop / 20, needs_satisfaction: 1.0 },
+                    Pop { class: PopClass::Intelligentsia, size: base_pop / 60, needs_satisfaction: 1.0 },
+                ],
+                buildings: vec![
+                    Building { type_id: "farm".into(), level: 1 },
+                    Building { type_id: "charcoal_kiln".into(), level: 1 },
+                ],
+                stockpile: HashMap::from([
+                    (Good::Grain, 20.0),
+                    (Good::Clothing, 5.0),
+                    (Good::Fuel, 3.0),
+                ]),
+            }
+        })
+        .collect();
 
     GameState {
         tick: 0,

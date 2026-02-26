@@ -1,9 +1,13 @@
 [package]
-name = "shared"
+name = "mapgen"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+shared = { path = "../../shared" }
+geojson = "0.24"
+geo = "0.29"
+earcutr = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = "1"
