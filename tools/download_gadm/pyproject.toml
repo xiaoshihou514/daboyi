@@ -1,0 +1,6 @@
+[project]
+name = "download-gadm"
+version = "0.1.0"
+description = "Download GADM 4.1 GeoJSON files for daboyi map generation"
+requires-python = ">=3.12.3"
+dependencies = []

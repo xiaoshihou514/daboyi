@@ -2,7 +2,8 @@ use bevy::prelude::*;
 use futures_util::{SinkExt, StreamExt};
 use shared::{ClientMsg, GameState, ServerMsg};
 use std::sync::{mpsc, Mutex};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
 
 pub struct NetPlugin;
 
@@ -52,7 +53,13 @@ async fn ws_loop(
 ) {
     let url = "ws://127.0.0.1:8080/ws";
 
-    let (ws_stream, _) = match connect_async(url).await {
+    let ws_config = WebSocketConfig {
+        max_message_size: Some(256 * 1024 * 1024), // 256 MB
+        max_frame_size: Some(64 * 1024 * 1024),    // 64 MB
+        ..Default::default()
+    };
+
+    let (ws_stream, _) = match connect_async_with_config(url, Some(ws_config), false).await {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Failed to connect to server at {url}: {e}");

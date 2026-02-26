@@ -19,7 +19,7 @@ import zipfile
 import io
 
 BASE_URL = "https://geodata.ucdavis.edu/gadm/gadm4.1/json"
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "raw_gadm")
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "raw_gadm")
 
 # Parsed from https://gadm.org/download_country.html
 # Format: (ISO3, max_level)
