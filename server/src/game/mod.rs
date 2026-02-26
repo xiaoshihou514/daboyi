@@ -1,5 +1,9 @@
 use shared::{GameDate, GameState, Order};
 
+pub mod data;
+pub mod population;
+pub mod production;
+
 /// Extension trait keeping game simulation logic server-side.
 pub trait GameSimulation {
     fn apply_commands(&mut self, orders: Vec<Order>);
@@ -17,6 +21,11 @@ impl GameSimulation for GameState {
     fn advance(&mut self) {
         self.tick += 1;
         advance_date(&mut self.date);
+
+        // Clone building_types to avoid borrow conflict.
+        let bt = self.building_types.clone();
+        production::produce_all(&mut self.provinces, &bt);
+        population::consume_and_grow_all(&mut self.provinces);
     }
 }
 

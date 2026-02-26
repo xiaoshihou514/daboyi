@@ -18,7 +18,7 @@ async fn main() -> std::io::Result<()> {
     let initial_state = db
         .load_state()
         .expect("Failed to load game state")
-        .unwrap_or_default();
+        .unwrap_or_else(game::data::default_world);
 
     let state = web::Data::new(AppState {
         game_state: Mutex::new(initial_state),

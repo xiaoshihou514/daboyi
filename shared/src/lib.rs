@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // ── Date ────────────────────────────────────────────────────────────────────
 
@@ -16,6 +17,64 @@ impl Default for GameDate {
     }
 }
 
+// ── Goods ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Good {
+    Grain,              // 粮食
+    Clothing,           // 衣物
+    Fuel,               // 燃料
+    Tools,              // 工具
+    Luxuries,           // 奢侈品
+    Metal,              // 金属
+    BuildingMaterials,  // 建筑材料
+}
+
+/// Shorthand for a goods bundle (e.g. stockpile, recipe input/output).
+pub type GoodsBundle = HashMap<Good, f32>;
+
+// ── Population ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PopClass {
+    TenantFarmer,   // 佃农
+    Yeoman,         // 自耕农
+    Landlord,       // 地主
+    Capitalist,     // 资本家
+    PetitBourgeois, // 小资产阶级
+    Clergy,         // 宗教贵族
+    Bureaucrat,     // 官僚
+    Nobility,       // 世俗贵族
+    Soldier,        // 军队
+    Intelligentsia, // 知识分子
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pop {
+    pub class: PopClass,
+    pub size: u32,
+    /// 0.0–1.0, how well this pop's needs are being met.
+    pub needs_satisfaction: f32,
+}
+
+// ── Buildings ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildingType {
+    pub id: String,
+    pub name: String,
+    pub worker_class: PopClass,
+    pub workers_per_level: u32,
+    pub input: Vec<(Good, f32)>,
+    pub output: Vec<(Good, f32)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Building {
+    pub type_id: String,
+    pub level: u32,
+}
+
 // ── World entities ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +82,9 @@ pub struct Province {
     pub id: u32,
     pub name: String,
     pub owner: Option<String>,
-    pub population: u32,
+    pub pops: Vec<Pop>,
+    pub buildings: Vec<Building>,
+    pub stockpile: GoodsBundle,
 }
 
 // ── Top-level game state (server-authoritative) ──────────────────────────────
@@ -33,6 +94,7 @@ pub struct GameState {
     pub tick: u64,
     pub date: GameDate,
     pub provinces: Vec<Province>,
+    pub building_types: Vec<BuildingType>,
 }
 
 // ── Player commands ──────────────────────────────────────────────────────────
