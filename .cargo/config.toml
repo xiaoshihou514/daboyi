@@ -1,3 +1,11 @@
 [env]
-# GCC 15 removed implicit <cstdint> includes; rocksdb needs this to compile.
+# Use clang to build C/C++ dependencies (rocksdb etc.).
+CC = "clang"
+CXX = "clang++"
+# rocksdb 8.10.0 omits <cstdint> in some headers; force-include it.
 CXXFLAGS = "-include cstdint"
+
+[target.x86_64-unknown-linux-gnu]
+# Use mold for fast linking across all crates.
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
