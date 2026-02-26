@@ -1,0 +1,3 @@
+[env]
+# GCC 15 removed implicit <cstdint> includes; rocksdb needs this to compile.
+CXXFLAGS = "-include cstdint"
