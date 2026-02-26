@@ -142,7 +142,6 @@ pub struct Order {
 
 /// Messages sent from client → server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "payload")]
 pub enum ClientMsg {
     /// Advance simulation by one tick and return updated state.
     Tick,
@@ -152,7 +151,6 @@ pub enum ClientMsg {
 
 /// Messages sent from server → client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "payload")]
 pub enum ServerMsg {
     /// Full game state snapshot, returned after every Tick.
     StateSnapshot(GameState),
