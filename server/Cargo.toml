@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 actix-web = "4"
 actix-ws = "0.3"
-rocksdb = "0.22"
+rocksdb = "0.24"
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -2,8 +2,6 @@
 # Use clang to build C/C++ dependencies (rocksdb etc.).
 CC = "clang"
 CXX = "clang++"
-# rocksdb 8.10.0 omits <cstdint> in some headers; force-include it.
-CXXFLAGS = "-include cstdint"
 
 [target.x86_64-unknown-linux-gnu]
 # Use mold for fast linking across all crates.
