@@ -9,17 +9,15 @@ use std::path::PathBuf;
 /// Simplification tolerance in degrees (~100m at equator).
 const SIMPLIFY_EPSILON: f64 = 0.001;
 
-/// Simple Mercator projection: lon → x, lat → y (degrees directly).
-/// Good enough for 2D game rendering; not geographically accurate at poles.
+/// Default path to the shared geojson directory.
+const DEFAULT_GEOJSON_DIR: &str = "/home/xiaoshihou/Playground/shared/geojson";
+
 fn project(lon: f64, lat: f64) -> [f32; 2] {
     [lon as f32, lat as f32]
 }
 
 fn parse_ring(coords: &[Vec<f64>]) -> Vec<[f64; 2]> {
-    coords
-        .iter()
-        .map(|c| [c[0], c[1]])
-        .collect()
+    coords.iter().map(|c| [c[0], c[1]]).collect()
 }
 
 fn coords_to_linestring(coords: &[[f64; 2]]) -> LineString<f64> {
@@ -45,11 +43,9 @@ fn triangulate_polygon(
     outer: &[[f64; 2]],
     holes: &[Vec<[f64; 2]>],
 ) -> (Vec<[f32; 2]>, Vec<u32>) {
-    // Flatten all vertices into a single array for earcutr.
     let mut flat_coords: Vec<f64> = Vec::new();
     let mut hole_indices: Vec<usize> = Vec::new();
 
-    // Outer ring (skip closing vertex if it duplicates the first).
     let outer_trimmed = if outer.len() > 1 && outer.first() == outer.last() {
         &outer[..outer.len() - 1]
     } else {
@@ -99,36 +95,57 @@ fn compute_centroid(outer: &[[f64; 2]]) -> [f32; 2] {
     }
 }
 
+/// Extract province metadata from a GeoJSON feature.
+/// Supports two schemas:
+///   - CN files: { "name": "...", "gb": "..." }
+///   - World files: { "shapeName": "...", "shapeID": "...", "shapeGroup": "...", "shapeType": "..." }
+struct FeatureMeta {
+    id: String,
+    name: String,
+    country_code: String,
+}
+
+fn extract_meta(props: &serde_json::Map<String, serde_json::Value>) -> FeatureMeta {
+    // CN schema
+    if let Some(name) = props.get("name").and_then(|v| v.as_str()) {
+        let gb = props
+            .get("gb")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return FeatureMeta {
+            id: format!("CN_{}", gb),
+            name: name.to_string(),
+            country_code: "CHN".to_string(),
+        };
+    }
+
+    // World schema
+    let shape_name = props
+        .get("shapeName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown");
+    let shape_id = props
+        .get("shapeID")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+    let shape_group = props
+        .get("shapeGroup")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNK");
+
+    FeatureMeta {
+        id: shape_id.to_string(),
+        name: shape_name.to_string(),
+        country_code: shape_group.to_string(),
+    }
+}
+
 fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
     let props = feature.properties.as_ref()?;
     let geometry = feature.geometry.as_ref()?;
 
-    // Extract GADM fields. The exact field names vary by level; try common ones.
-    let gadm_id = props
-        .get("GID_4").or_else(|| props.get("GID_3"))
-        .or_else(|| props.get("GID_2"))
-        .or_else(|| props.get("GID_1"))
-        .or_else(|| props.get("GID_0"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("UNKNOWN")
-        .to_string();
+    let meta = extract_meta(props);
 
-    let name = props
-        .get("NAME_4").or_else(|| props.get("NAME_3"))
-        .or_else(|| props.get("NAME_2"))
-        .or_else(|| props.get("NAME_1"))
-        .or_else(|| props.get("NAME_0"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("Unknown")
-        .to_string();
-
-    let country_code = props
-        .get("GID_0")
-        .and_then(|v| v.as_str())
-        .unwrap_or("UNK")
-        .to_string();
-
-    // Parse polygon(s).
     let polygons: Vec<Vec<Vec<[f64; 2]>>> = match &geometry.value {
         Value::Polygon(rings) => {
             vec![rings.iter().map(|r| parse_ring(r)).collect()]
@@ -140,8 +157,6 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
         _ => return None,
     };
 
-    // For multi-polygons, pick the largest polygon (most vertices) as the main one.
-    // Merge all into a single province.
     let mut all_vertices: Vec<[f32; 2]> = Vec::new();
     let mut all_indices: Vec<u32> = Vec::new();
     let mut boundary: Vec<Vec<[f32; 2]>> = Vec::new();
@@ -164,10 +179,13 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
             best_outer = Some(outer_simplified.clone());
         }
 
-        // Add boundary ring (projected).
-        boundary.push(outer_simplified.iter().map(|c| project(c[0], c[1])).collect());
+        boundary.push(
+            outer_simplified
+                .iter()
+                .map(|c| project(c[0], c[1]))
+                .collect(),
+        );
 
-        // Triangulate.
         let base_idx = all_vertices.len() as u32;
         let (verts, idxs) = triangulate_polygon(&outer_simplified, &holes_simplified);
         all_vertices.extend(verts);
@@ -185,9 +203,9 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
 
     Some(MapProvince {
         id: province_id,
-        gadm_id,
-        name,
-        country_code,
+        gadm_id: meta.id,
+        name: meta.name,
+        country_code: meta.country_code,
         boundary,
         vertices: all_vertices,
         indices: all_indices,
@@ -195,11 +213,33 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
     })
 }
 
+fn load_geojson(path: &PathBuf) -> Vec<Feature> {
+    let content = fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("  [error] reading {}: {}", path.display(), e);
+        String::new()
+    });
+    if content.is_empty() {
+        return vec![];
+    }
+    let geojson: GeoJson = match content.parse() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("  [error] parsing {}: {}", path.display(), e);
+            return vec![];
+        }
+    };
+    match geojson {
+        GeoJson::FeatureCollection(fc) => fc.features,
+        GeoJson::Feature(f) => vec![f],
+        _ => vec![],
+    }
+}
+
 fn main() {
-    let raw_dir = PathBuf::from(
+    let geojson_dir = PathBuf::from(
         std::env::args()
             .nth(1)
-            .unwrap_or_else(|| "raw_gadm".to_string()),
+            .unwrap_or_else(|| DEFAULT_GEOJSON_DIR.to_string()),
     );
     let output_path = PathBuf::from(
         std::env::args()
@@ -207,67 +247,71 @@ fn main() {
             .unwrap_or_else(|| "assets/map.bin".to_string()),
     );
 
-    if !raw_dir.is_dir() {
-        eprintln!("Error: {} is not a directory. Run tools/download_gadm.py first.", raw_dir.display());
+    if !geojson_dir.is_dir() {
+        eprintln!(
+            "Error: {} is not a directory.\nExpected prepackaged geojson at {}",
+            geojson_dir.display(),
+            DEFAULT_GEOJSON_DIR
+        );
         std::process::exit(1);
     }
 
-    // Collect all .json files sorted by name.
-    let mut json_files: Vec<PathBuf> = fs::read_dir(&raw_dir)
-        .expect("Failed to read raw_gadm dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "json"))
-        .collect();
-    json_files.sort();
+    let cn_path = geojson_dir.join("cn_adm3.geojson");
+    let world_path = geojson_dir.join("world_adm2.geojson");
 
-    println!("Found {} GeoJSON files in {}", json_files.len(), raw_dir.display());
+    if !cn_path.exists() || !world_path.exists() {
+        eprintln!(
+            "Error: expected cn_adm3.geojson and world_adm2.geojson in {}",
+            geojson_dir.display()
+        );
+        std::process::exit(1);
+    }
 
     let mut all_provinces: Vec<MapProvince> = Vec::new();
     let mut next_id: u32 = 0;
 
-    for (file_idx, path) in json_files.iter().enumerate() {
-        let filename = path.file_name().unwrap().to_string_lossy();
-        print!("[{}/{}] Processing {} ... ", file_idx + 1, json_files.len(), filename);
+    // China ADM3 (prioritized, higher detail)
+    print!("Processing cn_adm3.geojson ... ");
+    let cn_features = load_geojson(&cn_path);
+    let mut cn_count = 0;
+    for feature in &cn_features {
+        if let Some(province) = process_feature(feature, next_id) {
+            all_provinces.push(province);
+            next_id += 1;
+            cn_count += 1;
+        }
+    }
+    println!("{} provinces", cn_count);
 
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) => {
-                println!("[error] {}", e);
+    // World ADM2 (excluding China — already covered by cn_adm3)
+    print!("Processing world_adm2.geojson ... ");
+    let world_features = load_geojson(&world_path);
+    let mut world_count = 0;
+    for feature in &world_features {
+        // Skip China entries (already in cn_adm3 with more detail)
+        if let Some(props) = &feature.properties {
+            if props
+                .get("shapeGroup")
+                .and_then(|v| v.as_str())
+                .map_or(false, |g| g == "CHN")
+            {
                 continue;
-            }
-        };
-
-        let geojson: GeoJson = match content.parse() {
-            Ok(g) => g,
-            Err(e) => {
-                println!("[error] parse: {}", e);
-                continue;
-            }
-        };
-
-        let features = match geojson {
-            GeoJson::FeatureCollection(fc) => fc.features,
-            GeoJson::Feature(f) => vec![f],
-            _ => {
-                println!("[skip] not a FeatureCollection");
-                continue;
-            }
-        };
-
-        let mut count = 0;
-        for feature in &features {
-            if let Some(province) = process_feature(feature, next_id) {
-                all_provinces.push(province);
-                next_id += 1;
-                count += 1;
             }
         }
-
-        println!("{} provinces", count);
+        if let Some(province) = process_feature(feature, next_id) {
+            all_provinces.push(province);
+            next_id += 1;
+            world_count += 1;
+        }
     }
+    println!("{} provinces", world_count);
 
-    println!("\nTotal provinces: {}", all_provinces.len());
+    println!(
+        "\nTotal provinces: {} (China: {}, World: {})",
+        all_provinces.len(),
+        cn_count,
+        world_count
+    );
 
     // Write output.
     if let Some(parent) = output_path.parent() {

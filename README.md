@@ -5,35 +5,28 @@ A grand strategy game in the style of EU4/Victoria, built with Rust.
 - **Backend**: actix-web + RocksDB
 - **Frontend**: Bevy (2D)
 - **Communication**: WebSocket (JSON)
-- **Map data**: GADM 4.1 administrative boundaries (~42K provinces)
+- **Map data**: Prepackaged GeoJSON (CN ADM3 + World ADM2, ~50K provinces)
 
 ## Prerequisites
 
 - Rust toolchain (rustc 1.89+)
 - clang / clang++ (for RocksDB)
 - mold linker
-- Python 3.12+ with [uv](https://github.com/astral-sh/uv)
+- Prepackaged GeoJSON data at `/home/xiaoshihou/Playground/shared/geojson/`
 
 ## Quick Start
 
-### 1. Download map data
-
-```bash
-cd tools/download_gadm
-uv run python download_gadm.py          # all 254 countries (~500 MB)
-# or pick specific countries:
-uv run python download_gadm.py DEU FRA CHN USA GBR JPN RUS IND BRA AUS
-```
-
-### 2. Generate map asset
+### 1. Generate map asset
 
 ```bash
 cargo run -p mapgen
+# or specify a custom geojson directory:
+cargo run -p mapgen -- /path/to/geojson assets/map.bin
 ```
 
-This reads `raw_gadm/*.json`, simplifies/triangulates polygons, and writes `assets/map.bin`.
+Reads `cn_adm3.geojson` (China, prioritized) and `world_adm2.geojson` (rest of world), simplifies/triangulates polygons, and writes `assets/map.bin`.
 
-### 3. Start the server
+### 2. Start the server
 
 ```bash
 cargo run -p server
@@ -41,7 +34,7 @@ cargo run -p server
 
 Listens on `ws://127.0.0.1:8080/ws`. Loads `assets/map.bin` for world generation on first run, then persists state in `daboyi.db` (RocksDB).
 
-### 4. Start the client (separate terminal)
+### 3. Start the client (separate terminal)
 
 ```bash
 cargo run -p client
@@ -68,6 +61,5 @@ daboyi/
 ├── server/          # actix-web server, RocksDB persistence, game simulation
 ├── client/          # Bevy frontend, WebSocket client, map rendering
 └── tools/
-    ├── download_gadm/   # uv project — downloads GADM GeoJSON files
-    └── mapgen/          # Rust binary — GeoJSON → assets/map.bin
+    └── mapgen/      # Rust binary — GeoJSON → assets/map.bin
 ```
