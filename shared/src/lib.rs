@@ -32,6 +32,20 @@ pub enum Good {
     BuildingMaterials,  // 建筑材料
 }
 
+impl std::fmt::Display for Good {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Good::Grain => write!(f, "Grain"),
+            Good::Clothing => write!(f, "Clothing"),
+            Good::Fuel => write!(f, "Fuel"),
+            Good::Tools => write!(f, "Tools"),
+            Good::Luxuries => write!(f, "Luxuries"),
+            Good::Metal => write!(f, "Metal"),
+            Good::BuildingMaterials => write!(f, "Building Materials"),
+        }
+    }
+}
+
 /// Shorthand for a goods bundle (e.g. stockpile, recipe input/output).
 pub type GoodsBundle = HashMap<Good, f32>;
 
@@ -49,6 +63,23 @@ pub enum PopClass {
     Nobility,       // 世俗贵族
     Soldier,        // 军队
     Intelligentsia, // 知识分子
+}
+
+impl std::fmt::Display for PopClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            PopClass::TenantFarmer => write!(f, "Tenant Farmer"),
+            PopClass::Yeoman => write!(f, "Yeoman"),
+            PopClass::Landlord => write!(f, "Landlord"),
+            PopClass::Capitalist => write!(f, "Capitalist"),
+            PopClass::PetitBourgeois => write!(f, "Petit Bourgeois"),
+            PopClass::Clergy => write!(f, "Clergy"),
+            PopClass::Bureaucrat => write!(f, "Bureaucrat"),
+            PopClass::Nobility => write!(f, "Nobility"),
+            PopClass::Soldier => write!(f, "Soldier"),
+            PopClass::Intelligentsia => write!(f, "Intelligentsia"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
