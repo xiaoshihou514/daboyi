@@ -3,7 +3,7 @@ use geo::algorithm::simplify::Simplify;
 use geo::{Coord, LineString, Polygon};
 use rusqlite::Connection;
 use shared::conv::{f64_to_f32, u64_to_f64, usize_to_u32};
-use shared::map::{MapData, MapProvince};
+use shared::map::{MapData, MapProvince, TerrainData, TerrainPolygon};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -135,6 +135,59 @@ fn is_non_playable(topography: &str) -> bool {
             | "atoll"
             | "salt_pans"
     ) || topography.contains("wasteland")
+}
+
+/// Pre-defined RGBA color for each non-playable topography type.
+fn terrain_color(topography: &str) -> [f32; 4] {
+    match topography {
+        "deep_ocean" => [0.027, 0.106, 0.314, 1.0],  // #071B50
+        "ocean" => [0.039, 0.165, 0.416, 1.0],         // #0A2A6A
+        "ocean_wasteland" => [0.039, 0.165, 0.416, 1.0],
+        "coastal_ocean" => [0.051, 0.227, 0.604, 1.0], // #0D3A9A
+        "inland_sea" => [0.102, 0.333, 0.722, 1.0],    // #1A55B8
+        "narrows" => [0.071, 0.282, 0.659, 1.0],        // #1248A8
+        "lakes" | "high_lakes" => [0.157, 0.439, 0.816, 1.0], // #2870D0
+        "atoll" => [0.102, 0.384, 0.753, 1.0],          // #1A62C0
+        "salt_pans" => [0.847, 0.800, 0.667, 1.0],      // #D8CCAA
+        "mountain_wasteland" => [0.369, 0.286, 0.224, 1.0], // #5E4939
+        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0],      // #C9A86E
+        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0],      // #9B6B47
+        _ if topography.contains("wasteland") => [0.545, 0.482, 0.420, 1.0], // #8B7B6B
+        _ => [0.500, 0.500, 0.500, 1.0],
+    }
+}
+
+/// Triangulate a non-playable terrain polygon and return a TerrainPolygon.
+fn process_terrain_polygon(
+    polygons: &[Vec<Vec<[f64; 2]>>],
+    color: [f32; 4],
+) -> Option<TerrainPolygon> {
+    let mut all_vertices: Vec<[f32; 2]> = Vec::new();
+    let mut all_indices: Vec<u32> = Vec::new();
+
+    for poly_rings in polygons {
+        if poly_rings.is_empty() {
+            continue;
+        }
+        let outer_simplified = simplify_ring(&poly_rings[0], SIMPLIFY_EPSILON);
+        let holes_simplified: Vec<Vec<[f64; 2]>> = poly_rings[1..]
+            .iter()
+            .map(|h| simplify_ring(h, SIMPLIFY_EPSILON))
+            .collect();
+        let base_idx = usize_to_u32(all_vertices.len());
+        let (verts, idxs) = triangulate_polygon(&outer_simplified, &holes_simplified);
+        all_vertices.extend(verts);
+        all_indices.extend(idxs.iter().map(|i| i + base_idx));
+    }
+
+    if all_vertices.is_empty() {
+        return None;
+    }
+    Some(TerrainPolygon {
+        color,
+        vertices: all_vertices,
+        indices: all_indices,
+    })
 }
 
 /// Parse GeoPackage Binary (GPB) geometry → list of WGS84 polygon rings.
@@ -497,5 +550,56 @@ fn main() {
         "Wrote {} ({:.1} MB)",
         output_path.display(),
         u64_to_f64(file_size) / 1024.0 / 1024.0
+    );
+
+    // Pass 2: build terrain.bin from non-playable features (water + wasteland).
+    let terrain_path = output_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("terrain.bin");
+    print!("Building terrain polygons ... ");
+    let conn2 = Connection::open(&locations_path).expect("Failed to open locations.gpkg");
+    let mut stmt2 = conn2
+        .prepare(
+            "SELECT geom, topography FROM locations WHERE topography IS NOT NULL",
+        )
+        .expect("Failed to prepare terrain query");
+
+    let rows2 = stmt2
+        .query_map([], |row| {
+            let geom: Vec<u8> = row.get(0)?;
+            let topography: String = row.get(1)?;
+            Ok((geom, topography))
+        })
+        .expect("Failed to query terrain");
+
+    let mut terrain_polygons: Vec<TerrainPolygon> = Vec::new();
+    for row in rows2 {
+        let (geom, topography) = row.expect("Failed to read terrain row");
+        if !is_non_playable(&topography) {
+            continue;
+        }
+        let polygons = parse_gpb_geometry(&geom);
+        if polygons.is_empty() {
+            continue;
+        }
+        let color = terrain_color(&topography);
+        if let Some(tp) = process_terrain_polygon(&polygons, color) {
+            terrain_polygons.push(tp);
+        }
+    }
+
+    println!("{} terrain polygons", terrain_polygons.len());
+    let terrain_data = TerrainData {
+        polygons: terrain_polygons,
+    };
+    terrain_data
+        .save(&terrain_path)
+        .expect("Failed to write terrain.bin");
+    let terrain_size = fs::metadata(&terrain_path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "Wrote {} ({:.1} MB)",
+        terrain_path.display(),
+        u64_to_f64(terrain_size) / 1024.0 / 1024.0
     );
 }

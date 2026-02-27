@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 mod map;
 mod net;
+mod terrain;
 mod ui;
 
 fn main() {
@@ -14,6 +15,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(net::NetPlugin)
+        .add_plugins(terrain::TerrainPlugin)
         .add_plugins(map::MapPlugin)
         .add_plugins(ui::UiPlugin)
         .run();

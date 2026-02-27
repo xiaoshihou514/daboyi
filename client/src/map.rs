@@ -23,13 +23,14 @@ pub struct MapResource(pub MapData);
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
 
-/// Map coloring mode, switchable with keys 1/2/3.
+/// Map coloring mode, switchable with keys 1/2/3/4.
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapMode {
     #[default]
     Political,
     Population,
     Production,
+    Terrain,
 }
 
 impl std::fmt::Display for MapMode {
@@ -38,6 +39,7 @@ impl std::fmt::Display for MapMode {
             MapMode::Political => write!(f, "Political"),
             MapMode::Population => write!(f, "Population"),
             MapMode::Production => write!(f, "Production"),
+            MapMode::Terrain => write!(f, "Terrain"),
         }
     }
 }
@@ -215,9 +217,13 @@ fn province_base_color(
                 let total: f32 = province.stockpile.values().sum();
                 heatmap_rgba(total / max_prod)
             }
+            MapMode::Terrain => terrain_province_color(&map_data.provinces[pid].topography),
         }
     } else {
-        country_color_rgba(&map_data.provinces[pid].tag)
+        match mode {
+            MapMode::Terrain => terrain_province_color(&map_data.provinces[pid].topography),
+            _ => country_color_rgba(&map_data.provinces[pid].tag),
+        }
     }
 }
 
@@ -234,7 +240,20 @@ fn compute_normalization(gs: &GameState) -> (u32, f32) {
     (mp.max(1), mprod.max(1.0))
 }
 
-/// Update vertex colors only when game state, map mode, or selection changes.
+/// Terrain mode: color by province topography.
+fn terrain_province_color(topography: &str) -> [f32; 4] {
+    match topography {
+        "mountains" => [0.420, 0.357, 0.306, 1.0],  // dark muted brown
+        "hills" => [0.608, 0.545, 0.447, 1.0],        // tan
+        "plateau" => [0.690, 0.627, 0.502, 1.0],      // light tan
+        "wetlands" => [0.420, 0.545, 0.420, 1.0],     // muted teal-green
+        "desert" | "sparse_desert" | "dunes" => [0.784, 0.659, 0.431, 1.0], // sandy
+        "flatland" | "farmland" => [0.545, 0.667, 0.482, 1.0],              // green
+        _ => [0.604, 0.604, 0.545, 1.0],
+    }
+}
+
+
 /// Skips expensive full recolor on non-economy ticks (economy runs every 100 ticks).
 fn color_provinces(
     state: Res<LatestGameState>,
@@ -313,11 +332,12 @@ fn color_provinces(
     last.selected = selected.0;
 
     // Pre-compute heatmap normalization.
-    let (max_pop, max_prod) = if *mode != MapMode::Political {
-        compute_normalization(gs)
-    } else {
-        (1, 1.0)
-    };
+    let (max_pop, max_prod) =
+        if matches!(*mode, MapMode::Political | MapMode::Terrain) {
+            (1, 1.0)
+        } else {
+            compute_normalization(gs)
+        };
     last.max_pop = max_pop;
     last.max_prod = max_prod;
 
@@ -466,7 +486,7 @@ fn province_click(
     selected.0 = None;
 }
 
-/// Keyboard shortcuts: 1 = Political, 2 = Population, 3 = Production.
+/// Keyboard shortcuts: 1 = Political, 2 = Population, 3 = Production, 4 = Terrain.
 fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
     if keys.just_pressed(KeyCode::Digit1) {
         *mode = MapMode::Political;
@@ -476,5 +496,8 @@ fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
     }
     if keys.just_pressed(KeyCode::Digit3) {
         *mode = MapMode::Production;
+    }
+    if keys.just_pressed(KeyCode::Digit4) {
+        *mode = MapMode::Terrain;
     }
 }

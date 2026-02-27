@@ -58,3 +58,37 @@ impl MapData {
         fs::write(path, bytes)
     }
 }
+
+// ── Terrain geometry ──────────────────────────────────────────────────────────
+
+/// Pre-triangulated non-playable terrain polygon (ocean, sea, lake, wasteland).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerrainPolygon {
+    /// Pre-assigned RGBA color for this topography type.
+    pub color: [f32; 4],
+    /// Pre-triangulated vertices [lon, lat] in equirectangular coords.
+    pub vertices: Vec<[f32; 2]>,
+    /// Triangle indices into `vertices`.
+    pub indices: Vec<u32>,
+}
+
+/// All terrain geometry, loaded from assets/terrain.bin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerrainData {
+    pub polygons: Vec<TerrainPolygon>,
+}
+
+impl TerrainData {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let bytes = fs::read(path)?;
+        bincode::deserialize(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let bytes = bincode::serialize(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(path, bytes)
+    }
+}
+
