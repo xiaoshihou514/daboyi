@@ -172,7 +172,7 @@ fn terrain_density(mp: &MapProvince) -> f64 {
     (topo_base * veg_mult * climate_mult).max(50.0)
 }
 
-/// Approximate polygon area in degree² (shoelace formula with cos(lat) correction).
+/// Approximate polygon area in degree² with cos(lat) correction for equirectangular coords.
 fn province_area(mp: &MapProvince) -> f64 {
     if mp.boundary.is_empty() {
         return 0.0;
@@ -188,8 +188,10 @@ fn province_area(mp: &MapProvince) -> f64 {
         area2 += f64::from(ring[i][0]) * f64::from(ring[j][1]);
         area2 -= f64::from(ring[j][0]) * f64::from(ring[i][1]);
     }
-    // Boundary is in Equal Earth (equal-area) coordinates; no cos(lat) correction needed.
-    area2.abs() / 2.0
+    // Boundary is in equirectangular (lon/lat) coords; 1° longitude is shorter at higher
+    // latitudes, so correct with cos(lat) using the province centroid latitude.
+    let lat_rad = f64::from(mp.centroid[1]).to_radians();
+    (area2.abs() / 2.0) * lat_rad.cos()
 }
 
 /// Map EU5 raw_material string to game Good type.

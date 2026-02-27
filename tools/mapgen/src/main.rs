@@ -19,15 +19,6 @@ const R: f64 = 6_378_137.0;
 /// cos(45°)
 const COS45: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
-/// Equal Earth projection constants (Šavrič, Patterson, Jenny 2018).
-const EE_A1: f64 = 1.340264;
-const EE_A2: f64 = -0.081106;
-const EE_A3: f64 = 0.000893;
-const EE_A4: f64 = 0.003796;
-const SQRT3: f64 = 1.732_050_808_0;
-/// Scale factor: maps Equal Earth x-range to approximately [-180, 180].
-const EE_SCALE: f64 = 180.0 * 3.0 * EE_A1 / (2.0 * SQRT3 * std::f64::consts::PI);
-
 /// Inverse Gall Stereographic projection: projected (x, y) → WGS84 (lon, lat) in degrees.
 fn gall_stereo_to_wgs84(x: f64, y: f64) -> (f64, f64) {
     let lon_rad = x / (R * COS45);
@@ -35,29 +26,21 @@ fn gall_stereo_to_wgs84(x: f64, y: f64) -> (f64, f64) {
     (lon_rad.to_degrees(), lat_rad.to_degrees())
 }
 
-/// Equal Earth forward projection: (lon_deg, lat_deg) → (x, y).
-fn equal_earth(lon_deg: f64, lat_deg: f64) -> (f64, f64) {
-    let lambda = lon_deg.to_radians();
-    let phi = lat_deg.to_radians();
-    let theta = (SQRT3 / 2.0 * phi.sin()).asin();
-    let theta2 = theta * theta;
-    let theta6 = theta2 * theta2 * theta2;
-    let d = 9.0 * EE_A4 * theta2 * theta6
-        + 7.0 * EE_A3 * theta6
-        + 3.0 * EE_A2 * theta2
-        + EE_A1;
-    let x = 2.0 * SQRT3 * lambda * theta.cos() / (3.0 * d);
-    let y = EE_A4 * theta * theta2 * theta6
-        + EE_A3 * theta * theta6
-        + EE_A2 * theta * theta2
-        + EE_A1 * theta;
-    (x * EE_SCALE, y * EE_SCALE)
+/// Project lon/lat to screen coordinates (equirectangular: identity mapping).
+fn project(lon: f64, lat: f64) -> [f32; 2] {
+    [f64_to_f32(lon), f64_to_f32(lat)]
 }
 
-/// Project lon/lat to Equal Earth screen coordinates.
-fn project(lon: f64, lat: f64) -> [f32; 2] {
-    let (x, y) = equal_earth(lon, lat);
-    [f64_to_f32(x), f64_to_f32(y)]
+/// Unwrap longitude jumps >180° within a ring to prevent giant antimeridian triangles.
+fn normalize_ring_longitudes(ring: &mut Vec<[f64; 2]>) {
+    for i in 1..ring.len() {
+        let diff = ring[i][0] - ring[i - 1][0];
+        if diff > 180.0 {
+            ring[i][0] -= 360.0;
+        } else if diff < -180.0 {
+            ring[i][0] += 360.0;
+        }
+    }
 }
 
 fn coords_to_linestring(coords: &[[f64; 2]]) -> LineString<f64> {
@@ -83,10 +66,8 @@ fn triangulate_polygon(
     outer: &[[f64; 2]],
     holes: &[Vec<[f64; 2]>],
 ) -> (Vec<[f32; 2]>, Vec<u32>) {
-    // Project to Equal Earth FIRST, then triangulate in projected space.
-    // Triangulating in WGS84 then projecting causes visual tearing because
-    // Equal Earth is non-linear — triangle edges that are straight in lon/lat
-    // become curves in the projected space.
+    // Triangulate in the projected (equirectangular = lon/lat) space so that
+    // earcut and the rendered triangles are consistent.
     let mut flat_proj: Vec<f64> = Vec::new();
     let mut hole_indices: Vec<usize> = Vec::new();
 
@@ -96,9 +77,8 @@ fn triangulate_polygon(
         outer
     };
     for pt in outer_trimmed {
-        let (x, y) = equal_earth(pt[0], pt[1]);
-        flat_proj.push(x);
-        flat_proj.push(y);
+        flat_proj.push(pt[0]);
+        flat_proj.push(pt[1]);
     }
 
     for hole in holes {
@@ -109,9 +89,8 @@ fn triangulate_polygon(
             hole
         };
         for pt in hole_trimmed {
-            let (x, y) = equal_earth(pt[0], pt[1]);
-            flat_proj.push(x);
-            flat_proj.push(y);
+            flat_proj.push(pt[0]);
+            flat_proj.push(pt[1]);
         }
     }
 
@@ -262,6 +241,7 @@ fn parse_wkb_multipolygon(wkb: &[u8], _header_bo: u8, result: &mut Vec<Vec<Vec<[
                     let (lon, lat) = gall_stereo_to_wgs84(x, y);
                     points.push([lon, lat]);
                 }
+                normalize_ring_longitudes(&mut points);
                 rings.push(points);
             }
             result.push(rings);
@@ -289,6 +269,7 @@ fn parse_wkb_multipolygon(wkb: &[u8], _header_bo: u8, result: &mut Vec<Vec<Vec<[
                 let (lon, lat) = gall_stereo_to_wgs84(x, y);
                 points.push([lon, lat]);
             }
+            normalize_ring_longitudes(&mut points);
             rings.push(points);
         }
         result.push(rings);

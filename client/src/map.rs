@@ -362,8 +362,8 @@ fn camera_controls(
         } else if transform.translation.x < -half {
             transform.translation.x += MAP_WIDTH;
         }
-        // Clamp y to Equal Earth pole-to-pole range (~±93 units).
-        transform.translation.y = transform.translation.y.clamp(-93.0, 93.0);
+        // Clamp y to equirectangular pole-to-pole range (±90°).
+        transform.translation.y = transform.translation.y.clamp(-90.0, 90.0);
     } else {
         motion_evts.clear();
     }
