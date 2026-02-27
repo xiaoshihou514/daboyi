@@ -15,8 +15,8 @@ pub struct GameDate {
 
 impl Default for GameDate {
     fn default() -> Self {
-        // EU4-style start date
-        Self { year: 1444, month: 11, day: 11 }
+        // Yuan collapse / warlord era start date
+        Self { year: 1356, month: 1, day: 1 }
     }
 }
 
@@ -112,6 +112,16 @@ pub struct Building {
 // ── World entities ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Country {
+    /// Short unique tag, e.g. "MNG", "YUA", "ZYZ".
+    pub tag: String,
+    /// Display name, e.g. "大明", "元朝".
+    pub name: String,
+    /// Province ID of the capital.
+    pub capital_province: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Province {
     pub id: u32,
     pub name: String,
@@ -127,6 +137,7 @@ pub struct Province {
 pub struct GameState {
     pub tick: u64,
     pub date: GameDate,
+    pub countries: Vec<Country>,
     pub provinces: Vec<Province>,
     pub building_types: Vec<BuildingType>,
 }

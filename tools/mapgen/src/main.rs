@@ -1,3 +1,5 @@
+mod subdivide;
+
 use geo::algorithm::centroid::Centroid;
 use geo::algorithm::simplify::Simplify;
 use geo::{Coord, LineString, Polygon};
@@ -321,11 +323,28 @@ fn main() {
     println!("{} provinces", world_count);
 
     println!(
-        "\nTotal provinces: {} (China: {}, World: {})",
+        "\nRaw provinces: {} (China: {}, World: {})",
         all_provinces.len(),
         cn_count,
         world_count
     );
+
+    // Subdivision pass: split oversized provinces.
+    print!("Subdividing provinces > {:.1} deg² ... ", subdivide::SUBDIVIDE_THRESHOLD);
+    let mut subdivided: Vec<MapProvince> = Vec::new();
+    let mut sub_id: u32 = 0;
+    let mut split_count = 0u32;
+    for mp in &all_provinces {
+        let parts = subdivide::subdivide_province(mp, sub_id);
+        if parts.len() > 1 {
+            split_count += 1;
+        }
+        sub_id += u32::try_from(parts.len()).unwrap();
+        subdivided.extend(parts);
+    }
+    println!("{} split → {} total provinces", split_count, subdivided.len());
+
+    let all_provinces = subdivided;
 
     // Write output.
     if let Some(parent) = output_path.parent() {

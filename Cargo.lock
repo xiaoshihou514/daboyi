@@ -4834,6 +4834,8 @@ dependencies = [
  "actix-ws",
  "bincode",
  "futures-util",
+ "geo",
+ "geojson",
  "rocksdb",
  "serde",
  "serde_json",

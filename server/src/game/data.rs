@@ -1,7 +1,11 @@
+use geo::algorithm::contains::Contains;
+use geo::{Coord, LineString, MultiPolygon, Polygon};
+use geojson::{GeoJson, Value};
 use shared::conv::*;
 use shared::map::{MapData, MapProvince};
 use shared::*;
 use std::collections::HashMap;
+use std::fs;
 
 /// Goods each pop class needs per capita per tick.
 pub fn pop_needs(class: PopClass) -> Vec<(Good, f32)> {
@@ -127,211 +131,209 @@ pub fn default_building_types() -> Vec<BuildingType> {
     ]
 }
 
-/// Historical population data for year 1444, interpolated from HYDE 3.3 (via OWID).
-/// Source: OWID indicator 953903 (HYDE 3.3 + Gapminder + UN WPP).
-/// Values interpolated between 1400 and 1500 data points: p1400 + (p1500 - p1400) * 44/100.
+/// Historical population data for year 1356, interpolated from HYDE 3.3 (via OWID).
+/// Source: OWID indicator 953903. Interpolated: p1300 + (p1400 - p1300) * 56/100.
 /// Key: ISO-3166 alpha-3 code (matches shapeGroup in world GeoJSON).
 /// Note: TWN population is folded into CHN since Taiwan uses CN ADM3 data.
-fn pop_1444_data() -> HashMap<&'static str, u32> {
+fn pop_1356_data() -> HashMap<&'static str, u32> {
     HashMap::from([
-        ("ABW", 180),
-        ("AFG", 1930000),
-        ("AGO", 1867440),
-        ("AIA", 821),
+        ("ABW", 97),
+        ("AFG", 1820000),
+        ("AGO", 1646560),
+        ("AIA", 760),
         ("ALB", 200000),
-        ("AND", 1631),
-        ("ANT", 1395),
+        ("AND", 1602),
+        ("ANT", 755),
         ("ARE", 31000),
-        ("ARG", 288800),
+        ("ARG", 271200),
         ("ARM", 193360),
-        ("ASM", 650),
-        ("ATG", 6700),
-        ("AUS", 316668),
+        ("ASM", 454),
+        ("ATG", 6198),
+        ("AUS", 316016),
         ("AUT", 1580000),
         ("AZE", 412920),
-        ("BDI", 612144),
+        ("BDI", 552656),
         ("BEL", 998000),
-        ("BEN", 2832000),
-        ("BFA", 1295139),
-        ("BGD", 9277440),
-        ("BGR", 660000),
-        ("BHR", 20434),
-        ("BHS", 4037),
-        ("BIH", 351040),
-        ("BLR", 495360),
-        ("BLZ", 6563),
-        ("BOL", 866400),
-        ("BRA", 17350133),
-        ("BRB", 2900),
-        ("BRN", 4448),
-        ("BTN", 13320),
-        ("BWA", 83334),
-        ("CAF", 274098),
-        ("CAN", 188800),
+        ("BEN", 2568000),
+        ("BFA", 1160040),
+        ("BGD", 8559360),
+        ("BGR", 748000),
+        ("BHR", 18624),
+        ("BHS", 3739),
+        ("BIH", 336960),
+        ("BLR", 432000),
+        ("BLZ", 6079),
+        ("BOL", 813600),
+        ("BRA", 15718111),
+        ("BRB", 837),
+        ("BRN", 4624),
+        ("BTN", 11560),
+        ("BWA", 78254),
+        ("CAF", 262000),
+        ("CAN", 171200),
         ("CHE", 688000),
-        ("CHL", 577600),
-        // CHN includes TWN (187076) folded in since Taiwan uses CN ADM3 data.
-        ("CHN", 80243364),
-        ("CIV", 958280),
-        ("CMR", 1281447),
-        ("COD", 5475840),
-        ("COG", 244423),
-        ("COL", 3816000),
-        ("COM", 18880),
-        ("CRI", 429000),
-        ("CUB", 56694),
+        ("CHL", 542400),
+        // CHN includes TWN (169637) folded in since Taiwan uses CN ADM3 data.
+        ("CHN", 75257589),
+        ("CIV", 852019),
+        ("CMR", 1139351),
+        ("COD", 4828160),
+        ("COG", 217319),
+        ("COL", 3534753),
+        ("COM", 17120),
+        ("CRI", 397375),
+        ("CUB", 46580),
         ("CYP", 172000),
         ("CZE", 1958400),
         ("DEU", 7600000),
-        ("DJI", 20390),
-        ("DMA", 1209),
+        ("DJI", 18489),
+        ("DMA", 993),
         ("DNK", 488000),
-        ("DOM", 177600),
-        ("DZA", 1483200),
-        ("ECU", 577600),
-        ("EGY", 4028000),
-        ("ERI", 108420),
-        ("ESH", 259),
-        ("ESP", 5940000),
-        ("EST", 60848),
+        ("DOM", 145920),
+        ("DZA", 1564600),
+        ("ECU", 542400),
+        ("EGY", 4336000),
+        ("ERI", 96511),
+        ("ESH", 181),
+        ("ESP", 6380000),
+        ("EST", 58162),
         ("ETH", 2355000),
-        ("FIN", 100000),
-        ("FJI", 48048),
-        ("FLK", 2),
-        ("FRA", 12663053),
-        ("FRO", 161),
-        ("GAB", 137734),
-        ("GBR", 3476636),
+        ("FIN", 104400),
+        ("FJI", 43793),
+        ("FRA", 13076279),
+        ("FRO", 158),
+        ("GAB", 122461),
+        ("GBR", 4410501),
         ("GEO", 504160),
-        ("GHA", 1595121),
-        ("GIN", 990740),
-        ("GLP", 45807),
-        ("GMB", 3260),
-        ("GNB", 77278),
-        ("GNQ", 103107),
-        ("GRC", 944000),
-        ("GRD", 17256),
-        ("GRL", 1148),
-        ("GTM", 777600),
-        ("GUF", 1464),
-        ("GUY", 84400),
-        ("HKG", 13015),
-        ("HND", 969219),
-        ("HRV", 526560),
-        ("HTI", 162666),
+        ("GHA", 1418242),
+        ("GIN", 880879),
+        ("GLP", 42430),
+        ("GMB", 2898),
+        ("GNB", 68709),
+        ("GNQ", 90912),
+        ("GRC", 1054000),
+        ("GRD", 15984),
+        ("GRL", 1128),
+        ("GTM", 742400),
+        ("GUF", 1356),
+        ("GUY", 75600),
+        ("HKG", 13287),
+        ("HND", 796332),
+        ("HRV", 505440),
+        ("HTI", 113777),
         ("HUN", 1110000),
-        ("IDN", 6980000),
-        ("IND", 129143200),
-        ("IRN", 3860000),
+        ("IDN", 5770000),
+        ("IND", 125843376),
+        ("IRN", 3640000),
         ("IRQ", 1000000),
-        ("ISL", 60000),
-        ("ISR", 292649),
-        ("ITA", 8444140),
-        ("JAM", 206243),
-        ("JOR", 76920),
-        ("JPN", 10620000),
-        ("KAZ", 1261600),
-        ("KEN", 1421600),
-        ("KGZ", 338800),
-        ("KHM", 1444000),
-        ("KNA", 1544),
-        ("KOR", 2380800),
+        ("ISL", 64400),
+        ("ISR", 304458),
+        ("ITA", 9984080),
+        ("JAM", 111714),
+        ("JOR", 80440),
+        ("JPN", 8420000),
+        ("KAZ", 1142800),
+        ("KEN", 1298400),
+        ("KGZ", 321200),
+        ("KHM", 1356000),
+        ("KNA", 836),
+        ("KOR", 2099200),
         ("KWT", 69000),
-        ("LAO", 382399),
-        ("LBN", 418760),
-        ("LBR", 330162),
-        ("LBY", 444000),
-        ("LCA", 19813),
-        ("LIE", 6937),
-        ("LKA", 960800),
-        ("LSO", 58028),
-        ("LTU", 97450),
-        ("LUX", 61140),
-        ("LVA", 83589),
-        ("MAR", 1668000),
-        ("MDA", 268320),
-        ("MDG", 606666),
-        ("MEX", 23373121),
-        ("MKD", 175520),
-        ("MLI", 1036520),
+        ("LAO", 354742),
+        ("LBN", 450880),
+        ("LBR", 315591),
+        ("LBY", 356000),
+        ("LCA", 18352),
+        ("LIE", 6815),
+        ("LKA", 947600),
+        ("LSO", 51594),
+        ("LTU", 93149),
+        ("LUX", 60062),
+        ("LVA", 79899),
+        ("MAR", 1892400),
+        ("MDA", 234000),
+        ("MDG", 496666),
+        ("MEX", 21667446),
+        ("MKD", 168480),
+        ("MLI", 956000),
         ("MLT", 14400),
-        ("MMR", 3692000),
-        ("MNG", 600000),
-        ("MOZ", 921600),
-        ("MRT", 247920),
-        ("MSR", 726),
-        ("MTQ", 64684),
-        ("MWI", 337008),
-        ("MYS", 374048),
-        ("NAM", 128541),
-        ("NCL", 16411),
-        ("NER", 781680),
-        ("NGA", 10440000),
-        ("NIC", 309926),
-        ("NLD", 830550),
+        ("MMR", 3208000),
+        ("MNG", 710000),
+        ("MOZ", 798400),
+        ("MRT", 231200),
+        ("MSR", 393),
+        ("MTQ", 35037),
+        ("MWI", 305592),
+        ("MYS", 339552),
+        ("NAM", 120706),
+        ("NCL", 14957),
+        ("NER", 728000),
+        ("NGA", 9560000),
+        ("NIC", 287079),
+        ("NLD", 740352),
         ("NOR", 288000),
-        ("NPL", 1944000),
-        ("NZL", 46400),
+        ("NPL", 1856000),
+        ("NZL", 20000),
         ("OMN", 200000),
-        ("PAK", 8214400),
-        ("PAN", 185825),
-        ("PER", 3888000),
-        ("PHL", 455096),
-        ("PNG", 1094701),
-        ("POL", 3720000),
-        ("PRI", 3741),
-        ("PRK", 1339200),
+        ("PAK", 7578600),
+        ("PAN", 169368),
+        ("PER", 3712000),
+        ("PHL", 384712),
+        ("PNG", 1050791),
+        ("POL", 3500000),
+        ("PRI", 2616),
+        ("PRK", 1180800),
         ("PRT", 967160),
-        ("PRY", 188800),
-        ("QAT", 620),
+        ("PRY", 171200),
+        ("QAT", 601),
         ("REU", 164),
-        ("ROU", 1580000),
-        ("RUS", 6612480),
-        ("RWA", 565056),
-        ("SAU", 1972000),
-        ("SDN", 3850666),
-        ("SEN", 329281),
-        ("SGP", 485),
+        ("ROU", 1360000),
+        ("RUS", 5868000),
+        ("RWA", 510144),
+        ("SAU", 2068800),
+        ("SDN", 3615999),
+        ("SEN", 270544),
+        ("SGP", 339),
         ("SJM", 1),
-        ("SLB", 1177),
-        ("SLE", 6272),
-        ("SLV", 87464),
-        ("SOM", 734809),
-        ("SPM", 292),
-        ("STP", 3644),
-        ("SUR", 13907),
+        ("SLB", 823),
+        ("SLE", 5716),
+        ("SLV", 81017),
+        ("SOM", 666310),
+        ("SPM", 158),
+        ("STP", 2994),
+        ("SUR", 12881),
         ("SVK", 761600),
-        ("SVN", 225996),
-        ("SWE", 466256),
-        ("SWZ", 11894),
-        ("SYR", 1025240),
-        ("TCA", 13),
-        ("TCD", 803760),
-        ("TGO", 400403),
-        ("THA", 1906836),
-        ("TJK", 298800),
-        ("TKM", 228800),
-        ("TLS", 91080),
-        ("TON", 4739),
-        ("TTO", 82),
-        ("TUN", 800000),
-        ("TUR", 5998000),
-        ("TZA", 2282000),
-        ("UGA", 1421600),
-        ("UKR", 2363280),
-        ("URY", 22634),
-        ("USA", 1804248),
-        ("UZB", 1215200),
-        ("VCT", 3327),
-        ("VEN", 388800),
-        ("VIR", 996),
-        ("VNM", 1865600),
-        ("VUT", 5708),
-        ("WSM", 3038),
-        ("YEM", 2138000),
-        ("ZAF", 487104),
-        ("ZMB", 286032),
-        ("ZWE", 244800),
+        ("SVN", 218878),
+        ("SWE", 726831),
+        ("SWZ", 10785),
+        ("SYR", 1103560),
+        ("TCA", 6),
+        ("TCD", 744800),
+        ("TGO", 356003),
+        ("THA", 1729080),
+        ("TJK", 281200),
+        ("TKM", 213840),
+        ("TLS", 74833),
+        ("TON", 3315),
+        ("TTO", 44),
+        ("TUN", 888000),
+        ("TUR", 6416000),
+        ("TZA", 2491000),
+        ("UGA", 1298400),
+        ("UKR", 2061000),
+        ("URY", 20606),
+        ("USA", 1665497),
+        ("UZB", 1149200),
+        ("VCT", 1802),
+        ("VEN", 371200),
+        ("VIR", 539),
+        ("VNM", 1654400),
+        ("VUT", 3992),
+        ("WSM", 2124),
+        ("YEM", 2116000),
+        ("ZAF", 441696),
+        ("ZMB", 259368),
+        ("ZWE", 170000),
     ])
 }
 
@@ -377,13 +379,334 @@ const CLASS_RATIOS: &[(PopClass, f64)] = &[
 /// Roughly ~5 people/km² medieval average → ~60,000 per degree² at mid-latitudes.
 const FALLBACK_POP_DENSITY: f64 = 60_000.0;
 
-/// Generate a full game world from map data using OWID/HYDE historical population for 1444.
-/// Population is distributed proportionally by province polygon area within each country.
+/// Path to the historical boundary GeoJSON asset.
+const HISTORICAL_GEOJSON: &str = "assets/world_1400.geojson";
+
+// ── Chinese warlord faction definitions (circa 1356) ─────────────────────────
+
+/// Chinese warlord factions and their display names.
+const WARLORD_DEFS: &[(&str, &str)] = &[
+    ("YUA", "元朝"),
+    ("HSG", "韩宋"),
+    ("ZYZ", "朱元璋"),
+    ("CYL", "陈友谅"),
+    ("ZSC", "张士诚"),
+    ("FGZ", "方国珍"),
+    ("XIA", "明夏"),
+];
+
+/// Assign a Chinese province (by gadm_id) to a warlord faction.
+/// Uses GB administrative code prefix to determine region.
+fn chinese_warlord_tag(gadm_id: &str) -> &'static str {
+    let gb = gadm_id.strip_prefix("CN_").unwrap_or("");
+
+    // Taiwan — indigenous peoples, not under organized state
+    if gb.starts_with("1567") {
+        return "UNC"; // uncolonized
+    }
+
+    let prefix = if gb.len() >= 2 { &gb[..2] } else { "" };
+
+    match prefix {
+        // Yuan (North China + frontiers + south coast still under Yuan)
+        "11" | "12" | "13" | "14" | "15" | "21" | "22" | "23" | "37" | "61" | "62" | "63"
+        | "64" | "65" | "54" | "35" | "44" | "45" | "46" => "YUA",
+        // Han Song / Red Turban North (Henan)
+        "41" => "HSG",
+        // Zhu Yuanzhang (Anhui — just captured Nanjing)
+        "34" => "ZYZ",
+        // Chen Youliang / Xu Shouhui (Hubei, Hunan, Jiangxi)
+        "42" | "43" | "36" => "CYL",
+        // Zhang Shicheng (Shanghai, Jiangsu)
+        "31" | "32" => "ZSC",
+        // Fang Guozhen (Zhejiang coast)
+        "33" => "FGZ",
+        // Ming Yuzhen (Sichuan, Chongqing, Guizhou, Yunnan)
+        "50" | "51" | "52" | "53" => "XIA",
+        _ => "YUA",
+    }
+}
+
+// ── Historical boundary mapping (world_1400 polity name → game tag) ──────────
+
+/// Map historical polity name from world_1400.geojson → (tag, display_name).
+fn country_tag_for_name(name: &str) -> (&'static str, &'static str) {
+    match name {
+        // Major European powers
+        "France" => ("FRA", "法兰西王国"),
+        "English territory" => ("ENG", "英格兰王国"),
+        "Castile" => ("CAS", "卡斯蒂利亚王国"),
+        "Aragón" => ("ARA", "阿拉贡王国"),
+        "Portugal" => ("PRT", "葡萄牙王国"),
+        "Holy Roman Empire" => ("HRE", "神圣罗马帝国"),
+        "Scotland" => ("SCO", "苏格兰王国"),
+        "Navarre" => ("NAV", "纳瓦拉王国"),
+        "Granada" => ("GRA", "格拉纳达酋长国"),
+        "Britany" => ("BRI", "布列塔尼公国"),
+        "Corsica" => ("COR", "科西嘉"),
+        "Sardinia" => ("SAR", "撒丁岛"),
+        "Sicily" => ("SIC", "西西里王国"),
+        "Venice" => ("VNC", "威尼斯共和国"),
+        "Papal States" => ("PAP", "教皇国"),
+
+        // Eastern Europe
+        "Poland-Lithuania" => ("PLC", "波兰-立陶宛"),
+        "Kalmar Union" => ("KAL", "卡尔马联盟"),
+        "Novgorod" => ("NOV", "诺夫哥罗德共和国"),
+        "Kingdom of Hungary" => ("HUN", "匈牙利王国"),
+        "Bosnia" => ("BOS", "波斯尼亚王国"),
+        "Moldova" => ("MOL", "摩尔达维亚"),
+        "Principality of Wallachia" => ("WAL", "瓦拉几亚公国"),
+        "Teutonic Knights" => ("TEU", "条顿骑士团"),
+        "Bulgar Khanate" => ("BUL", "保加利亚"),
+        "Byzantine Empire" => ("BYZ", "拜占庭帝国"),
+        "Georgia" => ("GEO", "格鲁吉亚王国"),
+        "Cyprus" => ("CYR", "塞浦路斯王国"),
+
+        // Islamic world
+        "Ottoman Empire" => ("OTT", "奥斯曼帝国"),
+        "Mamluke Sultanate" => ("MAM", "马穆鲁克苏丹国"),
+        "Timurid Empire" => ("TIM", "帖木儿帝国"),
+        "Seljuk Caliphate" => ("SEL", "塞尔柱苏丹国"),
+        "Hafsid Caliphate" => ("HAF", "哈夫斯王朝"),
+        "Morocco" => ("MOR", "摩洛哥"),
+        "Beylik of Aydin" => ("AYD", "艾登侯国"),
+        "Hadramaut" => ("HAD", "哈德拉毛"),
+        "Muscat" => ("MUS", "马斯喀特"),
+        "Yemen" => ("YMN", "也门"),
+
+        // Mongol successor states
+        "Blue Horde" => ("GLD", "金帐汗国"),
+        "White Horde" => ("WHT", "白帐汗国"),
+        "Chagatai Khanate" => ("CHA", "察合台汗国"),
+
+        // South/Southeast Asia
+        "Sultanate of Delhi" => ("DEL", "德里苏丹国"),
+        "Chola state" => ("CHO", "朱罗国"),
+        "Pandya state" => ("PAN", "潘地亚国"),
+        "Orissa" => ("ORI", "奥里萨"),
+        "Kashmir and Ladakh" => ("KAS", "克什米尔"),
+        "Sinhalese kingdom" => ("SIN", "僧伽罗王国"),
+        "Ayutthaya" => ("AYU", "阿瑜陀耶"),
+        "Sukhothai" => ("SUK", "素可泰"),
+        "Pagan" => ("PAG", "蒲甘"),
+        "Khmer Empire" => ("KHR", "高棉帝国"),
+        "Champa" => ("CMP", "占城"),
+        "Srivijaya Empire" => ("SRI", "三佛齐"),
+        "Kediri" => ("KED", "谏义里"),
+        "Aceh" => ("ACE", "亚齐"),
+
+        // East Asia (excluding China — handled by warlord system)
+        "Shogun Japan (Kamakura)" => ("JAP", "日本幕府"),
+        "Đại Việt" => ("DAV", "大越"),
+        "Hainan" => ("HAN", "海南"),
+        "Tibet" => ("TIB", "西藏"),
+        "Chūzan" => ("RYU", "琉球中山"),
+        "Hokuzan" => ("HOK", "琉球北山"),
+        "Nanzan" => ("NAN", "琉球南山"),
+        "minor Hindu and Buddhist kingdoms" => ("HBK", "印度诸邦"),
+
+        // Africa
+        "Mali" => ("MLI", "马里帝国"),
+        "Ethiopia" => ("ETI", "埃塞俄比亚"),
+        "Shoa" => ("SHO", "绍阿"),
+        "Alwa" => ("ALW", "阿尔瓦"),
+        "Makkura" => ("MAK", "马库里亚"),
+        "Benin" => ("BNI", "贝宁帝国"),
+        "Bornu-Kanem" => ("BKN", "博尔努-加涅姆"),
+        "Great Zimbabwe" => ("ZIM", "大津巴布韦"),
+        "Expansionist Kingdom of Merina" => ("MER", "梅里纳王国"),
+        "Madagascar" => ("MDG", "马达加斯加"),
+
+        // Americas
+        "Chimú Empire" => ("CHI", "奇穆帝国"),
+        "Mixtec Empire" => ("MIX", "米斯特克"),
+        "Zapotec Empire" => ("ZAP", "萨波特克"),
+
+        // Skip Great Khanate (China handled by warlord system)
+        "Great Khanate" => ("_SKIP_", ""),
+
+        // Everything else gets a generic tag
+        _ => ("", ""),
+    }
+}
+
+/// Auto-generate a 3-character tag from a name (for unmapped polities).
+fn auto_tag(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == ' ')
+        .collect();
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    if words.len() >= 3 {
+        format!(
+            "{}{}{}",
+            words[0].chars().next().unwrap_or('X'),
+            words[1].chars().next().unwrap_or('X'),
+            words[2].chars().next().unwrap_or('X'),
+        )
+        .to_uppercase()
+    } else if words.len() == 2 {
+        let w1 = words[0];
+        format!(
+            "{}{}{}",
+            w1.chars().next().unwrap_or('X'),
+            w1.chars().nth(1).unwrap_or('X'),
+            words[1].chars().next().unwrap_or('X'),
+        )
+        .to_uppercase()
+    } else {
+        let w = words.first().copied().unwrap_or("UNK");
+        w.chars().take(3).collect::<String>().to_uppercase()
+    }
+}
+
+// ── Historical boundary loading ──────────────────────────────────────────────
+
+struct HistoricalPolity {
+    tag: String,
+    name: String,
+    geometry: MultiPolygon<f64>,
+}
+
+fn parse_geojson_geometry(value: &Value) -> Option<MultiPolygon<f64>> {
+    match value {
+        Value::Polygon(rings) => {
+            let outer: Vec<Coord<f64>> = rings
+                .first()?
+                .iter()
+                .map(|c| Coord { x: c[0], y: c[1] })
+                .collect();
+            let holes: Vec<LineString<f64>> = rings[1..]
+                .iter()
+                .map(|ring| {
+                    LineString::new(ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect())
+                })
+                .collect();
+            Some(MultiPolygon::new(vec![Polygon::new(
+                LineString::new(outer),
+                holes,
+            )]))
+        }
+        Value::MultiPolygon(multi) => {
+            let polys: Vec<Polygon<f64>> = multi
+                .iter()
+                .filter_map(|rings| {
+                    let outer: Vec<Coord<f64>> = rings
+                        .first()?
+                        .iter()
+                        .map(|c| Coord { x: c[0], y: c[1] })
+                        .collect();
+                    let holes: Vec<LineString<f64>> = rings[1..]
+                        .iter()
+                        .map(|ring| {
+                            LineString::new(
+                                ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect(),
+                            )
+                        })
+                        .collect();
+                    Some(Polygon::new(LineString::new(outer), holes))
+                })
+                .collect();
+            if polys.is_empty() {
+                None
+            } else {
+                Some(MultiPolygon::new(polys))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn load_historical_polities() -> Vec<HistoricalPolity> {
+    let mut polities = Vec::new();
+    let mut used_tags: HashMap<String, usize> = HashMap::new();
+
+    let content = match fs::read_to_string(HISTORICAL_GEOJSON) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "Warning: could not load {HISTORICAL_GEOJSON}: {e}. \
+                 Province ownership will fall back to modern ISO codes."
+            );
+            return polities;
+        }
+    };
+
+    let geojson: GeoJson = match content.parse() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Warning: failed to parse {HISTORICAL_GEOJSON}: {e}");
+            return polities;
+        }
+    };
+
+    let features = match geojson {
+        GeoJson::FeatureCollection(fc) => fc.features,
+        _ => return polities,
+    };
+
+    for feat in &features {
+        let props = match &feat.properties {
+            Some(p) => p,
+            None => continue,
+        };
+        let hist_name = match props.get("NAME").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let (tag, display) = country_tag_for_name(hist_name);
+
+        // Skip entries marked for skipping (e.g., Great Khanate → handled by warlord system)
+        if tag == "_SKIP_" {
+            continue;
+        }
+
+        let geom = match feat
+            .geometry
+            .as_ref()
+            .and_then(|g| parse_geojson_geometry(&g.value))
+        {
+            Some(g) => g,
+            None => continue,
+        };
+
+        let (final_tag, final_name) = if tag.is_empty() {
+            let auto = auto_tag(hist_name);
+            (auto, hist_name.to_string())
+        } else {
+            (tag.to_string(), display.to_string())
+        };
+
+        // Disambiguate duplicate tags
+        let count = used_tags.entry(final_tag.clone()).or_insert(0);
+        let unique_tag = if *count > 0 {
+            format!("{}{}", final_tag, count)
+        } else {
+            final_tag.clone()
+        };
+        *count += 1;
+
+        polities.push(HistoricalPolity {
+            tag: unique_tag,
+            name: final_name,
+            geometry: geom,
+        });
+    }
+
+    println!("Loaded {} historical polities from {}", polities.len(), HISTORICAL_GEOJSON);
+    polities
+}
+
+/// Generate a full game world from map data using historical 1356 boundaries and population.
+/// Population is distributed by modern ISO country → area-proportional.
+/// Ownership is determined by historical boundaries (1400 GeoJSON + Chinese warlord factions).
 pub fn generate_world(map_data: &MapData) -> GameState {
     let building_types = default_building_types();
-    let pop_data = pop_1444_data();
+    let pop_data = pop_1356_data();
 
-    // Step 1: compute total polygon area per country.
+    // Step 1: compute total polygon area per modern country (for population distribution).
     let mut country_total_area: HashMap<String, f64> = HashMap::new();
     let mut province_areas: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
 
@@ -395,7 +718,81 @@ pub fn generate_world(map_data: &MapData) -> GameState {
             .or_insert(0.0) += area;
     }
 
-    // Step 2: create provinces with proportional population.
+    // Step 2: load historical boundaries and assign provinces to historical countries.
+    let polities = load_historical_polities();
+    let mut province_owners: Vec<Option<String>> = Vec::with_capacity(map_data.provinces.len());
+
+    for mp in &map_data.provinces {
+        let owner = if mp.country_code == "CHN" {
+            // Chinese provinces → warlord faction by GB code
+            let tag = chinese_warlord_tag(&mp.gadm_id);
+            if tag == "UNC" {
+                None
+            } else {
+                Some(tag.to_string())
+            }
+        } else if mp.country_code == "MNG" {
+            // Mongolia → Yuan dynasty
+            Some("YUA".to_string())
+        } else {
+            // World provinces → point-in-polygon against historical boundaries
+            let centroid = geo::Point::new(
+                f64::from(mp.centroid[0]),
+                f64::from(mp.centroid[1]),
+            );
+            let mut found = None;
+            for polity in &polities {
+                if polity.geometry.contains(&centroid) {
+                    found = Some(polity.tag.clone());
+                    break;
+                }
+            }
+            found
+        };
+        province_owners.push(owner);
+    }
+
+    // Step 3: collect all unique country tags and create Country entities.
+    let mut country_map: HashMap<String, String> = HashMap::new(); // tag → display name
+
+    // Chinese warlord factions
+    for (tag, name) in WARLORD_DEFS {
+        country_map.insert(tag.to_string(), name.to_string());
+    }
+
+    // Historical polities from GeoJSON
+    for polity in &polities {
+        country_map
+            .entry(polity.tag.clone())
+            .or_insert_with(|| polity.name.clone());
+    }
+
+    // Create Country entities for all tags that actually own at least one province.
+    let mut active_tags: HashMap<String, u32> = HashMap::new(); // tag → first province id
+    for (idx, owner) in province_owners.iter().enumerate() {
+        if let Some(tag) = owner {
+            active_tags
+                .entry(tag.clone())
+                .or_insert(u32::try_from(idx).unwrap());
+        }
+    }
+
+    let mut countries: Vec<Country> = active_tags
+        .iter()
+        .map(|(tag, &first_prov)| Country {
+            tag: tag.clone(),
+            name: country_map
+                .get(tag)
+                .cloned()
+                .unwrap_or_else(|| tag.clone()),
+            capital_province: first_prov,
+        })
+        .collect();
+    countries.sort_by(|a, b| a.tag.cmp(&b.tag));
+
+    println!("Created {} countries", countries.len());
+
+    // Step 4: create provinces with population (by modern ISO → area-proportional).
     let provinces: Vec<Province> = map_data
         .provinces
         .iter()
@@ -439,11 +836,17 @@ pub fn generate_world(map_data: &MapData) -> GameState {
             Province {
                 id: mp.id,
                 name: mp.name.clone(),
-                owner: Some(mp.country_code.clone()),
+                owner: province_owners[idx].clone(),
                 pops,
                 buildings: vec![
-                    Building { type_id: "farm".into(), level: farm_level },
-                    Building { type_id: "charcoal_kiln".into(), level: kiln_level },
+                    Building {
+                        type_id: "farm".into(),
+                        level: farm_level,
+                    },
+                    Building {
+                        type_id: "charcoal_kiln".into(),
+                        level: kiln_level,
+                    },
                 ],
                 stockpile: HashMap::from([
                     (Good::Grain, 20.0),
@@ -459,11 +862,12 @@ pub fn generate_world(map_data: &MapData) -> GameState {
         .iter()
         .map(|p| p.pops.iter().map(|pop| u64::from(pop.size)).sum::<u64>())
         .sum();
-    println!("World population (1444): {total}");
+    println!("World population (1356): {total}");
 
     GameState {
         tick: 0,
         date: GameDate::default(),
+        countries,
         provinces,
         building_types,
     }
