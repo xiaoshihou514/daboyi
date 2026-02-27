@@ -360,6 +360,100 @@ fn province_area(mp: &MapProvince) -> f64 {
     raw * lat.to_radians().cos()
 }
 
+/// Population density weight for Chinese provinces based on GB code prefix.
+/// Reflects historical settlement patterns circa 1356 (Yuan-era devastation in north/west,
+/// prosperous south/east).
+fn chinese_province_weight(gadm_id: &str) -> f64 {
+    let gb = gadm_id.strip_prefix("CN_").unwrap_or("");
+    let prefix = if gb.len() >= 2 { &gb[..2] } else { "" };
+    match prefix {
+        "31" | "32" => 4.0, // Shanghai, Jiangsu (Yangtze delta)
+        "33" => 3.5,        // Zhejiang
+        "34" => 2.5,        // Anhui
+        "36" => 2.5,        // Jiangxi
+        "37" => 2.5,        // Shandong
+        "41" => 2.5,        // Henan
+        "11" | "12" => 2.0, // Beijing, Tianjin (Yuan capital region)
+        "13" => 2.0,        // Hebei
+        "35" => 2.0,        // Fujian
+        "42" => 1.8,        // Hubei
+        "43" => 1.5,        // Hunan
+        "44" => 1.5,        // Guangdong
+        "14" => 1.0,        // Shanxi
+        "61" => 0.8,        // Shaanxi
+        "45" => 0.6,        // Guangxi
+        "46" => 0.4,        // Hainan
+        "50" => 0.4,        // Chongqing (post-Mongol devastation)
+        "51" => 0.3,        // Sichuan (post-Mongol devastation)
+        "52" => 0.3,        // Guizhou
+        "53" => 0.3,        // Yunnan
+        "21" => 0.3,        // Liaoning
+        "64" => 0.3,        // Ningxia
+        "62" => 0.15,       // Gansu
+        "22" => 0.1,        // Jilin
+        "15" => 0.08,       // Inner Mongolia (steppe)
+        "23" => 0.05,       // Heilongjiang
+        "65" => 0.05,       // Xinjiang (desert/oasis)
+        "63" => 0.03,       // Qinghai (highland)
+        "54" => 0.02,       // Tibet (extreme highland)
+        _ => 0.5,
+    }
+}
+
+/// General habitability weight based on latitude and known uninhabitable zones.
+/// Penalises extreme cold; used for non-Chinese provinces.
+fn habitability_weight(lat: f64, lon: f64) -> f64 {
+    let abs_lat = lat.abs();
+    let lat_factor: f64 = if abs_lat > 75.0 {
+        0.01
+    } else if abs_lat > 65.0 {
+        0.05
+    } else if abs_lat > 55.0 {
+        0.15
+    } else if abs_lat > 50.0 {
+        0.4
+    } else {
+        1.0
+    };
+
+    // Major desert penalty (broad lat/lon rectangles)
+    let desert_factor: f64 = if is_major_desert(lat, lon) {
+        0.08
+    } else {
+        1.0
+    };
+
+    (lat_factor * desert_factor).max(0.005)
+}
+
+/// Returns true if the (lat, lon) point falls inside a major desert/arid zone.
+fn is_major_desert(lat: f64, lon: f64) -> bool {
+    // Sahara (excluding Nile corridor: lon 30..33)
+    (lat > 18.0 && lat < 33.0 && lon > -15.0 && lon < 30.0)
+        || (lat > 18.0 && lat < 33.0 && lon > 33.0 && lon < 40.0)
+        // Arabian Desert
+        || (lat > 18.0 && lat < 30.0 && lon > 40.0 && lon < 55.0)
+        // Australian interior
+        || (lat < -22.0 && lat > -32.0 && lon > 120.0 && lon < 142.0)
+        // Kalahari / Namib
+        || (lat < -20.0 && lat > -28.0 && lon > 16.0 && lon < 28.0)
+        // Patagonian steppe
+        || (lat < -42.0 && lat > -52.0 && lon > -72.0 && lon < -65.0)
+}
+
+/// Effective area used for within-country population distribution.
+/// Applies habitability weighting so deserts/tundra get less population.
+fn effective_province_area(mp: &MapProvince, raw_area: f64) -> f64 {
+    let weight = if mp.country_code == "CHN" {
+        chinese_province_weight(&mp.gadm_id)
+    } else {
+        let lat = f64::from(mp.centroid[1]);
+        let lon = f64::from(mp.centroid[0]);
+        habitability_weight(lat, lon)
+    };
+    raw_area * weight
+}
+
 /// Medieval (1444) class distribution ratios.
 /// Overwhelmingly agricultural; small merchant/artisan class.
 const CLASS_RATIOS: &[(PopClass, f64)] = &[
@@ -707,15 +801,19 @@ pub fn generate_world(map_data: &MapData) -> GameState {
     let pop_data = pop_1356_data();
 
     // Step 1: compute total polygon area per modern country (for population distribution).
+    // Uses habitability-weighted effective area for more realistic distribution.
     let mut country_total_area: HashMap<String, f64> = HashMap::new();
     let mut province_areas: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
+    let mut province_effective_areas: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
 
     for mp in &map_data.provinces {
         let area = province_area(mp);
+        let eff_area = effective_province_area(mp, area);
         province_areas.push(area);
+        province_effective_areas.push(eff_area);
         *country_total_area
             .entry(mp.country_code.clone())
-            .or_insert(0.0) += area;
+            .or_insert(0.0) += eff_area;
     }
 
     // Step 2: load historical boundaries and assign provinces to historical countries.
@@ -800,7 +898,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
         .map(|(idx, mp)| {
             let country = &mp.country_code;
             let total_area = country_total_area.get(country).copied().unwrap_or(1.0);
-            let prov_area = province_areas[idx];
+            let prov_area = province_effective_areas[idx];
 
             // Country total population (OWID data or area-based fallback).
             let country_pop = pop_data
