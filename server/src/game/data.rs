@@ -131,210 +131,45 @@ pub fn default_building_types() -> Vec<BuildingType> {
     ]
 }
 
-/// Historical population data for year 1356, interpolated from HYDE 3.3 (via OWID).
-/// Source: OWID indicator 953903. Interpolated: p1300 + (p1400 - p1300) * 56/100.
-/// Key: ISO-3166 alpha-3 code (matches shapeGroup in world GeoJSON).
-/// Note: TWN population is folded into CHN since Taiwan uses CN ADM3 data.
-fn pop_1356_data() -> HashMap<&'static str, u32> {
-    HashMap::from([
-        ("ABW", 97),
-        ("AFG", 1820000),
-        ("AGO", 1646560),
-        ("AIA", 760),
-        ("ALB", 200000),
-        ("AND", 1602),
-        ("ANT", 755),
-        ("ARE", 31000),
-        ("ARG", 271200),
-        ("ARM", 193360),
-        ("ASM", 454),
-        ("ATG", 6198),
-        ("AUS", 316016),
-        ("AUT", 1580000),
-        ("AZE", 412920),
-        ("BDI", 552656),
-        ("BEL", 998000),
-        ("BEN", 2568000),
-        ("BFA", 1160040),
-        ("BGD", 8559360),
-        ("BGR", 748000),
-        ("BHR", 18624),
-        ("BHS", 3739),
-        ("BIH", 336960),
-        ("BLR", 432000),
-        ("BLZ", 6079),
-        ("BOL", 813600),
-        ("BRA", 15718111),
-        ("BRB", 837),
-        ("BRN", 4624),
-        ("BTN", 11560),
-        ("BWA", 78254),
-        ("CAF", 262000),
-        ("CAN", 171200),
-        ("CHE", 688000),
-        ("CHL", 542400),
-        // CHN includes TWN (169637) folded in since Taiwan uses CN ADM3 data.
-        ("CHN", 75257589),
-        ("CIV", 852019),
-        ("CMR", 1139351),
-        ("COD", 4828160),
-        ("COG", 217319),
-        ("COL", 3534753),
-        ("COM", 17120),
-        ("CRI", 397375),
-        ("CUB", 46580),
-        ("CYP", 172000),
-        ("CZE", 1958400),
-        ("DEU", 7600000),
-        ("DJI", 18489),
-        ("DMA", 993),
-        ("DNK", 488000),
-        ("DOM", 145920),
-        ("DZA", 1564600),
-        ("ECU", 542400),
-        ("EGY", 4336000),
-        ("ERI", 96511),
-        ("ESH", 181),
-        ("ESP", 6380000),
-        ("EST", 58162),
-        ("ETH", 2355000),
-        ("FIN", 104400),
-        ("FJI", 43793),
-        ("FRA", 13076279),
-        ("FRO", 158),
-        ("GAB", 122461),
-        ("GBR", 4410501),
-        ("GEO", 504160),
-        ("GHA", 1418242),
-        ("GIN", 880879),
-        ("GLP", 42430),
-        ("GMB", 2898),
-        ("GNB", 68709),
-        ("GNQ", 90912),
-        ("GRC", 1054000),
-        ("GRD", 15984),
-        ("GRL", 1128),
-        ("GTM", 742400),
-        ("GUF", 1356),
-        ("GUY", 75600),
-        ("HKG", 13287),
-        ("HND", 796332),
-        ("HRV", 505440),
-        ("HTI", 113777),
-        ("HUN", 1110000),
-        ("IDN", 5770000),
-        ("IND", 125843376),
-        ("IRN", 3640000),
-        ("IRQ", 1000000),
-        ("ISL", 64400),
-        ("ISR", 304458),
-        ("ITA", 9984080),
-        ("JAM", 111714),
-        ("JOR", 80440),
-        ("JPN", 8420000),
-        ("KAZ", 1142800),
-        ("KEN", 1298400),
-        ("KGZ", 321200),
-        ("KHM", 1356000),
-        ("KNA", 836),
-        ("KOR", 2099200),
-        ("KWT", 69000),
-        ("LAO", 354742),
-        ("LBN", 450880),
-        ("LBR", 315591),
-        ("LBY", 356000),
-        ("LCA", 18352),
-        ("LIE", 6815),
-        ("LKA", 947600),
-        ("LSO", 51594),
-        ("LTU", 93149),
-        ("LUX", 60062),
-        ("LVA", 79899),
-        ("MAR", 1892400),
-        ("MDA", 234000),
-        ("MDG", 496666),
-        ("MEX", 21667446),
-        ("MKD", 168480),
-        ("MLI", 956000),
-        ("MLT", 14400),
-        ("MMR", 3208000),
-        ("MNG", 710000),
-        ("MOZ", 798400),
-        ("MRT", 231200),
-        ("MSR", 393),
-        ("MTQ", 35037),
-        ("MWI", 305592),
-        ("MYS", 339552),
-        ("NAM", 120706),
-        ("NCL", 14957),
-        ("NER", 728000),
-        ("NGA", 9560000),
-        ("NIC", 287079),
-        ("NLD", 740352),
-        ("NOR", 288000),
-        ("NPL", 1856000),
-        ("NZL", 20000),
-        ("OMN", 200000),
-        ("PAK", 7578600),
-        ("PAN", 169368),
-        ("PER", 3712000),
-        ("PHL", 384712),
-        ("PNG", 1050791),
-        ("POL", 3500000),
-        ("PRI", 2616),
-        ("PRK", 1180800),
-        ("PRT", 967160),
-        ("PRY", 171200),
-        ("QAT", 601),
-        ("REU", 164),
-        ("ROU", 1360000),
-        ("RUS", 5868000),
-        ("RWA", 510144),
-        ("SAU", 2068800),
-        ("SDN", 3615999),
-        ("SEN", 270544),
-        ("SGP", 339),
-        ("SJM", 1),
-        ("SLB", 823),
-        ("SLE", 5716),
-        ("SLV", 81017),
-        ("SOM", 666310),
-        ("SPM", 158),
-        ("STP", 2994),
-        ("SUR", 12881),
-        ("SVK", 761600),
-        ("SVN", 218878),
-        ("SWE", 726831),
-        ("SWZ", 10785),
-        ("SYR", 1103560),
-        ("TCA", 6),
-        ("TCD", 744800),
-        ("TGO", 356003),
-        ("THA", 1729080),
-        ("TJK", 281200),
-        ("TKM", 213840),
-        ("TLS", 74833),
-        ("TON", 3315),
-        ("TTO", 44),
-        ("TUN", 888000),
-        ("TUR", 6416000),
-        ("TZA", 2491000),
-        ("UGA", 1298400),
-        ("UKR", 2061000),
-        ("URY", 20606),
-        ("USA", 1665497),
-        ("UZB", 1149200),
-        ("VCT", 1802),
-        ("VEN", 371200),
-        ("VIR", 539),
-        ("VNM", 1654400),
-        ("VUT", 3992),
-        ("WSM", 2124),
-        ("YEM", 2116000),
-        ("ZAF", 441696),
-        ("ZMB", 259368),
-        ("ZWE", 170000),
-    ])
+/// Historical population data for year 1356 — now replaced by terrain-based estimation.
+/// Terrain density: population per degree² based on topography × vegetation × climate.
+fn terrain_density(mp: &MapProvince) -> f64 {
+    // Base density by topography (people per degree² at equator-equivalent).
+    let topo_base: f64 = match mp.topography.as_str() {
+        "flatland" => 80_000.0,
+        "hills" => 40_000.0,
+        "plateau" => 25_000.0,
+        "wetlands" => 20_000.0,
+        "mountains" => 8_000.0,
+        _ => 5_000.0,
+    };
+
+    // Vegetation multiplier.
+    let veg_mult: f64 = match mp.vegetation.as_str() {
+        "farmland" => 3.0,
+        "grasslands" => 1.5,
+        "woods" => 0.8,
+        "forest" => 0.5,
+        "sparse" => 0.3,
+        "jungle" => 0.4,
+        "desert" => 0.05,
+        _ => 0.5, // NULL/empty
+    };
+
+    // Climate multiplier.
+    let climate_mult: f64 = match mp.climate.as_str() {
+        "subtropical" => 1.8,
+        "tropical" => 1.2,
+        "mediterranean" => 1.6,
+        "oceanic" => 1.3,
+        "continental" => 1.0,
+        "arid" => 0.2,
+        "cold_arid" => 0.15,
+        "arctic" => 0.05,
+        _ => 0.5,
+    };
+
+    (topo_base * veg_mult * climate_mult).max(50.0)
 }
 
 /// Approximate polygon area in degree² (shoelace formula with cos(lat) correction).
@@ -346,7 +181,6 @@ fn province_area(mp: &MapProvince) -> f64 {
     if ring.len() < 3 {
         return 0.0;
     }
-    // Shoelace formula
     let mut area2 = 0.0f64;
     let n = ring.len();
     for i in 0..n {
@@ -354,107 +188,37 @@ fn province_area(mp: &MapProvince) -> f64 {
         area2 += f64::from(ring[i][0]) * f64::from(ring[j][1]);
         area2 -= f64::from(ring[j][0]) * f64::from(ring[i][1]);
     }
-    let raw = area2.abs() / 2.0;
-    // Correct for latitude: multiply by cos(centroid_lat) to get a more realistic area proxy.
-    let lat = f64::from(mp.centroid[1]);
-    raw * lat.to_radians().cos()
+    // Boundary is in Equal Earth (equal-area) coordinates; no cos(lat) correction needed.
+    area2.abs() / 2.0
 }
 
-/// Population density weight for Chinese provinces based on GB code prefix.
-/// Reflects historical settlement patterns circa 1356 (Yuan-era devastation in north/west,
-/// prosperous south/east).
-fn chinese_province_weight(gadm_id: &str) -> f64 {
-    let gb = gadm_id.strip_prefix("CN_").unwrap_or("");
-    let prefix = if gb.len() >= 2 { &gb[..2] } else { "" };
-    match prefix {
-        "31" | "32" => 4.0, // Shanghai, Jiangsu (Yangtze delta)
-        "33" => 3.5,        // Zhejiang
-        "34" => 2.5,        // Anhui
-        "36" => 2.5,        // Jiangxi
-        "37" => 2.5,        // Shandong
-        "41" => 2.5,        // Henan
-        "11" | "12" => 2.0, // Beijing, Tianjin (Yuan capital region)
-        "13" => 2.0,        // Hebei
-        "35" => 2.0,        // Fujian
-        "42" => 1.8,        // Hubei
-        "43" => 1.5,        // Hunan
-        "44" => 1.5,        // Guangdong
-        "14" => 1.0,        // Shanxi
-        "61" => 0.8,        // Shaanxi
-        "45" => 0.6,        // Guangxi
-        "46" => 0.4,        // Hainan
-        "50" => 0.4,        // Chongqing (post-Mongol devastation)
-        "51" => 0.3,        // Sichuan (post-Mongol devastation)
-        "52" => 0.3,        // Guizhou
-        "53" => 0.3,        // Yunnan
-        "21" => 0.3,        // Liaoning
-        "64" => 0.3,        // Ningxia
-        "62" => 0.15,       // Gansu
-        "22" => 0.1,        // Jilin
-        "15" => 0.08,       // Inner Mongolia (steppe)
-        "23" => 0.05,       // Heilongjiang
-        "65" => 0.05,       // Xinjiang (desert/oasis)
-        "63" => 0.03,       // Qinghai (highland)
-        "54" => 0.02,       // Tibet (extreme highland)
-        _ => 0.5,
+/// Map EU5 raw_material string to game Good type.
+fn raw_material_to_good(material: &str) -> Option<Good> {
+    match material {
+        // Grain
+        "wheat" | "rice" | "millet" | "legumes" | "fruit" | "maize" | "potato" | "livestock" => {
+            Some(Good::Grain)
+        }
+        // Clothing
+        "cotton" | "wool" | "fiber_crops" | "silk" => Some(Good::Clothing),
+        // Fuel
+        "lumber" | "coal" => Some(Good::Fuel),
+        // Metal
+        "iron" | "copper" | "tin" | "lead" | "silver" | "goods_gold" | "mercury" | "alum"
+        | "saltpeter" => Some(Good::Metal),
+        // Luxuries
+        "gems" | "ivory" | "saffron" | "incense" | "pepper" | "cloves" | "cocoa" | "tea"
+        | "coffee" | "sugar" | "pearls" | "amber" | "dyes" | "wine" => Some(Good::Luxuries),
+        // Building Materials
+        "clay" | "stone" | "marble" | "sand" => Some(Good::BuildingMaterials),
+        // Tools (versatile trade goods)
+        "fur" | "wild_game" | "fish" | "beeswax" | "salt" | "horses" | "elephants" | "olives"
+        | "tobacco" | "chili" | "medicaments" => Some(Good::Tools),
+        _ => None,
     }
 }
 
-/// General habitability weight based on latitude and known uninhabitable zones.
-/// Penalises extreme cold; used for non-Chinese provinces.
-fn habitability_weight(lat: f64, lon: f64) -> f64 {
-    let abs_lat = lat.abs();
-    let lat_factor: f64 = if abs_lat > 75.0 {
-        0.01
-    } else if abs_lat > 65.0 {
-        0.05
-    } else if abs_lat > 55.0 {
-        0.15
-    } else if abs_lat > 50.0 {
-        0.4
-    } else {
-        1.0
-    };
-
-    // Major desert penalty (broad lat/lon rectangles)
-    let desert_factor: f64 = if is_major_desert(lat, lon) {
-        0.08
-    } else {
-        1.0
-    };
-
-    (lat_factor * desert_factor).max(0.005)
-}
-
-/// Returns true if the (lat, lon) point falls inside a major desert/arid zone.
-fn is_major_desert(lat: f64, lon: f64) -> bool {
-    // Sahara (excluding Nile corridor: lon 30..33)
-    (lat > 18.0 && lat < 33.0 && lon > -15.0 && lon < 30.0)
-        || (lat > 18.0 && lat < 33.0 && lon > 33.0 && lon < 40.0)
-        // Arabian Desert
-        || (lat > 18.0 && lat < 30.0 && lon > 40.0 && lon < 55.0)
-        // Australian interior
-        || (lat < -22.0 && lat > -32.0 && lon > 120.0 && lon < 142.0)
-        // Kalahari / Namib
-        || (lat < -20.0 && lat > -28.0 && lon > 16.0 && lon < 28.0)
-        // Patagonian steppe
-        || (lat < -42.0 && lat > -52.0 && lon > -72.0 && lon < -65.0)
-}
-
-/// Effective area used for within-country population distribution.
-/// Applies habitability weighting so deserts/tundra get less population.
-fn effective_province_area(mp: &MapProvince, raw_area: f64) -> f64 {
-    let weight = if mp.country_code == "CHN" {
-        chinese_province_weight(&mp.gadm_id)
-    } else {
-        let lat = f64::from(mp.centroid[1]);
-        let lon = f64::from(mp.centroid[0]);
-        habitability_weight(lat, lon)
-    };
-    raw_area * weight
-}
-
-/// Medieval (1444) class distribution ratios.
+/// Medieval (1356) class distribution ratios.
 /// Overwhelmingly agricultural; small merchant/artisan class.
 const CLASS_RATIOS: &[(PopClass, f64)] = &[
     (PopClass::TenantFarmer, 0.50),
@@ -469,9 +233,8 @@ const CLASS_RATIOS: &[(PopClass, f64)] = &[
     (PopClass::Capitalist, 0.005),
 ];
 
-/// Default population density for countries not in OWID data (people per degree²).
-/// Roughly ~5 people/km² medieval average → ~60,000 per degree² at mid-latitudes.
-const FALLBACK_POP_DENSITY: f64 = 60_000.0;
+/// Target world population for 1356 (~500M estimated).
+const TARGET_WORLD_POP: f64 = 500_000_000.0;
 
 /// Path to the historical boundary GeoJSON asset.
 const HISTORICAL_GEOJSON: &str = "assets/world_1400.geojson";
@@ -489,36 +252,62 @@ const WARLORD_DEFS: &[(&str, &str)] = &[
     ("XIA", "明夏"),
 ];
 
-/// Assign a Chinese province (by gadm_id) to a warlord faction.
-/// Uses GB administrative code prefix to determine region.
-fn chinese_warlord_tag(gadm_id: &str) -> &'static str {
-    let gb = gadm_id.strip_prefix("CN_").unwrap_or("");
+/// Returns true if this province centroid falls within greater China (including Mongolia/Tibet).
+fn is_china_region(lon: f64, lat: f64) -> bool {
+    // Broad China bbox: lon 73–135, lat 18–54
+    lon > 73.0 && lon < 135.0 && lat > 18.0 && lat < 54.0
+        // Exclude Southeast Asia (Vietnam, Laos, etc.)
+        && !(lon > 100.0 && lat < 23.0 && lon < 110.0)
+        // Exclude Korea
+        && !(lon > 124.0 && lat > 33.0 && lat < 44.0 && lon < 132.0)
+        // Exclude Japan
+        && !(lon > 128.0 && lat > 30.0)
+}
 
-    // Taiwan — indigenous peoples, not under organized state
-    if gb.starts_with("1567") {
-        return "UNC"; // uncolonized
+/// Assign a Chinese province (by lat/lon) to a warlord faction.
+fn chinese_warlord_tag(lon: f64, lat: f64) -> &'static str {
+    // Taiwan — indigenous peoples
+    if lon > 119.5 && lon < 122.5 && lat > 21.5 && lat < 25.5 {
+        return "UNC";
     }
 
-    let prefix = if gb.len() >= 2 { &gb[..2] } else { "" };
-
-    match prefix {
-        // Yuan (North China + frontiers + south coast still under Yuan)
-        "11" | "12" | "13" | "14" | "15" | "21" | "22" | "23" | "37" | "61" | "62" | "63"
-        | "64" | "65" | "54" | "35" | "44" | "45" | "46" => "YUA",
-        // Han Song / Red Turban North (Henan)
-        "41" => "HSG",
-        // Zhu Yuanzhang (Anhui — just captured Nanjing)
-        "34" => "ZYZ",
-        // Chen Youliang / Xu Shouhui (Hubei, Hunan, Jiangxi)
-        "42" | "43" | "36" => "CYL",
-        // Zhang Shicheng (Shanghai, Jiangsu)
-        "31" | "32" => "ZSC",
-        // Fang Guozhen (Zhejiang coast)
-        "33" => "FGZ",
-        // Ming Yuzhen (Sichuan, Chongqing, Guizhou, Yunnan)
-        "50" | "51" | "52" | "53" => "XIA",
-        _ => "YUA",
+    // Mongolia/outer regions → Yuan
+    if lat > 42.0 || lon < 80.0 || lon > 125.0 {
+        return "YUA";
     }
+
+    // Ming Yuzhen (Sichuan basin, Chongqing, Guizhou, Yunnan)
+    if lon < 108.0 && lat < 34.0 && lat > 22.0 {
+        return "XIA";
+    }
+
+    // Han Song / Red Turban North (Henan ~32-36N, 110-116E)
+    if lat > 32.0 && lat < 36.5 && lon > 110.0 && lon < 116.5 {
+        return "HSG";
+    }
+
+    // Zhu Yuanzhang (southern Anhui + Nanjing region, 30-33N, 116-119E)
+    if lat > 29.5 && lat < 33.0 && lon > 115.5 && lon < 119.5 {
+        return "ZYZ";
+    }
+
+    // Zhang Shicheng (Shanghai/Jiangsu coast, 30-33N, 119-122E)
+    if lat > 30.0 && lat < 33.5 && lon > 119.0 && lon < 122.0 {
+        return "ZSC";
+    }
+
+    // Fang Guozhen (Zhejiang coast, 27-30N, 119-122E)
+    if lat > 27.0 && lat < 30.5 && lon > 119.0 && lon < 122.5 {
+        return "FGZ";
+    }
+
+    // Chen Youliang (Hubei/Hunan/Jiangxi, 24-32N, 108-117E)
+    if lat > 24.0 && lat < 32.0 && lon > 108.0 && lon < 117.0 {
+        return "CYL";
+    }
+
+    // Everything else in China → Yuan
+    "YUA"
 }
 
 // ── Historical boundary mapping (world_1400 polity name → game tag) ──────────
@@ -793,51 +582,47 @@ fn load_historical_polities() -> Vec<HistoricalPolity> {
     polities
 }
 
-/// Generate a full game world from map data using historical 1356 boundaries and population.
-/// Population is distributed by modern ISO country → area-proportional.
-/// Ownership is determined by historical boundaries (1400 GeoJSON + Chinese warlord factions).
+/// Generate a full game world from EU5 map data using terrain-based population and historical 1356 boundaries.
 pub fn generate_world(map_data: &MapData) -> GameState {
     let building_types = default_building_types();
-    let pop_data = pop_1356_data();
 
-    // Step 1: compute total polygon area per modern country (for population distribution).
-    // Uses habitability-weighted effective area for more realistic distribution.
-    let mut country_total_area: HashMap<String, f64> = HashMap::new();
-    let mut province_areas: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
-    let mut province_effective_areas: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
+    // Step 1: compute terrain-based raw population for each province, then scale to target.
+    let mut raw_pops: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
+    let mut total_raw: f64 = 0.0;
 
     for mp in &map_data.provinces {
         let area = province_area(mp);
-        let eff_area = effective_province_area(mp, area);
-        province_areas.push(area);
-        province_effective_areas.push(eff_area);
-        *country_total_area
-            .entry(mp.country_code.clone())
-            .or_insert(0.0) += eff_area;
+        let density = terrain_density(mp);
+        let raw = area * density;
+        raw_pops.push(raw);
+        total_raw += raw;
     }
+
+    // Scale factor to achieve target world population.
+    let scale = if total_raw > 0.0 {
+        TARGET_WORLD_POP / total_raw
+    } else {
+        1.0
+    };
 
     // Step 2: load historical boundaries and assign provinces to historical countries.
     let polities = load_historical_polities();
     let mut province_owners: Vec<Option<String>> = Vec::with_capacity(map_data.provinces.len());
 
     for mp in &map_data.provinces {
-        let owner = if mp.country_code == "CHN" {
-            // Chinese provinces → warlord faction by GB code
-            let tag = chinese_warlord_tag(&mp.gadm_id);
+        let lon = f64::from(mp.centroid[0]);
+        let lat = f64::from(mp.centroid[1]);
+
+        let owner = if is_china_region(lon, lat) {
+            let tag = chinese_warlord_tag(lon, lat);
             if tag == "UNC" {
                 None
             } else {
                 Some(tag.to_string())
             }
-        } else if mp.country_code == "MNG" {
-            // Mongolia → Yuan dynasty
-            Some("YUA".to_string())
         } else {
             // World provinces → point-in-polygon against historical boundaries
-            let centroid = geo::Point::new(
-                f64::from(mp.centroid[0]),
-                f64::from(mp.centroid[1]),
-            );
+            let centroid = geo::Point::new(lon, lat);
             let mut found = None;
             for polity in &polities {
                 if polity.geometry.contains(&centroid) {
@@ -851,22 +636,19 @@ pub fn generate_world(map_data: &MapData) -> GameState {
     }
 
     // Step 3: collect all unique country tags and create Country entities.
-    let mut country_map: HashMap<String, String> = HashMap::new(); // tag → display name
+    let mut country_map: HashMap<String, String> = HashMap::new();
 
-    // Chinese warlord factions
     for (tag, name) in WARLORD_DEFS {
         country_map.insert(tag.to_string(), name.to_string());
     }
 
-    // Historical polities from GeoJSON
     for polity in &polities {
         country_map
             .entry(polity.tag.clone())
             .or_insert_with(|| polity.name.clone());
     }
 
-    // Create Country entities for all tags that actually own at least one province.
-    let mut active_tags: HashMap<String, u32> = HashMap::new(); // tag → first province id
+    let mut active_tags: HashMap<String, u32> = HashMap::new();
     for (idx, owner) in province_owners.iter().enumerate() {
         if let Some(tag) = owner {
             active_tags
@@ -890,31 +672,14 @@ pub fn generate_world(map_data: &MapData) -> GameState {
 
     println!("Created {} countries", countries.len());
 
-    // Step 4: create provinces with population (by modern ISO → area-proportional).
+    // Step 4: create provinces with scaled population + resource-based initial stockpile.
     let provinces: Vec<Province> = map_data
         .provinces
         .iter()
         .enumerate()
         .map(|(idx, mp)| {
-            let country = &mp.country_code;
-            let total_area = country_total_area.get(country).copied().unwrap_or(1.0);
-            let prov_area = province_effective_areas[idx];
+            let province_pop = f64_to_u32((raw_pops[idx] * scale).max(10.0));
 
-            // Country total population (OWID data or area-based fallback).
-            let country_pop = pop_data
-                .get(country.as_str())
-                .map(|&p| u32_to_f64(p))
-                .unwrap_or_else(|| total_area * FALLBACK_POP_DENSITY);
-
-            // Province share of country population, proportional to area.
-            let share = if total_area > 0.0 {
-                prov_area / total_area
-            } else {
-                1.0
-            };
-            let province_pop = f64_to_u32((country_pop * share).max(10.0));
-
-            // Distribute into pop classes by medieval ratios.
             let pops: Vec<Pop> = CLASS_RATIOS
                 .iter()
                 .map(|(class, ratio)| {
@@ -927,9 +692,18 @@ pub fn generate_world(map_data: &MapData) -> GameState {
                 })
                 .collect();
 
-            // Building levels scale with total population.
             let farm_level = (province_pop / 1500).max(1);
             let kiln_level = (province_pop / 5000).max(1);
+
+            // Initial stockpile: base goods + bonus from raw_material.
+            let mut stockpile = HashMap::from([
+                (Good::Grain, 20.0),
+                (Good::Clothing, 5.0),
+                (Good::Fuel, 3.0),
+            ]);
+            if let Some(good) = raw_material_to_good(&mp.raw_material) {
+                *stockpile.entry(good).or_insert(0.0) += 15.0;
+            }
 
             Province {
                 id: mp.id,
@@ -946,16 +720,11 @@ pub fn generate_world(map_data: &MapData) -> GameState {
                         level: kiln_level,
                     },
                 ],
-                stockpile: HashMap::from([
-                    (Good::Grain, 20.0),
-                    (Good::Clothing, 5.0),
-                    (Good::Fuel, 3.0),
-                ]),
+                stockpile,
             }
         })
         .collect();
 
-    // Log population totals for verification.
     let total: u64 = provinces
         .iter()
         .map(|p| p.pops.iter().map(|pop| u64::from(pop.size)).sum::<u64>())

@@ -136,7 +136,7 @@ fn load_map(
         }
 
         let start = all_positions.len();
-        let color = country_color_rgba(&mp.country_code);
+        let color = country_color_rgba(&mp.tag);
         let base_idx = usize_to_u32(all_positions.len());
 
         for v in &mp.vertices {
@@ -210,7 +210,7 @@ fn province_base_color(
             }
         }
     } else {
-        country_color_rgba(&map_data.provinces[pid].country_code)
+        country_color_rgba(&map_data.provinces[pid].tag)
     }
 }
 
@@ -355,7 +355,7 @@ fn camera_controls(
     for ev in scroll_evts.read() {
         let zoom_factor = 1.0 - ev.y * 0.1;
         projection.scale *= zoom_factor.clamp(0.5, 2.0);
-        projection.scale = projection.scale.clamp(0.01, 10.0);
+        projection.scale = projection.scale.clamp(0.01, 0.5);
     }
 }
 

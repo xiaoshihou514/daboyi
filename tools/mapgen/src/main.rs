@@ -1,26 +1,63 @@
-mod subdivide;
-
 use geo::algorithm::centroid::Centroid;
 use geo::algorithm::simplify::Simplify;
 use geo::{Coord, LineString, Polygon};
-use geojson::{Feature, GeoJson, Value};
+use rusqlite::Connection;
 use shared::conv::{f64_to_f32, u64_to_f64, usize_to_u32};
 use shared::map::{MapData, MapProvince};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 /// Simplification tolerance in degrees (~100m at equator).
 const SIMPLIFY_EPSILON: f64 = 0.001;
 
-/// Default path to the shared geojson directory.
-const DEFAULT_GEOJSON_DIR: &str = "/home/xiaoshihou/Playground/shared/geojson";
+/// Path to the EU5toGIS datasets directory.
+const DEFAULT_GPKG_DIR: &str = "/home/xiaoshihou/Playground/github/EU5toGIS/datasets";
 
-fn project(lon: f64, lat: f64) -> [f32; 2] {
-    [f64_to_f32(lon), f64_to_f32(lat)]
+/// WGS84 semi-major axis.
+const R: f64 = 6_378_137.0;
+/// cos(45°)
+const COS45: f64 = std::f64::consts::FRAC_1_SQRT_2;
+
+/// Equal Earth projection constants (Šavrič, Patterson, Jenny 2018).
+const EE_A1: f64 = 1.340264;
+const EE_A2: f64 = -0.081106;
+const EE_A3: f64 = 0.000893;
+const EE_A4: f64 = 0.003796;
+const SQRT3: f64 = 1.732_050_808_0;
+/// Scale factor: maps Equal Earth x-range to approximately [-180, 180].
+const EE_SCALE: f64 = 180.0 * 3.0 * EE_A1 / (2.0 * SQRT3 * std::f64::consts::PI);
+
+/// Inverse Gall Stereographic projection: projected (x, y) → WGS84 (lon, lat) in degrees.
+fn gall_stereo_to_wgs84(x: f64, y: f64) -> (f64, f64) {
+    let lon_rad = x / (R * COS45);
+    let lat_rad = 2.0 * (y / (R * (1.0 + COS45))).atan();
+    (lon_rad.to_degrees(), lat_rad.to_degrees())
 }
 
-fn parse_ring(coords: &[Vec<f64>]) -> Vec<[f64; 2]> {
-    coords.iter().map(|c| [c[0], c[1]]).collect()
+/// Equal Earth forward projection: (lon_deg, lat_deg) → (x, y).
+fn equal_earth(lon_deg: f64, lat_deg: f64) -> (f64, f64) {
+    let lambda = lon_deg.to_radians();
+    let phi = lat_deg.to_radians();
+    let theta = (SQRT3 / 2.0 * phi.sin()).asin();
+    let theta2 = theta * theta;
+    let theta6 = theta2 * theta2 * theta2;
+    let d = 9.0 * EE_A4 * theta2 * theta6
+        + 7.0 * EE_A3 * theta6
+        + 3.0 * EE_A2 * theta2
+        + EE_A1;
+    let x = 2.0 * SQRT3 * lambda * theta.cos() / (3.0 * d);
+    let y = EE_A4 * theta * theta2 * theta6
+        + EE_A3 * theta * theta6
+        + EE_A2 * theta * theta2
+        + EE_A1 * theta;
+    (x * EE_SCALE, y * EE_SCALE)
+}
+
+/// Project lon/lat to Equal Earth screen coordinates.
+fn project(lon: f64, lat: f64) -> [f32; 2] {
+    let (x, y) = equal_earth(lon, lat);
+    [f64_to_f32(x), f64_to_f32(y)]
 }
 
 fn coords_to_linestring(coords: &[[f64; 2]]) -> LineString<f64> {
@@ -83,14 +120,15 @@ fn triangulate_polygon(
     (vertices, indices)
 }
 
+/// Compute centroid in WGS84 lon/lat degrees (NOT projected).
 fn compute_centroid(outer: &[[f64; 2]]) -> [f32; 2] {
     let ls = coords_to_linestring(outer);
     let poly = Polygon::new(ls, vec![]);
     match poly.centroid() {
-        Some(c) => project(c.x(), c.y()),
+        Some(c) => [f64_to_f32(c.x()), f64_to_f32(c.y())],
         None => {
             if let Some(first) = outer.first() {
-                project(first[0], first[1])
+                [f64_to_f32(first[0]), f64_to_f32(first[1])]
             } else {
                 [0.0, 0.0]
             }
@@ -98,75 +136,182 @@ fn compute_centroid(outer: &[[f64; 2]]) -> [f32; 2] {
     }
 }
 
-/// Extract province metadata from a GeoJSON feature.
-/// Supports two schemas:
-///   - CN files: { "name": "...", "gb": "..." }
-///   - World files: { "shapeName": "...", "shapeID": "...", "shapeGroup": "...", "shapeType": "..." }
-struct FeatureMeta {
-    id: String,
-    name: String,
-    country_code: String,
+/// Topography values that indicate water or wasteland (non-playable).
+fn is_non_playable(topography: &str) -> bool {
+    matches!(
+        topography,
+        "coastal_ocean"
+            | "ocean"
+            | "inland_sea"
+            | "deep_ocean"
+            | "narrows"
+            | "lakes"
+            | "high_lakes"
+            | "atoll"
+            | "salt_pans"
+    ) || topography.contains("wasteland")
 }
 
-fn extract_meta(props: &serde_json::Map<String, serde_json::Value>) -> FeatureMeta {
-    // CN schema
-    if let Some(name) = props.get("name").and_then(|v| v.as_str()) {
-        let gb = props
-            .get("gb")
-            .and_then(|v| v.as_str())
-            .unwrap_or("UNKNOWN");
-        return FeatureMeta {
-            id: format!("CN_{}", gb),
-            name: name.to_string(),
-            country_code: "CHN".to_string(),
-        };
+/// Parse GeoPackage Binary (GPB) geometry → list of WGS84 polygon rings.
+/// Returns Vec<Vec<Vec<[f64;2]>>>: polygons → rings → points as [lon, lat].
+fn parse_gpb_geometry(geom: &[u8]) -> Vec<Vec<Vec<[f64; 2]>>> {
+    let mut result = Vec::new();
+    if geom.len() < 8 {
+        return result;
     }
 
-    // World schema
-    let shape_name = props
-        .get("shapeName")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Unknown");
-    let shape_id = props
-        .get("shapeID")
-        .and_then(|v| v.as_str())
-        .unwrap_or("UNKNOWN");
-    let shape_group = props
-        .get("shapeGroup")
-        .and_then(|v| v.as_str())
-        .unwrap_or("UNK");
-
-    FeatureMeta {
-        id: shape_id.to_string(),
-        name: shape_name.to_string(),
-        country_code: shape_group.to_string(),
+    // GP header: "GP" magic (2), version (1), flags (1), srs_id (4)
+    if geom[0] != b'G' || geom[1] != b'P' {
+        return result;
     }
-}
+    let flags = geom[3];
+    let byte_order_flag = flags & 0x01; // 0 = big-endian, 1 = little-endian
+    let envelope_type = (flags >> 1) & 0x07;
 
-fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
-    let props = feature.properties.as_ref()?;
-    let geometry = feature.geometry.as_ref()?;
-
-    let meta = extract_meta(props);
-
-    let polygons: Vec<Vec<Vec<[f64; 2]>>> = match &geometry.value {
-        Value::Polygon(rings) => {
-            vec![rings.iter().map(|r| parse_ring(r)).collect()]
-        }
-        Value::MultiPolygon(multi) => multi
-            .iter()
-            .map(|rings| rings.iter().map(|r| parse_ring(r)).collect())
-            .collect(),
-        _ => return None,
+    let envelope_size: usize = match envelope_type {
+        0 => 0,
+        1 => 32, // 4 doubles (minx, maxx, miny, maxy)
+        2 => 48, // 6 doubles
+        3 => 48, // 6 doubles
+        4 => 64, // 8 doubles
+        _ => return result,
     };
 
+    let wkb_start = 8 + envelope_size;
+    if wkb_start >= geom.len() {
+        return result;
+    }
+
+    let wkb = &geom[wkb_start..];
+    parse_wkb_multipolygon(wkb, byte_order_flag, &mut result);
+    result
+}
+
+fn read_u32_wkb(data: &[u8], pos: usize, le: bool) -> u32 {
+    let bytes: [u8; 4] = [data[pos], data[pos + 1], data[pos + 2], data[pos + 3]];
+    if le {
+        u32::from_le_bytes(bytes)
+    } else {
+        u32::from_be_bytes(bytes)
+    }
+}
+
+fn read_f64_wkb(data: &[u8], pos: usize, le: bool) -> f64 {
+    let bytes: [u8; 8] = [
+        data[pos],
+        data[pos + 1],
+        data[pos + 2],
+        data[pos + 3],
+        data[pos + 4],
+        data[pos + 5],
+        data[pos + 6],
+        data[pos + 7],
+    ];
+    if le {
+        f64::from_le_bytes(bytes)
+    } else {
+        f64::from_be_bytes(bytes)
+    }
+}
+
+fn parse_wkb_multipolygon(wkb: &[u8], _header_bo: u8, result: &mut Vec<Vec<Vec<[f64; 2]>>>) {
+    if wkb.len() < 5 {
+        return;
+    }
+    let le = wkb[0] == 1;
+    let wkb_type = read_u32_wkb(wkb, 1, le);
+
+    if wkb_type == 6 {
+        // MultiPolygon
+        let n_polys = read_u32_wkb(wkb, 5, le);
+        let mut pos: usize = 9;
+        for _ in 0..n_polys {
+            if pos + 5 > wkb.len() {
+                break;
+            }
+            let poly_le = wkb[pos] == 1;
+            pos += 5; // skip byte_order + type (3 = Polygon)
+            if pos + 4 > wkb.len() {
+                break;
+            }
+            let n_rings = read_u32_wkb(wkb, pos, poly_le);
+            pos += 4;
+
+            let mut rings: Vec<Vec<[f64; 2]>> = Vec::new();
+            for _ in 0..n_rings {
+                if pos + 4 > wkb.len() {
+                    break;
+                }
+                let n_pts = read_u32_wkb(wkb, pos, poly_le);
+                pos += 4;
+                let n_pts_usize = u32_to_usize(n_pts);
+                let mut points: Vec<[f64; 2]> = Vec::with_capacity(n_pts_usize);
+                for _ in 0..n_pts {
+                    if pos + 16 > wkb.len() {
+                        break;
+                    }
+                    let x = read_f64_wkb(wkb, pos, poly_le);
+                    let y = read_f64_wkb(wkb, pos + 8, poly_le);
+                    pos += 16;
+                    let (lon, lat) = gall_stereo_to_wgs84(x, y);
+                    points.push([lon, lat]);
+                }
+                rings.push(points);
+            }
+            result.push(rings);
+        }
+    } else if wkb_type == 3 {
+        // Single Polygon
+        let n_rings = read_u32_wkb(wkb, 5, le);
+        let mut pos: usize = 9;
+        let mut rings: Vec<Vec<[f64; 2]>> = Vec::new();
+        for _ in 0..n_rings {
+            if pos + 4 > wkb.len() {
+                break;
+            }
+            let n_pts = read_u32_wkb(wkb, pos, le);
+            pos += 4;
+            let n_pts_usize = u32_to_usize(n_pts);
+            let mut points: Vec<[f64; 2]> = Vec::with_capacity(n_pts_usize);
+            for _ in 0..n_pts {
+                if pos + 16 > wkb.len() {
+                    break;
+                }
+                let x = read_f64_wkb(wkb, pos, le);
+                let y = read_f64_wkb(wkb, pos + 8, le);
+                pos += 16;
+                let (lon, lat) = gall_stereo_to_wgs84(x, y);
+                points.push([lon, lat]);
+            }
+            rings.push(points);
+        }
+        result.push(rings);
+    }
+}
+
+fn u32_to_usize(v: u32) -> usize {
+    usize::try_from(v).unwrap()
+}
+
+/// Process parsed polygon rings into a MapProvince.
+fn process_polygons(
+    polygons: &[Vec<Vec<[f64; 2]>>],
+    province_id: u32,
+    tag: &str,
+    topography: &str,
+    vegetation: &str,
+    climate: &str,
+    raw_material: &str,
+    harbor_suitability: f32,
+    port_sea_zone: Option<String>,
+) -> Option<MapProvince> {
     let mut all_vertices: Vec<[f32; 2]> = Vec::new();
     let mut all_indices: Vec<u32> = Vec::new();
     let mut boundary: Vec<Vec<[f32; 2]>> = Vec::new();
     let mut best_outer: Option<Vec<[f64; 2]>> = None;
     let mut best_len = 0;
 
-    for poly_rings in &polygons {
+    for poly_rings in polygons {
         if poly_rings.is_empty() {
             continue;
         }
@@ -206,9 +351,14 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
 
     Some(MapProvince {
         id: province_id,
-        gadm_id: meta.id,
-        name: meta.name,
-        country_code: meta.country_code,
+        tag: tag.to_string(),
+        name: tag.to_string(),
+        topography: topography.to_string(),
+        vegetation: vegetation.to_string(),
+        climate: climate.to_string(),
+        raw_material: raw_material.to_string(),
+        harbor_suitability,
+        port_sea_zone,
         boundary,
         vertices: all_vertices,
         indices: all_indices,
@@ -216,33 +366,11 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
     })
 }
 
-fn load_geojson(path: &PathBuf) -> Vec<Feature> {
-    let content = fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("  [error] reading {}: {}", path.display(), e);
-        String::new()
-    });
-    if content.is_empty() {
-        return vec![];
-    }
-    let geojson: GeoJson = match content.parse() {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("  [error] parsing {}: {}", path.display(), e);
-            return vec![];
-        }
-    };
-    match geojson {
-        GeoJson::FeatureCollection(fc) => fc.features,
-        GeoJson::Feature(f) => vec![f],
-        _ => vec![],
-    }
-}
-
 fn main() {
-    let geojson_dir = PathBuf::from(
+    let gpkg_dir = PathBuf::from(
         std::env::args()
             .nth(1)
-            .unwrap_or_else(|| DEFAULT_GEOJSON_DIR.to_string()),
+            .unwrap_or_else(|| DEFAULT_GPKG_DIR.to_string()),
     );
     let output_path = PathBuf::from(
         std::env::args()
@@ -250,101 +378,122 @@ fn main() {
             .unwrap_or_else(|| "assets/map.bin".to_string()),
     );
 
-    if !geojson_dir.is_dir() {
+    let locations_path = gpkg_dir.join("locations.gpkg");
+    let ports_path = gpkg_dir.join("ports.gpkg");
+
+    if !locations_path.exists() {
         eprintln!(
-            "Error: {} is not a directory.\nExpected prepackaged geojson at {}",
-            geojson_dir.display(),
-            DEFAULT_GEOJSON_DIR
+            "Error: {} not found.\nExpected EU5toGIS datasets at {}",
+            locations_path.display(),
+            DEFAULT_GPKG_DIR
         );
         std::process::exit(1);
     }
 
-    let cn_path = geojson_dir.join("cn_adm3.geojson");
-    let world_path = geojson_dir.join("world_adm2.geojson");
-
-    if !cn_path.exists() || !world_path.exists() {
-        eprintln!(
-            "Error: expected cn_adm3.geojson and world_adm2.geojson in {}",
-            geojson_dir.display()
-        );
-        std::process::exit(1);
+    // Load port → sea zone mapping from ports.gpkg.
+    let mut port_sea_zones: HashMap<String, String> = HashMap::new();
+    if ports_path.exists() {
+        print!("Loading ports.gpkg ... ");
+        let conn = Connection::open(&ports_path).expect("Failed to open ports.gpkg");
+        let mut stmt = conn
+            .prepare("SELECT tag, SeaZone FROM ports")
+            .expect("Failed to query ports");
+        let rows = stmt
+            .query_map([], |row| {
+                let tag: String = row.get(0)?;
+                let sea_zone: String = row.get(1)?;
+                Ok((tag, sea_zone))
+            })
+            .expect("Failed to iterate ports");
+        for row in rows {
+            if let Ok((tag, sz)) = row {
+                port_sea_zones.insert(tag, sz);
+            }
+        }
+        println!("{} ports loaded", port_sea_zones.len());
+    } else {
+        println!("Warning: ports.gpkg not found, skipping port data");
     }
+
+    // Read locations.gpkg and build provinces.
+    print!("Reading locations.gpkg ... ");
+    let conn = Connection::open(&locations_path).expect("Failed to open locations.gpkg");
+    let mut stmt = conn
+        .prepare(
+            "SELECT geom, tag, topography, vegetation, climate, raw_material, natural_harbor_suitability \
+             FROM locations \
+             WHERE topography IS NOT NULL",
+        )
+        .expect("Failed to prepare locations query");
 
     let mut all_provinces: Vec<MapProvince> = Vec::new();
     let mut next_id: u32 = 0;
+    let mut skipped = 0u32;
+    let mut total_read = 0u32;
 
-    // China ADM3 (prioritized, higher detail)
-    print!("Processing cn_adm3.geojson ... ");
-    let cn_features = load_geojson(&cn_path);
-    let mut cn_count = 0;
-    for feature in &cn_features {
-        if let Some(province) = process_feature(feature, next_id) {
+    let rows = stmt
+        .query_map([], |row| {
+            let geom: Vec<u8> = row.get(0)?;
+            let tag: String = row.get(1)?;
+            let topography: String = row.get(2)?;
+            let vegetation: Option<String> = row.get(3)?;
+            let climate: Option<String> = row.get(4)?;
+            let raw_material: Option<String> = row.get(5)?;
+            let harbor: Option<f64> = row.get(6)?;
+            Ok((
+                geom,
+                tag,
+                topography,
+                vegetation.unwrap_or_default(),
+                climate.unwrap_or_default(),
+                raw_material.unwrap_or_default(),
+                harbor.unwrap_or(0.0),
+            ))
+        })
+        .expect("Failed to query locations");
+
+    for row in rows {
+        let (geom, tag, topography, vegetation, climate, raw_material, harbor) =
+            row.expect("Failed to read row");
+        total_read += 1;
+
+        // Filter non-playable (water + wasteland).
+        if is_non_playable(&topography) {
+            skipped += 1;
+            continue;
+        }
+
+        let polygons = parse_gpb_geometry(&geom);
+        if polygons.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        let port_sz = port_sea_zones.get(&tag).cloned();
+
+        if let Some(province) = process_polygons(
+            &polygons,
+            next_id,
+            &tag,
+            &topography,
+            &vegetation,
+            &climate,
+            &raw_material,
+            f64_to_f32(harbor),
+            port_sz,
+        ) {
             all_provinces.push(province);
             next_id += 1;
-            cn_count += 1;
+        } else {
+            skipped += 1;
         }
     }
-    println!("{} provinces", cn_count);
-
-    // World ADM2 (excluding China and disputed overlaps)
-    print!("Processing world_adm2.geojson ... ");
-    let world_features = load_geojson(&world_path);
-    let mut world_count = 0;
-    // IND shapeIDs that overlap with CN data (disputed territories)
-    const DISPUTED_IND_SHAPE_IDS: &[&str] = &[
-        "76128533B18668117085772", // Tawang (overlaps CN 错那/隆子 — 藏南)
-        "76128533B57183548666997", // Leh(Ladakh) (includes Aksai Chin)
-    ];
-    for feature in &world_features {
-        if let Some(props) = &feature.properties {
-            let group = props
-                .get("shapeGroup")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            // Skip China (already in cn_adm3) and Taiwan (covered by CN data)
-            if group == "CHN" || group == "TWN" {
-                continue;
-            }
-            // Skip disputed IND districts that overlap with CN boundaries
-            if group == "IND" {
-                if let Some(sid) = props.get("shapeID").and_then(|v| v.as_str()) {
-                    if DISPUTED_IND_SHAPE_IDS.contains(&sid) {
-                        continue;
-                    }
-                }
-            }
-        }
-        if let Some(province) = process_feature(feature, next_id) {
-            all_provinces.push(province);
-            next_id += 1;
-            world_count += 1;
-        }
-    }
-    println!("{} provinces", world_count);
-
     println!(
-        "\nRaw provinces: {} (China: {}, World: {})",
+        "{} playable provinces (read {}, skipped {})",
         all_provinces.len(),
-        cn_count,
-        world_count
+        total_read,
+        skipped
     );
-
-    // Subdivision pass: split oversized provinces.
-    print!("Subdividing provinces > {:.1} deg² ... ", subdivide::SUBDIVIDE_THRESHOLD);
-    let mut subdivided: Vec<MapProvince> = Vec::new();
-    let mut sub_id: u32 = 0;
-    let mut split_count = 0u32;
-    for mp in &all_provinces {
-        let parts = subdivide::subdivide_province(mp, sub_id);
-        if parts.len() > 1 {
-            split_count += 1;
-        }
-        sub_id += u32::try_from(parts.len()).unwrap();
-        subdivided.extend(parts);
-    }
-    println!("{} split → {} total provinces", split_count, subdivided.len());
-
-    let all_provinces = subdivided;
 
     // Write output.
     if let Some(parent) = output_path.parent() {

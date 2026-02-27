@@ -20,7 +20,13 @@ struct DateLabel;
 struct ProvincePanel;
 
 fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((
+        Camera2d,
+        OrthographicProjection {
+            scale: 0.25,
+            ..OrthographicProjection::default_2d()
+        },
+    ));
 
     // HUD: date + tick + map mode in the top-left corner.
     commands.spawn((
@@ -110,6 +116,25 @@ fn update_province_panel(
             "Owner: {}\n",
             province.owner.as_deref().unwrap_or("None")
         ));
+
+        // Terrain / geography info from map data
+        if let Some(mp) = map
+            .as_ref()
+            .and_then(|m| m.0.provinces.get(u32_to_usize(pid)))
+        {
+            info.push_str(&format!("Topography: {}\n", mp.topography));
+            info.push_str(&format!("Vegetation: {}\n", mp.vegetation));
+            info.push_str(&format!("Climate: {}\n", mp.climate));
+            if !mp.raw_material.is_empty() {
+                info.push_str(&format!("Resource: {}\n", mp.raw_material));
+            }
+            if mp.harbor_suitability > 0.0 {
+                info.push_str(&format!("Harbor: {:.0}%\n", mp.harbor_suitability * 100.0));
+            }
+            if let Some(sz) = &mp.port_sea_zone {
+                info.push_str(&format!("Sea Zone: {}\n", sz));
+            }
+        }
 
         // Population
         let total_pop: u32 = province.pops.iter().map(|p| p.size).sum();

@@ -15,17 +15,27 @@ pub struct MapData {
 pub struct MapProvince {
     /// Sequential province ID (index in MapData.provinces).
     pub id: u32,
-    /// GADM identifier, e.g. "DEU.2.3.1_1".
-    pub gadm_id: String,
-    /// Human-readable name from GADM (e.g. "Kreuzberg").
+    /// EU5 province tag (e.g. "stockholm", "hangzhou").
+    pub tag: String,
+    /// Human-readable name (same as tag).
     pub name: String,
-    /// ISO 3166-1 alpha-3 country code (e.g. "DEU").
-    pub country_code: String,
+    /// Terrain topography (e.g. "flatland", "hills", "mountains").
+    pub topography: String,
+    /// Vegetation type (e.g. "farmland", "forest", "desert").
+    pub vegetation: String,
+    /// Climate type (e.g. "continental", "tropical", "arid").
+    pub climate: String,
+    /// Primary raw material (e.g. "wheat", "iron", "silk").
+    pub raw_material: String,
+    /// Natural harbor suitability (0.0–1.0).
+    pub harbor_suitability: f32,
+    /// Sea zone this province's port connects to (from ports.gpkg), if any.
+    pub port_sea_zone: Option<String>,
     /// Simplified polygon boundary rings.
     /// First ring is the outer boundary; subsequent rings are holes.
     /// Each ring is a list of [lon, lat] points.
     pub boundary: Vec<Vec<[f32; 2]>>,
-    /// Pre-triangulated vertices (flat [x, y] in Mercator-projected coords).
+    /// Pre-triangulated vertices (flat [x, y] in projected coords).
     pub vertices: Vec<[f32; 2]>,
     /// Triangle indices into `vertices`.
     pub indices: Vec<u32>,
