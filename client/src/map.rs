@@ -21,7 +21,7 @@ pub struct MapResource(pub MapData);
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
 
-/// Map coloring mode, switchable with keys 1/2/3/4.
+/// Map coloring mode, switchable with keys 1/2/3/4/5.
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapMode {
     #[default]
@@ -29,6 +29,7 @@ pub enum MapMode {
     Population,
     Production,
     Terrain,
+    Owner,
 }
 
 impl std::fmt::Display for MapMode {
@@ -38,6 +39,7 @@ impl std::fmt::Display for MapMode {
             MapMode::Population => write!(f, "Population"),
             MapMode::Production => write!(f, "Production"),
             MapMode::Terrain => write!(f, "Terrain"),
+            MapMode::Owner => write!(f, "Owner"),
         }
     }
 }
@@ -78,8 +80,24 @@ impl Plugin for MapPlugin {
     }
 }
 
-fn heatmap_rgba(t: f32) -> [f32; 4] {
-    let t = t.clamp(0.0, 1.0);
+/// Deterministic RGBA color for a country owner tag.
+/// Uses FNV-1a hash — stable across runs unlike DefaultHasher.
+fn owner_color_rgba(tag: &str) -> [f32; 4] {
+    const FNV_OFFSET: u64 = 14695981039346656037;
+    const FNV_PRIME: u64 = 1099511628211;
+    let mut h = FNV_OFFSET;
+    for byte in tag.bytes() {
+        h ^= u64::from(byte);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    // Map hash bytes to visually distinct mid-range colors (avoid very dark/light).
+    let r = f32::from(u8::try_from((h >> 0) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
+    let g = f32::from(u8::try_from((h >> 8) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
+    let b = f32::from(u8::try_from((h >> 16) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
+    [r, g, b, 1.0]
+}
+
+fn heatmap_rgba(t: f32) -> [f32; 4] {    let t = t.clamp(0.0, 1.0);
     let r = (2.0 * t - 0.5).clamp(0.0, 1.0);
     let g = (1.0 - (2.0 * t - 1.0).abs()).clamp(0.0, 1.0);
     let b = (1.0 - 2.0 * t).clamp(0.0, 1.0);
@@ -192,8 +210,12 @@ fn province_base_color(
         let province = &gs.provinces[pid];
         match mode {
             MapMode::Political => {
-                // Use EU5's designed per-province hex color (stable, unique, contrasts neighbors).
+                // EU5's designed per-province hex color (stable, unique, contrasts neighbors).
                 map_data.provinces[pid].hex_color
+            }
+            MapMode::Owner => {
+                let owner = province.owner.as_deref().unwrap_or("UNK");
+                owner_color_rgba(owner)
             }
             MapMode::Population => {
                 let total: u32 = province.pops.iter().map(|p| p.size).sum();
@@ -319,7 +341,7 @@ fn color_provinces(
 
     // Pre-compute heatmap normalization.
     let (max_pop, max_prod) =
-        if matches!(*mode, MapMode::Political | MapMode::Terrain) {
+        if matches!(*mode, MapMode::Political | MapMode::Terrain | MapMode::Owner) {
             (1, 1.0)
         } else {
             compute_normalization(gs)
@@ -472,7 +494,7 @@ fn province_click(
     selected.0 = None;
 }
 
-/// Keyboard shortcuts: 1 = Political, 2 = Population, 3 = Production, 4 = Terrain.
+/// Keyboard shortcuts: 1 = Political, 2 = Population, 3 = Production, 4 = Terrain, 5 = Owner.
 fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
     if keys.just_pressed(KeyCode::Digit1) {
         *mode = MapMode::Political;
@@ -485,5 +507,8 @@ fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
     }
     if keys.just_pressed(KeyCode::Digit4) {
         *mode = MapMode::Terrain;
+    }
+    if keys.just_pressed(KeyCode::Digit5) {
+        *mode = MapMode::Owner;
     }
 }
