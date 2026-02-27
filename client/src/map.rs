@@ -197,44 +197,6 @@ fn load_map(
     commands.insert_resource(MapResource(map_data));
 }
 
-/// Compute the base color for a province given the current map mode.
-fn province_base_color(
-    pid: usize,
-    gs: &GameState,
-    map_data: &MapData,
-    mode: &MapMode,
-    max_pop: u32,
-    max_prod: f32,
-) -> [f32; 4] {
-    if pid < gs.provinces.len() {
-        let province = &gs.provinces[pid];
-        match mode {
-            MapMode::Political => {
-                // EU5's designed per-province hex color (stable, unique, contrasts neighbors).
-                map_data.provinces[pid].hex_color
-            }
-            MapMode::Owner => {
-                let owner = province.owner.as_deref().unwrap_or("UNK");
-                owner_color_rgba(owner)
-            }
-            MapMode::Population => {
-                let total: u32 = province.pops.iter().map(|p| p.size).sum();
-                heatmap_rgba(u32_to_f32(total) / u32_to_f32(max_pop))
-            }
-            MapMode::Production => {
-                let total: f32 = province.stockpile.values().sum();
-                heatmap_rgba(total / max_prod)
-            }
-            MapMode::Terrain => terrain_province_color(&map_data.provinces[pid].topography),
-        }
-    } else {
-        match mode {
-            MapMode::Terrain => terrain_province_color(&map_data.provinces[pid].topography),
-            _ => map_data.provinces[pid].hex_color,
-        }
-    }
-}
-
 /// Compute heatmap normalization values from game state.
 fn compute_normalization(gs: &GameState) -> (u32, f32) {
     let mut mp = 0u32;
@@ -272,28 +234,86 @@ fn color_provinces(
     mut last: ResMut<LastColorState>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Some(gs) = &state.0 else { return };
     let Some(map) = map else { return };
     let Some(vm) = vertex_map else { return };
 
     let mode_changed = last.mode != Some(*mode);
     let selection_changed = last.selected != selected.0;
-    let tick_changed = last.tick != gs.tick;
 
-    // Economy only runs every 100 ticks; colors only change meaningfully then.
-    let economy_boundary =
-        tick_changed && (last.tick == 0 || gs.tick / 100 != last.tick / 100);
-    let needs_full_recolor = mode_changed || economy_boundary;
+    // Modes that don't need game state can render immediately.
+    let gs_independent = matches!(*mode, MapMode::Political | MapMode::Terrain);
+
+    let (tick_changed, economy_boundary) = if let Some(gs) = &state.0 {
+        let tc = last.tick != gs.tick;
+        let eb = tc && (last.tick == 0 || gs.tick / 100 != last.tick / 100);
+        (tc, eb)
+    } else {
+        (false, false)
+    };
+
+    let needs_full_recolor = mode_changed || economy_boundary || (gs_independent && mode_changed);
 
     if !needs_full_recolor && !selection_changed {
         if tick_changed {
-            last.tick = gs.tick;
+            if let Some(gs) = &state.0 {
+                last.tick = gs.tick;
+            }
         }
         return;
     }
 
+    // For game-state-dependent modes we need a game state.
+    if !gs_independent && state.0.is_none() {
+        return;
+    }
+
+    // Pre-compute normalization and update last BEFORE the closure borrows last.
+    let (max_pop, max_prod) = if let Some(gs) = &state.0 {
+        if !matches!(*mode, MapMode::Political | MapMode::Terrain | MapMode::Owner) {
+            compute_normalization(gs)
+        } else {
+            (last.max_pop.max(1), last.max_prod.max(1.0))
+        }
+    } else {
+        (last.max_pop.max(1), last.max_prod.max(1.0))
+    };
+
     let Some(mesh) = meshes.get_mut(&vm.mesh_handle) else {
         return;
+    };
+
+    // Helper closure: pure read of state, map, mode, max_pop/max_prod (no last borrow).
+    let base_color = |pid: usize| -> [f32; 4] {
+        match *mode {
+            MapMode::Political => map.0.provinces[pid].hex_color,
+            MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
+            MapMode::Owner => {
+                if let Some(gs) = &state.0 {
+                    if pid < gs.provinces.len() {
+                        return owner_color_rgba(gs.provinces[pid].owner.as_deref().unwrap_or("UNK"));
+                    }
+                }
+                map.0.provinces[pid].hex_color
+            }
+            MapMode::Population => {
+                if let Some(gs) = &state.0 {
+                    if pid < gs.provinces.len() {
+                        let total: u32 = gs.provinces[pid].pops.iter().map(|p| p.size).sum();
+                        return heatmap_rgba(u32_to_f32(total) / u32_to_f32(max_pop));
+                    }
+                }
+                map.0.provinces[pid].hex_color
+            }
+            MapMode::Production => {
+                if let Some(gs) = &state.0 {
+                    if pid < gs.provinces.len() {
+                        let total: f32 = gs.provinces[pid].stockpile.values().sum();
+                        return heatmap_rgba(total / max_prod);
+                    }
+                }
+                map.0.provinces[pid].hex_color
+            }
+        }
     };
 
     // Targeted selection-only update (cheap: ~60 vertices instead of millions).
@@ -306,9 +326,7 @@ fn color_provinces(
                 let pid = u32_to_usize(old_id);
                 if pid < vm.ranges.len() {
                     let (start, count) = vm.ranges[pid];
-                    let base = province_base_color(
-                        pid, gs, &map.0, &*mode, last.max_pop, last.max_prod,
-                    );
+                    let base = base_color(pid);
                     for i in start..(start + count) {
                         colors[i] = base;
                     }
@@ -319,37 +337,29 @@ fn color_provinces(
                 let pid = u32_to_usize(new_id);
                 if pid < vm.ranges.len() {
                     let (start, count) = vm.ranges[pid];
-                    let base = province_base_color(
-                        pid, gs, &map.0, &*mode, last.max_pop, last.max_prod,
-                    );
-                    let color = brighten(base);
+                    let col = brighten(base_color(pid));
                     for i in start..(start + count) {
-                        colors[i] = color;
+                        colors[i] = col;
                     }
                 }
             }
         }
         last.selected = selected.0;
-        last.tick = gs.tick;
+        if let Some(gs) = &state.0 {
+            last.tick = gs.tick;
+        }
         return;
     }
 
-    // Full recolor (on economy tick or mode change).
-    last.tick = gs.tick;
+    // Full recolor.
+    if let Some(gs) = &state.0 {
+        last.tick = gs.tick;
+    }
+    last.max_pop = max_pop;
+    last.max_prod = max_prod;
     last.mode = Some(*mode);
     last.selected = selected.0;
 
-    // Pre-compute heatmap normalization.
-    let (max_pop, max_prod) =
-        if matches!(*mode, MapMode::Political | MapMode::Terrain | MapMode::Owner) {
-            (1, 1.0)
-        } else {
-            compute_normalization(gs)
-        };
-    last.max_pop = max_pop;
-    last.max_prod = max_prod;
-
-    // Modify vertex colors in-place to avoid allocation.
     if let Some(VertexAttributeValues::Float32x4(colors)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
     {
@@ -358,7 +368,7 @@ fn color_provinces(
                 continue;
             }
             let is_selected = selected.0 == Some(usize_to_u32(pid));
-            let base = province_base_color(pid, gs, &map.0, &*mode, max_pop, max_prod);
+            let base = base_color(pid);
             let color = if is_selected { brighten(base) } else { base };
             for i in *start..(*start + *count) {
                 colors[i] = color;
