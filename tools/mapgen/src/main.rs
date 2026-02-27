@@ -83,7 +83,11 @@ fn triangulate_polygon(
     outer: &[[f64; 2]],
     holes: &[Vec<[f64; 2]>],
 ) -> (Vec<[f32; 2]>, Vec<u32>) {
-    let mut flat_coords: Vec<f64> = Vec::new();
+    // Project to Equal Earth FIRST, then triangulate in projected space.
+    // Triangulating in WGS84 then projecting causes visual tearing because
+    // Equal Earth is non-linear — triangle edges that are straight in lon/lat
+    // become curves in the projected space.
+    let mut flat_proj: Vec<f64> = Vec::new();
     let mut hole_indices: Vec<usize> = Vec::new();
 
     let outer_trimmed = if outer.len() > 1 && outer.first() == outer.last() {
@@ -92,28 +96,30 @@ fn triangulate_polygon(
         outer
     };
     for pt in outer_trimmed {
-        flat_coords.push(pt[0]);
-        flat_coords.push(pt[1]);
+        let (x, y) = equal_earth(pt[0], pt[1]);
+        flat_proj.push(x);
+        flat_proj.push(y);
     }
 
     for hole in holes {
-        hole_indices.push(flat_coords.len() / 2);
+        hole_indices.push(flat_proj.len() / 2);
         let hole_trimmed = if hole.len() > 1 && hole.first() == hole.last() {
             &hole[..hole.len() - 1]
         } else {
             hole
         };
         for pt in hole_trimmed {
-            flat_coords.push(pt[0]);
-            flat_coords.push(pt[1]);
+            let (x, y) = equal_earth(pt[0], pt[1]);
+            flat_proj.push(x);
+            flat_proj.push(y);
         }
     }
 
-    let indices = earcutr::earcut(&flat_coords, &hole_indices, 2).unwrap_or_default();
+    let indices = earcutr::earcut(&flat_proj, &hole_indices, 2).unwrap_or_default();
 
-    let vertices: Vec<[f32; 2]> = flat_coords
+    let vertices: Vec<[f32; 2]> = flat_proj
         .chunks(2)
-        .map(|c| project(c[0], c[1]))
+        .map(|c| [f64_to_f32(c[0]), f64_to_f32(c[1])])
         .collect();
     let indices: Vec<u32> = indices.iter().map(|&i| usize_to_u32(i)).collect();
 
