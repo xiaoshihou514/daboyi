@@ -2,8 +2,8 @@
 """
 Convert rivers.tif (Gall Stereographic) to an equirectangular RGBA PNG.
 
-River pixels (blue channel dominant) are kept as semi-transparent blue.
-All other pixels are made fully transparent.
+River pixels (blue channel dominant) are extracted at source resolution first,
+then the binary mask is reprojected with nearest-neighbor to preserve thin lines.
 
 Run once to produce assets/rivers.png:
     python3 tools/convert_rivers.py
@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 try:
-    from osgeo import gdal
+    from osgeo import gdal, osr
 except ImportError:
     print("Error: gdal Python bindings not available. Install python3-gdal.")
     sys.exit(1)
@@ -32,8 +32,8 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_TIF = Path("/home/xiaoshihou/Playground/github/EU5toGIS/datasets/rivers.tif")
 OUT_PNG = REPO_ROOT / "assets" / "rivers.png"
-# Output resolution: 2048×1024 equirectangular (fast to load, good enough for rivers).
-OUT_W, OUT_H = 2048, 1024
+# Output resolution: 4096×2048 equirectangular (2× previous, needed for thin rivers).
+OUT_W, OUT_H = 4096, 2048
 
 def main():
     if not SRC_TIF.exists():
@@ -42,59 +42,86 @@ def main():
 
     OUT_PNG.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Reprojecting {SRC_TIF.name} to equirectangular {OUT_W}×{OUT_H} ...")
-    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
-        tmp_path = tmp.name
+    src_ds = gdal.Open(str(SRC_TIF))
+    if src_ds is None:
+        print("Error: could not open rivers.tif with gdal.")
+        sys.exit(1)
+
+    W = src_ds.RasterXSize
+    H = src_ds.RasterYSize
+    print(f"Source: {W}×{H}")
+
+    print("Reading source bands ...")
+    band_r = src_ds.GetRasterBand(1).ReadAsArray()
+    band_g = src_ds.GetRasterBand(2).ReadAsArray()
+    band_b = src_ds.GetRasterBand(3).ReadAsArray()
+    src_gt = src_ds.GetGeoTransform()
+    src_srs_wkt = src_ds.GetProjectionRef()
+
+    # River pixels: blue channel clearly dominant over red.
+    river_mask = (
+        (band_b.astype(np.int16) > band_r.astype(np.int16) + 40)
+        & (band_b > 80)
+    )
+    print(f"River pixels at source res: {river_mask.sum()} / {W*H}")
+
+    # Build a single-band uint8 in-memory raster: 255=river, 0=other.
+    print("Creating river mask raster ...")
+    with tempfile.NamedTemporaryFile(suffix="_mask.tif", delete=False) as tmp:
+        mask_path = tmp.name
+    with tempfile.NamedTemporaryFile(suffix="_warped.tif", delete=False) as tmp2:
+        warped_path = tmp2.name
 
     try:
-        src_ds = gdal.Open(str(SRC_TIF))
-        if src_ds is None:
-            print("Error: could not open rivers.tif with gdal.")
-            sys.exit(1)
+        driver = gdal.GetDriverByName("GTiff")
+        mask_ds = driver.Create(mask_path, W, H, 1, gdal.GDT_Byte)
+        mask_ds.SetGeoTransform(src_gt)
+        mask_ds.SetProjection(src_srs_wkt)
+        mask_arr = river_mask.astype(np.uint8) * 255
+        mask_ds.GetRasterBand(1).WriteArray(mask_arr)
+        mask_ds.FlushCache()
+        mask_ds = None
 
-        # Warp to WGS84 geographic (equirectangular) covering full world.
+        print(f"Reprojecting mask to equirectangular {OUT_W}×{OUT_H} (nearest-neighbor) ...")
         result = gdal.Warp(
-            tmp_path,
-            src_ds,
+            warped_path,
+            mask_path,
             format="GTiff",
             dstSRS="EPSG:4326",
             width=OUT_W,
             height=OUT_H,
             outputBounds=(-180.0, -90.0, 180.0, 90.0),
-            resampleAlg="bilinear",
+            resampleAlg="near",  # nearest-neighbor preserves thin 1-pixel rivers
         )
         if result is None:
             print("Error: gdal.Warp failed.")
             sys.exit(1)
-        result = None  # close
-        src_ds = None
+        result = None
 
-        print("Extracting river pixels ...")
-        warped = Image.open(tmp_path)
-        arr = np.array(warped, dtype=np.uint8)  # shape (H, W, 3)
+        print("Converting to RGBA PNG ...")
+        warped_ds = gdal.Open(warped_path)
+        warped_arr = warped_ds.GetRasterBand(1).ReadAsArray()
+        warped_ds = None
 
-        r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
-        # River pixels: blue channel clearly dominant over red, and meaningfully blue.
-        river_mask = (b.astype(np.int16) > r.astype(np.int16) + 40) & (b > 80)
-
-        # Build RGBA output: river pixels = semi-transparent river blue, else transparent.
         out = np.zeros((OUT_H, OUT_W, 4), dtype=np.uint8)
-        out[river_mask, 0] = 40   # R
-        out[river_mask, 1] = 150  # G
-        out[river_mask, 2] = 210  # B
-        out[river_mask, 3] = 180  # A (semi-transparent)
+        river_pixels = warped_arr > 127
+        out[river_pixels, 0] = 30
+        out[river_pixels, 1] = 140
+        out[river_pixels, 2] = 220
+        out[river_pixels, 3] = 200
 
-        river_count = int(river_mask.sum())
-        total = OUT_W * OUT_H
-        print(f"River pixels: {river_count} / {total} ({100.0*river_count/total:.2f}%)")
+        river_count = int(river_pixels.sum())
+        print(f"River pixels in output: {river_count} / {OUT_W*OUT_H} ({100.0*river_count/(OUT_W*OUT_H):.2f}%)")
 
-        Image.fromarray(out, "RGBA").save(str(OUT_PNG), optimize=True)
+        Image.fromarray(out, "RGBA").save(str(OUT_PNG))
         print(f"Saved {OUT_PNG} ({OUT_PNG.stat().st_size / 1024:.1f} KB)")
 
     finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        for p in (mask_path, warped_path):
+            if os.path.exists(p):
+                os.unlink(p)
 
 
 if __name__ == "__main__":
     main()
+

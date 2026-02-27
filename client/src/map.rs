@@ -4,8 +4,6 @@ use bevy::render::render_asset::RenderAssetUsages;
 use shared::conv::{u32_to_f32, u32_to_usize, usize_to_u32};
 use shared::map::{MapData, MapProvince};
 use shared::GameState;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 use crate::net::LatestGameState;
 
@@ -80,18 +78,6 @@ impl Plugin for MapPlugin {
     }
 }
 
-/// Country code → deterministic RGBA color.
-fn country_color_rgba(code: &str) -> [f32; 4] {
-    let mut hasher = DefaultHasher::new();
-    code.hash(&mut hasher);
-    let h = hasher.finish();
-    let byte = |shift: u32| f32::from(u8::try_from((h >> shift) & 0xFF).unwrap());
-    let r = byte(0) / 255.0 * 0.6 + 0.2;
-    let g = byte(8) / 255.0 * 0.6 + 0.2;
-    let b = byte(16) / 255.0 * 0.6 + 0.2;
-    [r, g, b, 1.0]
-}
-
 fn heatmap_rgba(t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
     let r = (2.0 * t - 0.5).clamp(0.0, 1.0);
@@ -140,7 +126,7 @@ fn load_map(
         }
 
         let start = all_positions.len();
-        let color = country_color_rgba(&mp.tag);
+        let color = mp.hex_color;
         let base_idx = usize_to_u32(all_positions.len());
 
         for v in &mp.vertices {
@@ -206,8 +192,8 @@ fn province_base_color(
         let province = &gs.provinces[pid];
         match mode {
             MapMode::Political => {
-                let owner = province.owner.as_deref().unwrap_or("UNK");
-                country_color_rgba(owner)
+                // Use EU5's designed per-province hex color (stable, unique, contrasts neighbors).
+                map_data.provinces[pid].hex_color
             }
             MapMode::Population => {
                 let total: u32 = province.pops.iter().map(|p| p.size).sum();
@@ -222,7 +208,7 @@ fn province_base_color(
     } else {
         match mode {
             MapMode::Terrain => terrain_province_color(&map_data.provinces[pid].topography),
-            _ => country_color_rgba(&map_data.provinces[pid].tag),
+            _ => map_data.provinces[pid].hex_color,
         }
     }
 }

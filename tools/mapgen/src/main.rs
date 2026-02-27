@@ -190,7 +190,25 @@ fn process_terrain_polygon(
     })
 }
 
-/// Parse GeoPackage Binary (GPB) geometry → list of WGS84 polygon rings.
+/// Parse a hex color string like "#DDA910" → linear RGBA [f32;4].
+/// Falls back to white if the string is invalid.
+fn parse_hex_color(hex: &str) -> [f32; 4] {
+    let s = hex.trim().trim_start_matches('#');
+    if s.len() != 6 {
+        return [1.0, 1.0, 1.0, 1.0];
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(255);
+    let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(255);
+    let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(255);
+    [
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+        1.0,
+    ]
+}
+
+
 /// Returns Vec<Vec<Vec<[f64;2]>>>: polygons → rings → points as [lon, lat].
 fn parse_gpb_geometry(geom: &[u8]) -> Vec<Vec<Vec<[f64; 2]>>> {
     let mut result = Vec::new();
@@ -343,6 +361,7 @@ fn process_polygons(
     climate: &str,
     raw_material: &str,
     harbor_suitability: f32,
+    hex_color: [f32; 4],
     port_sea_zone: Option<String>,
 ) -> Option<MapProvince> {
     let mut all_vertices: Vec<[f32; 2]> = Vec::new();
@@ -398,6 +417,7 @@ fn process_polygons(
         climate: climate.to_string(),
         raw_material: raw_material.to_string(),
         harbor_suitability,
+        hex_color,
         port_sea_zone,
         boundary,
         vertices: all_vertices,
@@ -460,7 +480,7 @@ fn main() {
     let conn = Connection::open(&locations_path).expect("Failed to open locations.gpkg");
     let mut stmt = conn
         .prepare(
-            "SELECT geom, tag, topography, vegetation, climate, raw_material, natural_harbor_suitability \
+            "SELECT geom, tag, topography, vegetation, climate, raw_material, natural_harbor_suitability, hex_color \
              FROM locations \
              WHERE topography IS NOT NULL",
         )
@@ -480,6 +500,7 @@ fn main() {
             let climate: Option<String> = row.get(4)?;
             let raw_material: Option<String> = row.get(5)?;
             let harbor: Option<f64> = row.get(6)?;
+            let hex_color_str: Option<String> = row.get(7)?;
             Ok((
                 geom,
                 tag,
@@ -488,12 +509,13 @@ fn main() {
                 climate.unwrap_or_default(),
                 raw_material.unwrap_or_default(),
                 harbor.unwrap_or(0.0),
+                hex_color_str.unwrap_or_default(),
             ))
         })
         .expect("Failed to query locations");
 
     for row in rows {
-        let (geom, tag, topography, vegetation, climate, raw_material, harbor) =
+        let (geom, tag, topography, vegetation, climate, raw_material, harbor, hex_color_str) =
             row.expect("Failed to read row");
         total_read += 1;
 
@@ -510,6 +532,7 @@ fn main() {
         }
 
         let port_sz = port_sea_zones.get(&tag).cloned();
+        let hex_color = parse_hex_color(&hex_color_str);
 
         if let Some(province) = process_polygons(
             &polygons,
@@ -520,6 +543,7 @@ fn main() {
             &climate,
             &raw_material,
             f64_to_f32(harbor),
+            hex_color,
             port_sz,
         ) {
             all_provinces.push(province);

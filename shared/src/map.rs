@@ -29,6 +29,9 @@ pub struct MapProvince {
     pub raw_material: String,
     /// Natural harbor suitability (0.0–1.0).
     pub harbor_suitability: f32,
+    /// EU5-designed hex color for this province (#RRGGBB), as linear RGBA.
+    /// Unique, stable, contrasting-with-neighbors. Used for political map mode.
+    pub hex_color: [f32; 4],
     /// Sea zone this province's port connects to (from ports.gpkg), if any.
     pub port_sea_zone: Option<String>,
     /// Simplified polygon boundary rings.
