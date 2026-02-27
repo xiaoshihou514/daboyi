@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use shared::conv::u32_to_usize;
 
 use crate::map::{MapMode, MapResource, SelectedProvince};
 use crate::net::{LatestGameState, Paused};
@@ -91,7 +92,7 @@ fn update_province_panel(
             return;
         };
 
-        let Some(province) = gs.provinces.get(pid as usize) else {
+        let Some(province) = gs.provinces.get(u32_to_usize(pid)) else {
             *text = Text::new(format!("Province #{pid} (no data)"));
             return;
         };
@@ -101,7 +102,7 @@ fn update_province_panel(
         // Province name (prefer map name if available)
         let name = map
             .as_ref()
-            .and_then(|m| m.0.provinces.get(pid as usize))
+            .and_then(|m| m.0.provinces.get(u32_to_usize(pid)))
             .map(|mp| mp.name.as_str())
             .unwrap_or(&province.name);
         info.push_str(&format!("=== {} ===\n", name));

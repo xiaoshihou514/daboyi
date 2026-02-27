@@ -1,3 +1,4 @@
+use shared::conv::{f32_to_i64, u32_to_f32, usize_to_f32};
 use shared::Province;
 
 use super::data::pop_needs;
@@ -24,10 +25,10 @@ pub fn consume(province: &mut Province) {
         // For each needed good, try to consume from stockpile.
         // Track the fraction of each need that was satisfied.
         let mut total_satisfaction = 0.0f32;
-        let need_count = needs.len() as f32;
+        let need_count = usize_to_f32(needs.len());
 
         for &(good, per_capita) in &needs {
-            let wanted = per_capita * pop.size as f32;
+            let wanted = per_capita * u32_to_f32(pop.size);
             if wanted <= 0.0 {
                 total_satisfaction += 1.0;
                 continue;
@@ -53,16 +54,16 @@ pub fn grow(province: &mut Province) {
         let delta = if pop.needs_satisfaction > 0.5 {
             // Growth scales with how far above 0.5.
             let factor = (pop.needs_satisfaction - 0.5) * 2.0; // 0.0–1.0
-            (pop.size as f32 * BASE_GROWTH_RATE * factor).ceil() as i64
+            f32_to_i64((u32_to_f32(pop.size) * BASE_GROWTH_RATE * factor).ceil())
         } else if pop.needs_satisfaction < 0.3 {
             // Decline scales with how far below 0.3.
             let factor = (0.3 - pop.needs_satisfaction) / 0.3; // 0.0–1.0
-            -((pop.size as f32 * BASE_DECLINE_RATE * factor).ceil() as i64)
+            -f32_to_i64((u32_to_f32(pop.size) * BASE_DECLINE_RATE * factor).ceil())
         } else {
             0
         };
 
-        pop.size = (pop.size as i64 + delta).max(0) as u32;
+        pop.size = u32::try_from((i64::from(pop.size) + delta).max(0)).unwrap_or(0);
     }
 }
 

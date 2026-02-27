@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
+use shared::conv::{u32_to_f32, usize_to_u32};
 use shared::map::{MapData, MapProvince};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -76,9 +77,10 @@ fn country_color_rgba(code: &str) -> [f32; 4] {
     let mut hasher = DefaultHasher::new();
     code.hash(&mut hasher);
     let h = hasher.finish();
-    let r = ((h >> 0) & 0xFF) as f32 / 255.0 * 0.6 + 0.2;
-    let g = ((h >> 8) & 0xFF) as f32 / 255.0 * 0.6 + 0.2;
-    let b = ((h >> 16) & 0xFF) as f32 / 255.0 * 0.6 + 0.2;
+    let byte = |shift: u32| f32::from(u8::try_from((h >> shift) & 0xFF).unwrap());
+    let r = byte(0) / 255.0 * 0.6 + 0.2;
+    let g = byte(8) / 255.0 * 0.6 + 0.2;
+    let b = byte(16) / 255.0 * 0.6 + 0.2;
     [r, g, b, 1.0]
 }
 
@@ -131,7 +133,7 @@ fn load_map(
 
         let start = all_positions.len();
         let color = country_color_rgba(&mp.country_code);
-        let base_idx = all_positions.len() as u32;
+        let base_idx = usize_to_u32(all_positions.len());
 
         for v in &mp.vertices {
             all_positions.push([v[0], v[1], 0.0]);
@@ -227,7 +229,7 @@ fn color_provinces(
         if *count == 0 {
             continue;
         }
-        let is_selected = selected.0 == Some(pid as u32);
+        let is_selected = selected.0 == Some(usize_to_u32(pid));
 
         let base = if pid < gs.provinces.len() {
             let province = &gs.provinces[pid];
@@ -238,7 +240,7 @@ fn color_provinces(
                 }
                 MapMode::Population => {
                     let total: u32 = province.pops.iter().map(|p| p.size).sum();
-                    heatmap_rgba(total as f32 / max_pop as f32)
+                    heatmap_rgba(u32_to_f32(total) / u32_to_f32(max_pop))
                 }
                 MapMode::Production => {
                     let total: f32 = province.stockpile.values().sum();

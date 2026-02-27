@@ -2,6 +2,7 @@ use geo::algorithm::centroid::Centroid;
 use geo::algorithm::simplify::Simplify;
 use geo::{Coord, LineString, Polygon};
 use geojson::{Feature, GeoJson, Value};
+use shared::conv::{f64_to_f32, u64_to_f64, usize_to_u32};
 use shared::map::{MapData, MapProvince};
 use std::fs;
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ const SIMPLIFY_EPSILON: f64 = 0.001;
 const DEFAULT_GEOJSON_DIR: &str = "/home/xiaoshihou/Playground/shared/geojson";
 
 fn project(lon: f64, lat: f64) -> [f32; 2] {
-    [lon as f32, lat as f32]
+    [f64_to_f32(lon), f64_to_f32(lat)]
 }
 
 fn parse_ring(coords: &[Vec<f64>]) -> Vec<[f64; 2]> {
@@ -75,7 +76,7 @@ fn triangulate_polygon(
         .chunks(2)
         .map(|c| project(c[0], c[1]))
         .collect();
-    let indices: Vec<u32> = indices.iter().map(|&i| i as u32).collect();
+    let indices: Vec<u32> = indices.iter().map(|&i| usize_to_u32(i)).collect();
 
     (vertices, indices)
 }
@@ -186,7 +187,7 @@ fn process_feature(feature: &Feature, province_id: u32) -> Option<MapProvince> {
                 .collect(),
         );
 
-        let base_idx = all_vertices.len() as u32;
+        let base_idx = usize_to_u32(all_vertices.len());
         let (verts, idxs) = triangulate_polygon(&outer_simplified, &holes_simplified);
         all_vertices.extend(verts);
         all_indices.extend(idxs.iter().map(|i| i + base_idx));
@@ -340,6 +341,6 @@ fn main() {
     println!(
         "Wrote {} ({:.1} MB)",
         output_path.display(),
-        file_size as f64 / 1024.0 / 1024.0
+        u64_to_f64(file_size) / 1024.0 / 1024.0
     );
 }

@@ -24,12 +24,10 @@ impl GameSimulation for GameState {
 
         // Economy ticks once per ~3 months (every 100 ticks/days).
         if self.tick % 100 == 0 {
-            // SAFETY: building_types and provinces are disjoint fields — use a
-            // pointer cast to avoid cloning the entire Vec<BuildingType> every tick.
-            let bt_ptr = &self.building_types as *const Vec<shared::BuildingType>;
-            let bt_ref = unsafe { &*bt_ptr };
-            production::produce_all(&mut self.provinces, bt_ref);
-            population::consume_and_grow_all(&mut self.provinces);
+            // Split borrow: provinces (mut) and building_types (shared) are disjoint fields.
+            let (provinces, building_types) = (&mut self.provinces, &self.building_types);
+            production::produce_all(provinces, building_types);
+            population::consume_and_grow_all(provinces);
         }
     }
 }

@@ -1,3 +1,4 @@
+use shared::conv::*;
 use shared::map::{MapData, MapProvince};
 use shared::*;
 use std::collections::HashMap;
@@ -131,7 +132,7 @@ pub fn default_building_types() -> Vec<BuildingType> {
 /// Values interpolated between 1400 and 1500 data points: p1400 + (p1500 - p1400) * 44/100.
 /// Key: ISO-3166 alpha-3 code (matches shapeGroup in world GeoJSON).
 /// Note: TWN population is folded into CHN since Taiwan uses CN ADM3 data.
-fn pop_1444_data() -> HashMap<&'static str, u64> {
+fn pop_1444_data() -> HashMap<&'static str, u32> {
     HashMap::from([
         ("ABW", 180),
         ("AFG", 1930000),
@@ -348,12 +349,12 @@ fn province_area(mp: &MapProvince) -> f64 {
     let n = ring.len();
     for i in 0..n {
         let j = (i + 1) % n;
-        area2 += ring[i][0] as f64 * ring[j][1] as f64;
-        area2 -= ring[j][0] as f64 * ring[i][1] as f64;
+        area2 += f64::from(ring[i][0]) * f64::from(ring[j][1]);
+        area2 -= f64::from(ring[j][0]) * f64::from(ring[i][1]);
     }
     let raw = area2.abs() / 2.0;
     // Correct for latitude: multiply by cos(centroid_lat) to get a more realistic area proxy.
-    let lat = mp.centroid[1] as f64;
+    let lat = f64::from(mp.centroid[1]);
     raw * lat.to_radians().cos()
 }
 
@@ -407,7 +408,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
             // Country total population (OWID data or area-based fallback).
             let country_pop = pop_data
                 .get(country.as_str())
-                .map(|&p| p as f64)
+                .map(|&p| u32_to_f64(p))
                 .unwrap_or_else(|| total_area * FALLBACK_POP_DENSITY);
 
             // Province share of country population, proportional to area.
@@ -416,21 +417,24 @@ pub fn generate_world(map_data: &MapData) -> GameState {
             } else {
                 1.0
             };
-            let province_pop = (country_pop * share).max(10.0) as u64;
+            let province_pop = f64_to_u32((country_pop * share).max(10.0));
 
             // Distribute into pop classes by medieval ratios.
             let pops: Vec<Pop> = CLASS_RATIOS
                 .iter()
-                .map(|(class, ratio)| Pop {
-                    class: *class,
-                    size: ((province_pop as f64 * ratio) as u32).max(1),
-                    needs_satisfaction: 1.0,
+                .map(|(class, ratio)| {
+                    let size = f64_to_u32(u32_to_f64(province_pop) * ratio);
+                    Pop {
+                        class: *class,
+                        size: size.max(1),
+                        needs_satisfaction: 1.0,
+                    }
                 })
                 .collect();
 
             // Building levels scale with total population.
-            let farm_level = (province_pop as u32 / 1500).max(1);
-            let kiln_level = (province_pop as u32 / 5000).max(1);
+            let farm_level = (province_pop / 1500).max(1);
+            let kiln_level = (province_pop / 5000).max(1);
 
             Province {
                 id: mp.id,
@@ -453,7 +457,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
     // Log population totals for verification.
     let total: u64 = provinces
         .iter()
-        .map(|p| p.pops.iter().map(|pop| pop.size as u64).sum::<u64>())
+        .map(|p| p.pops.iter().map(|pop| u64::from(pop.size)).sum::<u64>())
         .sum();
     println!("World population (1444): {total}");
 

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod conv;
 pub mod map;
 
 // ── Date ────────────────────────────────────────────────────────────────────

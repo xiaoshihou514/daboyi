@@ -1,3 +1,4 @@
+use shared::conv::u32_to_f32;
 use shared::{BuildingType, Province};
 
 /// Run production for all buildings in a province for one tick.
@@ -9,7 +10,7 @@ pub fn produce(province: &mut Province, building_types: &[BuildingType]) {
             continue;
         };
 
-        let workers_needed = bt.workers_per_level as f32 * building.level as f32;
+        let workers_needed = u32_to_f32(bt.workers_per_level) * u32_to_f32(building.level);
         if workers_needed <= 0.0 {
             continue;
         }
@@ -22,7 +23,7 @@ pub fn produce(province: &mut Province, building_types: &[BuildingType]) {
             .map(|p| p.size)
             .sum();
 
-        let worker_ratio = (available_workers as f32 / workers_needed).min(1.0);
+        let worker_ratio = (u32_to_f32(available_workers) / workers_needed).min(1.0);
         if worker_ratio <= 0.0 {
             continue;
         }
@@ -34,7 +35,7 @@ pub fn produce(province: &mut Province, building_types: &[BuildingType]) {
             bt.input
                 .iter()
                 .map(|&(good, amount_per_level)| {
-                    let needed = amount_per_level * building.level as f32;
+                    let needed = amount_per_level * u32_to_f32(building.level);
                     if needed <= 0.0 {
                         return 1.0;
                     }
@@ -51,14 +52,14 @@ pub fn produce(province: &mut Province, building_types: &[BuildingType]) {
 
         // Consume inputs.
         for &(good, amount_per_level) in &bt.input {
-            let consumed = amount_per_level * building.level as f32 * efficiency;
+            let consumed = amount_per_level * u32_to_f32(building.level) * efficiency;
             let stock = province.stockpile.entry(good).or_insert(0.0);
             *stock = (*stock - consumed).max(0.0);
         }
 
         // Produce outputs.
         for &(good, amount_per_level) in &bt.output {
-            let produced = amount_per_level * building.level as f32 * efficiency;
+            let produced = amount_per_level * u32_to_f32(building.level) * efficiency;
             *province.stockpile.entry(good).or_insert(0.0) += produced;
         }
     }
