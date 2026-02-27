@@ -283,19 +283,32 @@ fn main() {
     }
     println!("{} provinces", cn_count);
 
-    // World ADM2 (excluding China — already covered by cn_adm3)
+    // World ADM2 (excluding China and disputed overlaps)
     print!("Processing world_adm2.geojson ... ");
     let world_features = load_geojson(&world_path);
     let mut world_count = 0;
+    // IND shapeIDs that overlap with CN data (disputed territories)
+    const DISPUTED_IND_SHAPE_IDS: &[&str] = &[
+        "76128533B18668117085772", // Tawang (overlaps CN 错那/隆子 — 藏南)
+        "76128533B57183548666997", // Leh(Ladakh) (includes Aksai Chin)
+    ];
     for feature in &world_features {
-        // Skip China entries (already in cn_adm3 with more detail)
         if let Some(props) = &feature.properties {
-            if props
+            let group = props
                 .get("shapeGroup")
                 .and_then(|v| v.as_str())
-                .map_or(false, |g| g == "CHN")
-            {
+                .unwrap_or("");
+            // Skip China (already in cn_adm3) and Taiwan (covered by CN data)
+            if group == "CHN" || group == "TWN" {
                 continue;
+            }
+            // Skip disputed IND districts that overlap with CN boundaries
+            if group == "IND" {
+                if let Some(sid) = props.get("shapeID").and_then(|v| v.as_str()) {
+                    if DISPUTED_IND_SHAPE_IDS.contains(&sid) {
+                        continue;
+                    }
+                }
             }
         }
         if let Some(province) = process_feature(feature, next_id) {

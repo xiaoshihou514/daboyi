@@ -59,8 +59,8 @@ fn handle_msg(msg: ClientMsg, state: &AppState) -> ServerMsg {
             let mut gs = state.game_state.lock().unwrap();
             gs.apply_commands(orders);
             gs.advance();
-            // Persist every 30 ticks to avoid DB overhead each tick.
-            if gs.tick % 30 == 0 {
+            // Persist every 300 ticks to avoid DB overhead each tick.
+            if gs.tick % 300 == 0 {
                 state.db.lock().unwrap().save_state(&gs).ok();
             }
             ServerMsg::StateSnapshot(gs.clone())

@@ -99,7 +99,7 @@ fn brighten(c: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-/// Build a single merged mesh for ALL provinces. CN provinces at z=0.1 (over world z=0.0).
+/// Build a single merged mesh for ALL provinces (all at z=0.0, no overlaps after mapgen filtering).
 fn load_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -131,12 +131,10 @@ fn load_map(
 
         let start = all_positions.len();
         let color = country_color_rgba(&mp.country_code);
-        // CN provinces render above world provinces to fix Z-fighting.
-        let z: f32 = if mp.country_code == "CHN" { 0.1 } else { 0.0 };
         let base_idx = all_positions.len() as u32;
 
         for v in &mp.vertices {
-            all_positions.push([v[0], v[1], z]);
+            all_positions.push([v[0], v[1], 0.0]);
             all_normals.push([0.0, 0.0, 1.0]);
             all_uvs.push(*v);
             all_colors.push(color);
