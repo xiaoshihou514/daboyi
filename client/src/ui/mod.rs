@@ -20,12 +20,14 @@ struct DateLabel;
 struct ProvincePanel;
 
 fn setup(mut commands: Commands) {
+    // Camera centered on East Asia (Equal Earth ≈ 105°E, 35°N → x≈105, y≈38).
     commands.spawn((
         Camera2d,
         OrthographicProjection {
-            scale: 0.25,
+            scale: 0.1,
             ..OrthographicProjection::default_2d()
         },
+        Transform::from_xyz(105.0, 38.0, 999.9),
     ));
 
     // HUD: date + tick + map mode in the top-left corner.

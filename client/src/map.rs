@@ -10,6 +10,8 @@ use std::hash::{Hash, Hasher};
 use crate::net::LatestGameState;
 
 const MAP_BIN_PATH: &str = "assets/map.bin";
+/// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
+const MAP_WIDTH: f32 = 360.0;
 
 pub struct MapPlugin;
 
@@ -171,11 +173,16 @@ fn load_map(
 
     let mesh_handle = meshes.add(mesh);
 
-    commands.spawn((
-        Mesh2d(mesh_handle.clone()),
-        MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::WHITE))),
-        Transform::default(),
-    ));
+    // Spawn 3 side-by-side copies sharing the same mesh asset for seamless wrapping.
+    // All 3 instances reflect color changes automatically when we mutate the shared mesh.
+    let material = materials.add(ColorMaterial::from_color(Color::WHITE));
+    for &x_offset in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
+        commands.spawn((
+            Mesh2d(mesh_handle.clone()),
+            MeshMaterial2d(material.clone()),
+            Transform::from_xyz(x_offset, 0.0, 0.0),
+        ));
+    }
 
     commands.insert_resource(ProvinceVertexMap {
         ranges,
@@ -348,6 +355,15 @@ fn camera_controls(
             transform.translation.x -= ev.delta.x * projection.scale;
             transform.translation.y += ev.delta.y * projection.scale;
         }
+        // Wrap x so the camera stays in [-180, 180) — map copies cover the rest.
+        let half = MAP_WIDTH / 2.0;
+        if transform.translation.x >= half {
+            transform.translation.x -= MAP_WIDTH;
+        } else if transform.translation.x < -half {
+            transform.translation.x += MAP_WIDTH;
+        }
+        // Clamp y to Equal Earth pole-to-pole range (~±93 units).
+        transform.translation.y = transform.translation.y.clamp(-93.0, 93.0);
     } else {
         motion_evts.clear();
     }
@@ -355,7 +371,8 @@ fn camera_controls(
     for ev in scroll_evts.read() {
         let zoom_factor = 1.0 - ev.y * 0.1;
         projection.scale *= zoom_factor.clamp(0.5, 2.0);
-        projection.scale = projection.scale.clamp(0.01, 0.5);
+        // Max scale 0.1 ensures the visible width ≤ MAP_WIDTH on screens up to ~3600px.
+        projection.scale = projection.scale.clamp(0.01, 0.1);
     }
 }
 
@@ -419,8 +436,9 @@ fn province_click(
         return;
     };
 
-    let px = world_pos.x;
     let py = world_pos.y;
+    // Wrap x into map coordinate range [-180, 180) to hit-test any copy.
+    let px = world_pos.x - (((world_pos.x + 180.0) / MAP_WIDTH).floor() * MAP_WIDTH);
 
     // Iterate in reverse so CN provinces (higher z, appended later) take priority.
     for mp in map.0.provinces.iter().rev() {
