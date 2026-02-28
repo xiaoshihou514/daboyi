@@ -1,3 +1,4 @@
+use bevy::image::{ImageLoaderSettings, ImageSampler};
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
@@ -83,14 +84,22 @@ fn spawn_rivers(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
 ) {
-    let rivers_handle: Handle<Image> = asset_server.load(RIVERS_PNG_PATH);
+    // Use nearest-neighbour sampling so thin river lines don't blur into dots.
+    let rivers_handle: Handle<Image> = asset_server.load_with_settings(
+        "rivers.png",
+        |s: &mut ImageLoaderSettings| {
+            s.sampler = ImageSampler::nearest();
+        },
+    );
 
     for &x_off in &WORLD_OFFSETS {
         // Sprite is rendered in world units: 360 wide × 180 tall, centered at (x_off, 0).
+        // flip_y: geographic PNGs have row-0 at top (lat=90°) which matches Bevy's Y-up world.
         commands.spawn((
             Sprite {
                 image: rivers_handle.clone(),
                 custom_size: Some(Vec2::new(MAP_WIDTH, MAP_HEIGHT)),
+                flip_y: true,
                 ..default()
             },
             Transform::from_xyz(x_off, 0.0, 0.5),

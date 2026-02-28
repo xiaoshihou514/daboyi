@@ -142,7 +142,7 @@ fn terrain_color(topography: &str) -> [f32; 4] {
     match topography {
         "deep_ocean" => [0.027, 0.106, 0.314, 1.0],  // #071B50
         "ocean" => [0.039, 0.165, 0.416, 1.0],         // #0A2A6A
-        "ocean_wasteland" => [0.039, 0.165, 0.416, 1.0],
+        "ocean_wasteland" => [0.671, 0.561, 0.384, 1.0], // #AB8F62 sand/desert (not ocean)
         "coastal_ocean" => [0.051, 0.227, 0.604, 1.0], // #0D3A9A
         "inland_sea" => [0.102, 0.333, 0.722, 1.0],    // #1A55B8
         "narrows" => [0.071, 0.282, 0.659, 1.0],        // #1248A8
