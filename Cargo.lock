@@ -3420,27 +3420,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jomini"
-version = "0.34.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c7674b19c84addd10c6e31ffe84ecdecff8025dab81bdbc6eab979107ca9e11"
-dependencies = [
- "itoa",
- "jomini_derive",
- "serde",
-]
-
-[[package]]
-name = "jomini_derive"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd938051b9bfd53ab3b61e237e12db15fec42c3d6d25e9c82c67e58277775dcf"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4313,7 +4292,6 @@ dependencies = [
 name = "parse_save"
 version = "0.1.0"
 dependencies = [
- "jomini",
  "zip",
 ]
 
