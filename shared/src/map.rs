@@ -95,3 +95,34 @@ impl TerrainData {
     }
 }
 
+// ── River geometry ────────────────────────────────────────────────────────────
+
+/// A single river as an ordered sequence of [lon, lat] control points.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiverPolyline {
+    /// Ordered [lon, lat] points in WGS84 degrees.
+    pub points: Vec<[f32; 2]>,
+    /// Approximate width class (0 = small tributary, 1 = medium, 2 = large river).
+    pub width_class: u8,
+}
+
+/// All river geometry, loaded from assets/rivers.bin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiverData {
+    pub rivers: Vec<RiverPolyline>,
+}
+
+impl RiverData {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let bytes = fs::read(path)?;
+        bincode::deserialize(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let bytes = bincode::serialize(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(path, bytes)
+    }
+}
+
