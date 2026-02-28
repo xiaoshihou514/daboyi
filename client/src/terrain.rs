@@ -68,7 +68,7 @@ fn load_terrain(
         commands.spawn((
             Mesh2d(handle.clone()),
             MeshMaterial2d(material.clone()),
-            Transform::from_xyz(x_off, 0.0, -1.0),
+            Transform::from_xyz(x_off, 0.0, 1.0),
         ));
     }
 
