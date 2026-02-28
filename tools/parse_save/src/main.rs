@@ -1,15 +1,18 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 
-/// Path to the EU5 text save (ti.eu5).
-/// This file is the single source of truth for both location names and province ownership.
-const TEXT_SAVE: &str = "/home/xiaoshihou/Playground/github/EU5toGIS/ti.eu5";
-const OUT_PATH: &str = "/home/xiaoshihou/Playground/github/daboyi/assets/ownership.tsv";
-
 fn main() {
-    eprintln!("Parsing {}...", TEXT_SAVE);
+    let mut args = std::env::args().skip(1);
+    let save_path = args
+        .next()
+        .unwrap_or_else(|| "/home/xiaoshihou/Playground/github/EU5toGIS/ti.eu5".to_string());
+    let out_path = args
+        .next()
+        .unwrap_or_else(|| "assets/ownership.tsv".to_string());
 
-    let (compat_names, country_tags, ownership_ids) = parse_text_save(TEXT_SAVE);
+    eprintln!("Parsing {}...", save_path);
+
+    let (compat_names, country_tags, ownership_ids) = parse_text_save(&save_path);
 
     eprintln!(
         "Location names: {}, Country tags: {}, Raw ownerships: {}",
@@ -43,12 +46,12 @@ fn main() {
 
     // Write TSV sorted by location name
     ownership.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut out = File::create(OUT_PATH).expect("Failed to create output");
+    let mut out = File::create(&out_path).expect("Failed to create output");
     writeln!(out, "location_tag\towner_tag").unwrap();
     for (loc, owner) in &ownership {
         writeln!(out, "{loc}\t{owner}").unwrap();
     }
-    eprintln!("\nWritten {} entries to {OUT_PATH}", ownership.len());
+    eprintln!("\nWritten {} entries to {out_path}", ownership.len());
 }
 
 /// Parse ti.eu5 and return:
