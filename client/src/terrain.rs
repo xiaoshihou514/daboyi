@@ -99,7 +99,6 @@ fn spawn_rivers(
             Sprite {
                 image: rivers_handle.clone(),
                 custom_size: Some(Vec2::new(MAP_WIDTH, MAP_HEIGHT)),
-                flip_y: true,
                 ..default()
             },
             Transform::from_xyz(x_off, 0.0, 0.5),
