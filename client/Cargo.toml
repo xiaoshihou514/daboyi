@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.15"
+rust-i18n = "3"
 bincode = "1"
 tokio-tungstenite = "0.21"
 futures-util = { workspace = true }

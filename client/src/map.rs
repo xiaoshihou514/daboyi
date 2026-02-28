@@ -34,13 +34,14 @@ pub enum MapMode {
 
 impl std::fmt::Display for MapMode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            MapMode::Province => write!(f, "Province"),
-            MapMode::Population => write!(f, "Population"),
-            MapMode::Production => write!(f, "Production"),
-            MapMode::Terrain => write!(f, "Terrain"),
-            MapMode::Political => write!(f, "Political"),
-        }
+        let key = match self {
+            MapMode::Province => "map_province",
+            MapMode::Population => "map_population",
+            MapMode::Production => "map_production",
+            MapMode::Terrain => "map_terrain",
+            MapMode::Political => "map_political",
+        };
+        write!(f, "{}", rust_i18n::t!(key))
     }
 }
 

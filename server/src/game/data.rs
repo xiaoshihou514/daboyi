@@ -239,6 +239,46 @@ const OWNERSHIP_TSV: &str = "assets/ownership.tsv";
 /// Path to the EU5 population totals file (location_name → total_population in thousands).
 const POPS_TSV: &str = "assets/pops.tsv";
 
+/// Path to Chinese province names (location_tag → chinese_name).
+const PROVINCE_NAMES_TSV: &str = "assets/province_names.tsv";
+
+/// Path to Chinese country names (country_tag → chinese_name).
+const COUNTRY_NAMES_TSV: &str = "assets/country_names.tsv";
+
+/// Load Chinese province names.
+fn load_province_names() -> HashMap<String, String> {
+    load_names_tsv(PROVINCE_NAMES_TSV, "province")
+}
+
+/// Load Chinese country names.
+fn load_country_names() -> HashMap<String, String> {
+    load_names_tsv(COUNTRY_NAMES_TSV, "country")
+}
+
+/// Generic two-column TSV loader: col0 = key, col1 = value, skip header.
+fn load_names_tsv(path: &str, kind: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: could not load {path}: {e}. {kind} names will fall back to tag.");
+            return map;
+        }
+    };
+    for line in content.lines().skip(1) {
+        let mut parts = line.splitn(2, '\t');
+        if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+            let key = key.trim();
+            let val = val.trim();
+            if !key.is_empty() && !val.is_empty() {
+                map.insert(key.to_string(), val.to_string());
+            }
+        }
+    }
+    println!("Loaded {} {kind} names from {path}", map.len());
+    map
+}
+
 /// Load province population data from the EU5 pops file.
 /// Returns a HashMap from location_tag → population (as integer headcount, thousands × 1000).
 fn load_eu5_pops() -> HashMap<String, u32> {
@@ -298,8 +338,10 @@ pub fn generate_world(map_data: &MapData) -> GameState {
     let building_types = default_building_types();
 
     // Step 1: load real population data from EU5 pops file.
-    // Fall back to terrain-based estimate for provinces not in the file.
     let eu5_pops = load_eu5_pops();
+    // Step 1b: load Chinese name tables.
+    let province_names = load_province_names();
+    let country_names = load_country_names();
 
     let province_pops: Vec<u32> = map_data
         .provinces
@@ -338,8 +380,8 @@ pub fn generate_world(map_data: &MapData) -> GameState {
     let mut countries: Vec<Country> = active_tags
         .iter()
         .map(|(tag, &first_prov)| Country {
+            name: country_names.get(tag).cloned().unwrap_or_else(|| tag.clone()),
             tag: tag.clone(),
-            name: tag.clone(),
             capital_province: first_prov,
         })
         .collect();
@@ -382,7 +424,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
 
             Province {
                 id: mp.id,
-                name: mp.name.clone(),
+                name: province_names.get(&mp.tag).cloned().unwrap_or_else(|| mp.name.clone()),
                 owner: province_owners[idx].clone(),
                 pops,
                 buildings: vec![
