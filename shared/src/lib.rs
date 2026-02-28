@@ -140,6 +140,8 @@ pub struct GameState {
     pub countries: Vec<Country>,
     pub provinces: Vec<Province>,
     pub building_types: Vec<BuildingType>,
+    /// Maps subject_tag → overlord_tag for all dependency relationships.
+    pub vassals: HashMap<String, String>,
 }
 
 // ── Player commands ──────────────────────────────────────────────────────────

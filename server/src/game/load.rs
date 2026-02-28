@@ -6,6 +6,7 @@ const OWNERSHIP_TSV: &str = "assets/ownership.tsv";
 const POPS_TSV: &str = "assets/pops.tsv";
 const PROVINCE_NAMES_TSV: &str = "assets/province_names.tsv";
 const COUNTRY_NAMES_TSV: &str = "assets/country_names.tsv";
+const VASSALS_TSV: &str = "assets/vassals.tsv";
 
 pub fn load_province_names() -> HashMap<String, String> {
     load_tsv(PROVINCE_NAMES_TSV, "province names")
@@ -67,4 +68,9 @@ pub fn load_eu5_pops() -> HashMap<String, u32> {
 /// Load province ownership: location_tag → owner_tag.
 pub fn load_eu5_ownership() -> HashMap<String, String> {
     load_tsv(OWNERSHIP_TSV, "province ownerships")
+}
+
+/// Load vassal relationships: subject_tag → overlord_tag.
+pub fn load_vassals() -> HashMap<String, String> {
+    load_tsv(VASSALS_TSV, "vassal relationships")
 }

@@ -170,6 +170,18 @@ fn load_map(
     commands.insert_resource(MapResource(map_data));
 }
 
+/// Follow the vassal chain to find the top-level sovereign (cycle-safe, max 10 hops).
+fn resolve_sovereign<'a>(tag: &'a str, vassals: &'a std::collections::HashMap<String, String>) -> &'a str {
+    let mut current = tag;
+    for _ in 0..10 {
+        match vassals.get(current) {
+            Some(overlord) => current = overlord.as_str(),
+            None => break,
+        }
+    }
+    current
+}
+
 /// Compute heatmap normalization values from game state.
 fn compute_normalization(gs: &GameState) -> (u32, f32) {
     let mut mp = 0u32;
@@ -256,7 +268,9 @@ fn color_provinces(
                 if let Some(gs) = &state.0 {
                     if pid < gs.provinces.len() {
                         if let Some(owner) = gs.provinces[pid].owner.as_deref() {
-                            return owner_color_rgba(owner);
+                            // Chain-resolve through vassal relationships to find sovereign.
+                            let sovereign = resolve_sovereign(owner, &gs.vassals);
+                            return owner_color_rgba(sovereign);
                         }
                         // Unclaimed: neutral gray
                         return [0.55, 0.55, 0.55, 1.0];

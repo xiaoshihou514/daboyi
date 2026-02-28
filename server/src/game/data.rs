@@ -1,4 +1,4 @@
-use crate::game::load::{load_country_names, load_eu5_ownership, load_eu5_pops, load_province_names};
+use crate::game::load::{load_country_names, load_eu5_ownership, load_eu5_pops, load_province_names, load_vassals};
 use crate::game::params::{
     climate_multiplier, topo_density, veg_multiplier, CLASS_RATIOS, FARM_POP_PER_LEVEL,
     INIT_CLOTHING, INIT_FUEL, INIT_GRAIN, KILN_POP_PER_LEVEL, MIN_PROVINCE_POP,
@@ -221,11 +221,15 @@ pub fn generate_world(map_data: &MapData) -> GameState {
         .sum();
     println!("World population (1356): {total}");
 
+    let vassals = load_vassals();
+    println!("Vassal relationships: {}", vassals.len());
+
     GameState {
         tick: 0,
         date: GameDate::default(),
         countries,
         provinces,
         building_types,
+        vassals,
     }
 }
