@@ -97,11 +97,11 @@ fn setup(mut commands: Commands) {
             })
             .with_children(|row| {
                 let modes: &[(MapMode, &str)] = &[
-                    (MapMode::Political, "Political [1]"),
+                    (MapMode::Province, "Province [1]"),
                     (MapMode::Population, "Population [2]"),
                     (MapMode::Production, "Production [3]"),
                     (MapMode::Terrain, "Terrain [4]"),
-                    (MapMode::Owner, "Owner [5]"),
+                    (MapMode::Political, "Political [5]"),
                 ];
                 for &(mode, label) in modes {
                     row.spawn((
@@ -158,7 +158,7 @@ fn update_hud(
         let pause_str = if paused.0 { "PAUSED" } else { "▶" };
         for mut text in query.iter_mut() {
             *text = Text::new(format!(
-                "Date: {}-{:02}-{:02}   Tick: {}   [{}]  {}  (Space=pause, 1/2/3=map)",
+                "Date: {}-{:02}-{:02}   Tick: {}   [{}]  {}  (Space=pause, 1-5=map mode)",
                 gs.date.year, gs.date.month, gs.date.day, gs.tick, *mode, pause_str
             ));
         }

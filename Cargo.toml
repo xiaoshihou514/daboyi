@@ -1,5 +1,5 @@
 [workspace]
-members = ["server", "client", "shared", "tools/mapgen"]
+members = ["server", "client", "shared", "tools/mapgen", "tools/parse_save"]
 resolver = "2"
 
 [workspace.dependencies]

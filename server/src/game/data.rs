@@ -241,6 +241,9 @@ const TARGET_WORLD_POP: f64 = 500_000_000.0;
 /// Path to the historical boundary GeoJSON asset.
 const HISTORICAL_GEOJSON: &str = "assets/world_1400.geojson";
 
+/// Path to the EU5-save-derived province ownership TSV (location_tag → owner_tag).
+const OWNERSHIP_TSV: &str = "assets/ownership.tsv";
+
 // ── Chinese warlord faction definitions (circa 1356) ─────────────────────────
 
 /// Chinese warlord factions and their display names.
@@ -584,6 +587,31 @@ fn load_historical_polities() -> Vec<HistoricalPolity> {
     polities
 }
 
+/// Load province ownership from the EU5-save-derived TSV.
+/// Returns a HashMap from location_tag (e.g. "stockholm") → owner_tag (e.g. "SWE").
+fn load_eu5_ownership() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let content = match fs::read_to_string(OWNERSHIP_TSV) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: could not load {OWNERSHIP_TSV}: {e}. Province ownership will fall back to historical boundaries.");
+            return map;
+        }
+    };
+    for line in content.lines().skip(1) {
+        let mut parts = line.splitn(2, '\t');
+        if let (Some(loc), Some(owner)) = (parts.next(), parts.next()) {
+            let loc = loc.trim();
+            let owner = owner.trim();
+            if !loc.is_empty() && !owner.is_empty() {
+                map.insert(loc.to_string(), owner.to_string());
+            }
+        }
+    }
+    println!("Loaded {} EU5 province ownerships from {}", map.len(), OWNERSHIP_TSV);
+    map
+}
+
 /// Generate a full game world from EU5 map data using terrain-based population and historical 1356 boundaries.
 pub fn generate_world(map_data: &MapData) -> GameState {
     let building_types = default_building_types();
@@ -607,11 +635,18 @@ pub fn generate_world(map_data: &MapData) -> GameState {
         1.0
     };
 
-    // Step 2: load historical boundaries and assign provinces to historical countries.
+    // Step 2: load EU5 ownership (primary) and historical boundaries (fallback).
+    let eu5_ownership = load_eu5_ownership();
     let polities = load_historical_polities();
     let mut province_owners: Vec<Option<String>> = Vec::with_capacity(map_data.provinces.len());
 
     for mp in &map_data.provinces {
+        // EU5 save data takes priority.
+        if let Some(owner_tag) = eu5_ownership.get(&mp.tag) {
+            province_owners.push(Some(owner_tag.clone()));
+            continue;
+        }
+
         let lon = f64::from(mp.centroid[0]);
         let lat = f64::from(mp.centroid[1]);
 

@@ -12,7 +12,8 @@ A grand strategy game in the style of EU4/Victoria, built with Rust.
 - Rust toolchain (rustc 1.89+)
 - clang / clang++ (for RocksDB)
 - mold linker
-- Prepackaged GeoJSON data at `/home/xiaoshihou/Playground/shared/geojson/`
+- Prepackaged GeoJSON data
+  - https://forum.paradoxplaza.com/forum/threads/georeferenced-eu5-dataset-for-map-modding-via-gis.1903895/#post-31141035
 
 ## Quick Start
 

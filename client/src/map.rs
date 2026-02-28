@@ -25,21 +25,21 @@ pub struct SelectedProvince(pub Option<u32>);
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapMode {
     #[default]
-    Political,
+    Province,
     Population,
     Production,
     Terrain,
-    Owner,
+    Political,
 }
 
 impl std::fmt::Display for MapMode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            MapMode::Political => write!(f, "Political"),
+            MapMode::Province => write!(f, "Province"),
             MapMode::Population => write!(f, "Population"),
             MapMode::Production => write!(f, "Production"),
             MapMode::Terrain => write!(f, "Terrain"),
-            MapMode::Owner => write!(f, "Owner"),
+            MapMode::Political => write!(f, "Political"),
         }
     }
 }
@@ -241,7 +241,7 @@ fn color_provinces(
     let selection_changed = last.selected != selected.0;
 
     // Modes that don't need game state can render immediately.
-    let gs_independent = matches!(*mode, MapMode::Political | MapMode::Terrain);
+    let gs_independent = matches!(*mode, MapMode::Province | MapMode::Terrain);
 
     let (tick_changed, economy_boundary) = if let Some(gs) = &state.0 {
         let tc = last.tick != gs.tick;
@@ -264,12 +264,13 @@ fn color_provinces(
 
     // For game-state-dependent modes we need a game state.
     if !gs_independent && state.0.is_none() {
+        last.mode = Some(*mode);
         return;
     }
 
     // Pre-compute normalization and update last BEFORE the closure borrows last.
     let (max_pop, max_prod) = if let Some(gs) = &state.0 {
-        if !matches!(*mode, MapMode::Political | MapMode::Terrain | MapMode::Owner) {
+        if !matches!(*mode, MapMode::Province | MapMode::Terrain | MapMode::Political) {
             compute_normalization(gs)
         } else {
             (last.max_pop.max(1), last.max_prod.max(1.0))
@@ -285,9 +286,9 @@ fn color_provinces(
     // Helper closure: pure read of state, map, mode, max_pop/max_prod (no last borrow).
     let base_color = |pid: usize| -> [f32; 4] {
         match *mode {
-            MapMode::Political => map.0.provinces[pid].hex_color,
+            MapMode::Province => map.0.provinces[pid].hex_color,
             MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
-            MapMode::Owner => {
+            MapMode::Political => {
                 if let Some(gs) = &state.0 {
                     if pid < gs.provinces.len() {
                         return owner_color_rgba(gs.provinces[pid].owner.as_deref().unwrap_or("UNK"));
@@ -504,10 +505,10 @@ fn province_click(
     selected.0 = None;
 }
 
-/// Keyboard shortcuts: 1 = Political, 2 = Population, 3 = Production, 4 = Terrain, 5 = Owner.
+/// Keyboard shortcuts: 1 = Province, 2 = Population, 3 = Production, 4 = Terrain, 5 = Political.
 fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
     if keys.just_pressed(KeyCode::Digit1) {
-        *mode = MapMode::Political;
+        *mode = MapMode::Province;
     }
     if keys.just_pressed(KeyCode::Digit2) {
         *mode = MapMode::Population;
@@ -519,6 +520,6 @@ fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
         *mode = MapMode::Terrain;
     }
     if keys.just_pressed(KeyCode::Digit5) {
-        *mode = MapMode::Owner;
+        *mode = MapMode::Political;
     }
 }
