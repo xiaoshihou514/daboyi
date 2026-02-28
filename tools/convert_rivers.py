@@ -30,8 +30,9 @@ except ImportError:
     sys.exit(1)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_TIF = Path("/home/xiaoshihou/Playground/github/EU5toGIS/datasets/rivers.tif")
-OUT_PNG = REPO_ROOT / "assets" / "rivers.png"
+EU5GIS    = REPO_ROOT.parent / "EU5toGIS"
+SRC_TIF   = EU5GIS / "datasets" / "rivers.tif"
+OUT_PNG   = REPO_ROOT / "assets" / "rivers.png"
 # Output resolution: 4096×2048 equirectangular (2× previous, needed for thin rivers).
 OUT_W, OUT_H = 4096, 2048
 
