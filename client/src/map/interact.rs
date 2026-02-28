@@ -37,7 +37,7 @@ pub fn camera_controls(
         let zoom_factor = 1.0 - ev.y * 0.1;
         projection.scale *= zoom_factor.clamp(0.5, 2.0);
         // Max scale 0.1 ensures the visible width ≤ MAP_WIDTH on screens up to ~3600px.
-        projection.scale = projection.scale.clamp(0.01, 0.1);
+        projection.scale = projection.scale.clamp(0.002, 0.5);
     }
 }
 
