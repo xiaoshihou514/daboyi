@@ -29,14 +29,15 @@ cp /path/to/EU5toGIS/06_pops_totals.txt assets/pops.tsv
 ### 2. 从存档提取数据
 
 ```bash
-cargo run -p parse_save -- /path/to/your.eu5 assets/ownership.tsv assets/vassals.tsv assets/merchandize.tsv
+cargo run -p parse_save -- /path/to/your.eu5 assets/ownership.tsv assets/vassals.tsv assets/merchandize.tsv assets/country_colors.tsv
 ```
 
-读取存档中的 `compatibility.locations`（省份名称列表）、`locations.locations`（省份→所有者映射）、`dependency`（宗主-附庸关系）以及各国 `last_month_produced`（商品产出），分别写入：
+读取存档中的 `compatibility.locations`（省份名称列表）、`locations.locations`（省份→所有者映射）、`dependency`（宗主-附庸关系）、各国 `last_month_produced`（商品产出）以及各国 `color=rgb`（国家颜色），分别写入：
 
 - `assets/ownership.tsv` — 省份标签 → 所有者国家标签
 - `assets/vassals.tsv` — 附庸标签 → 宗主标签
 - `assets/merchandize.tsv` — 国家标签 + 商品 + 产量
+- `assets/country_colors.tsv` — 国家标签 → RGB 颜色（0–255）
 
 ### 3. 生成地图资产
 
@@ -112,6 +113,7 @@ daboyi/
 | `ownership.tsv` | `cargo run -p parse_save` | 省份标签 → 所有者国家标签 |
 | `vassals.tsv` | `cargo run -p parse_save` | 附庸标签 → 宗主标签 |
 | `merchandize.tsv` | `cargo run -p parse_save` | 国家标签 + 商品产出（上月） |
+| `country_colors.tsv` | `cargo run -p parse_save` | 国家标签 → RGB 颜色（政治地图用） |
 | `pops.tsv` | EU5toGIS `06_pops_totals.txt` | 省份人口数量 |
 | `province_names.tsv` | qwen 批量翻译 | 省份标签 → 中文名称 |
 | `country_names.tsv` | qwen 批量翻译 | 国家标签 → 中文名称 |
