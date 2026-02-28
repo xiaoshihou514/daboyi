@@ -2,13 +2,15 @@
 
 Province ownership data is extracted from an EU5 text save file (`ti.eu5`) using the tool at `tools/parse_save`.
 
-## How to Re-Extract
-
-Edit the path constants at the top of `tools/parse_save/src/main.rs` if your save is in a different location, then run:
+## How to Run
 
 ```sh
-cargo run -p parse_save
+cargo run -p parse_save -- /path/to/your.eu5 assets/ownership.tsv
 ```
+
+Both arguments are optional and default to:
+- Save file: `/home/xiaoshihou/Playground/github/EU5toGIS/ti.eu5`
+- Output: `assets/ownership.tsv`
 
 This regenerates `assets/ownership.tsv`, which is read by the server at startup to assign province owners.
 
