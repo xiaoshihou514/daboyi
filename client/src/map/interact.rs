@@ -42,8 +42,8 @@ pub fn camera_controls(
     // half_h: how many world-space degrees the viewport covers from center to edge.
     let window_height = windows.get_single().map(|w| w.height()).unwrap_or(1080.0);
     let half_h = projection.scale * (window_height / 2.0);
-    let y_min = (-90.0_f32 + half_h).min(0.0);
-    let y_max = (90.0_f32 - half_h).max(0.0);
+    let y_min = (-57.0 + half_h).min(0.0);
+    let y_max = (77.0 - half_h).max(0.0);
     transform.translation.y = transform.translation.y.clamp(y_min, y_max);
 }
 
