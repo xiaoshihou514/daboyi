@@ -292,7 +292,11 @@ fn color_provinces(
             MapMode::Political => {
                 if let Some(gs) = &state.0 {
                     if pid < gs.provinces.len() {
-                        return owner_color_rgba(gs.provinces[pid].owner.as_deref().unwrap_or("UNK"));
+                        if let Some(owner) = gs.provinces[pid].owner.as_deref() {
+                            return owner_color_rgba(owner);
+                        }
+                        // Unclaimed: neutral gray
+                        return [0.55, 0.55, 0.55, 1.0];
                     }
                 }
                 map.0.provinces[pid].hex_color

@@ -15,6 +15,11 @@ impl Plugin for UiPlugin {
     }
 }
 
+/// Holds the loaded CJK font handle (Simplified Chinese).
+#[derive(Resource)]
+#[allow(dead_code)]
+pub struct CjkFont(pub Handle<Font>);
+
 #[derive(Component)]
 struct DateLabel;
 
@@ -78,7 +83,11 @@ fn building_name(id: &str) -> std::borrow::Cow<'static, str> {
     t!(key)
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    // Load CJK font (Simplified Chinese) and store as a global resource.
+    let cjk: Handle<Font> = asset_server.load("fonts/NotoSansCJKsc-Regular.otf");
+    commands.insert_resource(CjkFont(cjk.clone()));
+
     // Camera centered on East Asia (Equal Earth ≈ 105°E, 35°N → x≈105, y≈38).
     commands.spawn((
         Camera2d,
@@ -93,6 +102,7 @@ fn setup(mut commands: Commands) {
     commands.spawn((
         Text::new(t!("connecting").to_string()),
         TextFont {
+            font: cjk.clone(),
             font_size: 18.0,
             ..default()
         },
@@ -109,6 +119,7 @@ fn setup(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
         TextFont {
+            font: cjk.clone(),
             font_size: 14.0,
             ..default()
         },
@@ -164,7 +175,7 @@ fn setup(mut commands: Commands) {
                     .with_children(|btn| {
                         btn.spawn((
                             Text::new(label),
-                            TextFont { font_size: 13.0, ..default() },
+                            TextFont { font: cjk.clone(), font_size: 13.0, ..default() },
                             TextColor(TEXT_COLOR),
                         ));
                     });
@@ -187,7 +198,7 @@ fn setup(mut commands: Commands) {
                 .with_children(|btn| {
                     btn.spawn((
                         Text::new(t!("unpause_btn").to_string()),
-                        TextFont { font_size: 13.0, ..default() },
+                        TextFont { font: cjk.clone(), font_size: 13.0, ..default() },
                         TextColor(TEXT_COLOR),
                     ));
                 });
