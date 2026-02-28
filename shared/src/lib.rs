@@ -144,10 +144,18 @@ pub struct GameState {
 
 // ── Player commands ──────────────────────────────────────────────────────────
 
+/// Typed player order kinds. Add variants as new order types are implemented.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OrderKind {
+    /// Build a farm in the target province.
+    BuildFarm { province_id: u32 },
+    /// Build a charcoal kiln in the target province.
+    BuildKiln { province_id: u32 },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
-    pub kind: String,
-    pub target_province: Option<u32>,
+    pub kind: OrderKind,
 }
 
 // ── WebSocket messages ───────────────────────────────────────────────────────

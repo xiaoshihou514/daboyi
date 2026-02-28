@@ -1,15 +1,20 @@
+mod color;
+mod interact;
+
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
 use shared::conv::{u32_to_f32, u32_to_usize, usize_to_u32};
-use shared::map::{MapData, MapProvince};
+use shared::map::MapData;
 use shared::GameState;
 
 use crate::net::LatestGameState;
+use color::{brighten, heatmap_rgba, owner_color_rgba, terrain_province_color};
+use interact::{camera_controls, map_mode_switch, province_click};
 
-const MAP_BIN_PATH: &str = "assets/map.bin";
+pub const MAP_BIN_PATH: &str = "assets/map.bin";
 /// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
-const MAP_WIDTH: f32 = 360.0;
+pub const MAP_WIDTH: f32 = 360.0;
 
 pub struct MapPlugin;
 
@@ -79,39 +84,6 @@ impl Plugin for MapPlugin {
                 ),
             );
     }
-}
-
-/// Deterministic RGBA color for a country owner tag.
-/// Uses FNV-1a hash — stable across runs unlike DefaultHasher.
-fn owner_color_rgba(tag: &str) -> [f32; 4] {
-    const FNV_OFFSET: u64 = 14695981039346656037;
-    const FNV_PRIME: u64 = 1099511628211;
-    let mut h = FNV_OFFSET;
-    for byte in tag.bytes() {
-        h ^= u64::from(byte);
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    // Map hash bytes to visually distinct mid-range colors (avoid very dark/light).
-    let r = f32::from(u8::try_from((h >> 0) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
-    let g = f32::from(u8::try_from((h >> 8) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
-    let b = f32::from(u8::try_from((h >> 16) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
-    [r, g, b, 1.0]
-}
-
-fn heatmap_rgba(t: f32) -> [f32; 4] {    let t = t.clamp(0.0, 1.0);
-    let r = (2.0 * t - 0.5).clamp(0.0, 1.0);
-    let g = (1.0 - (2.0 * t - 1.0).abs()).clamp(0.0, 1.0);
-    let b = (1.0 - 2.0 * t).clamp(0.0, 1.0);
-    [r * 0.8 + 0.1, g * 0.8 + 0.1, b * 0.8 + 0.1, 1.0]
-}
-
-fn brighten(c: [f32; 4]) -> [f32; 4] {
-    [
-        (c[0] + 0.25).min(1.0),
-        (c[1] + 0.25).min(1.0),
-        (c[2] + 0.25).min(1.0),
-        c[3],
-    ]
 }
 
 /// Build a single merged mesh for ALL provinces (all at z=0.0, no overlaps after mapgen filtering).
@@ -210,25 +182,6 @@ fn compute_normalization(gs: &GameState) -> (u32, f32) {
     }
     (mp.max(1), mprod.max(1.0))
 }
-
-/// Terrain mode: color by province topography.
-fn terrain_province_color(topography: &str) -> [f32; 4] {
-    match topography {
-        "mountains" => [0.420, 0.357, 0.306, 1.0],  // dark muted brown
-        "hills" => [0.608, 0.545, 0.447, 1.0],        // tan
-        "plateau" => [0.690, 0.627, 0.502, 1.0],      // light tan
-        "wetlands" => [0.420, 0.545, 0.420, 1.0],     // muted teal-green
-        "desert" | "sparse_desert" | "dunes" => [0.784, 0.659, 0.431, 1.0], // sandy
-        "flatland" | "farmland" => [0.545, 0.667, 0.482, 1.0],              // green
-        "ocean_wasteland" => [0.039, 0.165, 0.416, 1.0], // ocean color
-        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0],  // lighter sand
-        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0],  // reddish
-        "mountain_wasteland" => [0.369, 0.286, 0.224, 1.0], // dark brown
-        _ if topography.contains("wasteland") => [0.545, 0.482, 0.420, 1.0], // grayish brown
-        _ => [0.604, 0.604, 0.545, 1.0],
-    }
-}
-
 
 /// Skips expensive full recolor on non-economy ticks (economy runs every 100 ticks).
 fn color_provinces(
@@ -390,151 +343,5 @@ fn color_provinces(
                 colors[i] = color;
             }
         }
-    }
-}
-
-/// Camera pan (right-click drag) and zoom (scroll wheel).
-fn camera_controls(
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    mut scroll_evts: EventReader<bevy::input::mouse::MouseWheel>,
-    mut motion_evts: EventReader<bevy::input::mouse::MouseMotion>,
-    mut camera_q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
-) {
-    let Ok((mut transform, mut projection)) = camera_q.get_single_mut() else {
-        return;
-    };
-
-    if mouse_input.pressed(MouseButton::Right) {
-        for ev in motion_evts.read() {
-            transform.translation.x -= ev.delta.x * projection.scale;
-            transform.translation.y += ev.delta.y * projection.scale;
-        }
-        // Wrap x so the camera stays in [-180, 180) — map copies cover the rest.
-        let half = MAP_WIDTH / 2.0;
-        if transform.translation.x >= half {
-            transform.translation.x -= MAP_WIDTH;
-        } else if transform.translation.x < -half {
-            transform.translation.x += MAP_WIDTH;
-        }
-        // Clamp y to equirectangular pole-to-pole range (±90°).
-        transform.translation.y = transform.translation.y.clamp(-90.0, 90.0);
-    } else {
-        motion_evts.clear();
-    }
-
-    for ev in scroll_evts.read() {
-        let zoom_factor = 1.0 - ev.y * 0.1;
-        projection.scale *= zoom_factor.clamp(0.5, 2.0);
-        // Max scale 0.1 ensures the visible width ≤ MAP_WIDTH on screens up to ~3600px.
-        projection.scale = projection.scale.clamp(0.01, 0.1);
-    }
-}
-
-/// Point-in-polygon test (ray casting algorithm).
-fn point_in_polygon(px: f32, py: f32, ring: &[[f32; 2]]) -> bool {
-    let n = ring.len();
-    if n < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (xi, yi) = (ring[i][0], ring[i][1]);
-        let (xj, yj) = (ring[j][0], ring[j][1]);
-        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-fn point_in_province(px: f32, py: f32, mp: &MapProvince) -> bool {
-    if mp.boundary.is_empty() {
-        return false;
-    }
-    if !point_in_polygon(px, py, &mp.boundary[0]) {
-        return false;
-    }
-    for hole in mp.boundary.iter().skip(1) {
-        if point_in_polygon(px, py, hole) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Detect left-click on a province. Uses bounding box pre-filter.
-/// Iterates in reverse so CN provinces (higher z, later IDs) are checked first.
-fn province_click(
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    map: Option<Res<MapResource>>,
-    mut selected: ResMut<SelectedProvince>,
-) {
-    if !mouse_input.just_pressed(MouseButton::Left) {
-        return;
-    }
-    let Some(map) = map else { return };
-    let Ok(window) = windows.get_single() else {
-        return;
-    };
-    let Some(cursor_pos) = window.cursor_position() else {
-        return;
-    };
-    let Ok((camera, cam_transform)) = camera_q.get_single() else {
-        return;
-    };
-    let Ok(world_pos) = camera.viewport_to_world_2d(cam_transform, cursor_pos) else {
-        return;
-    };
-
-    let py = world_pos.y;
-    // Wrap x into map coordinate range [-180, 180) to hit-test any copy.
-    let px = world_pos.x - (((world_pos.x + 180.0) / MAP_WIDTH).floor() * MAP_WIDTH);
-
-    // Iterate in reverse so CN provinces (higher z, appended later) take priority.
-    for mp in map.0.provinces.iter().rev() {
-        if mp.boundary.is_empty() {
-            continue;
-        }
-        // Bounding box pre-filter.
-        let ring = &mp.boundary[0];
-        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
-        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
-        for pt in ring {
-            min_x = min_x.min(pt[0]);
-            max_x = max_x.max(pt[0]);
-            min_y = min_y.min(pt[1]);
-            max_y = max_y.max(pt[1]);
-        }
-        if px < min_x || px > max_x || py < min_y || py > max_y {
-            continue;
-        }
-        if point_in_province(px, py, mp) {
-            selected.0 = Some(mp.id);
-            return;
-        }
-    }
-    selected.0 = None;
-}
-
-/// Keyboard shortcuts: 1 = Province, 2 = Population, 3 = Production, 4 = Terrain, 5 = Political.
-fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
-    if keys.just_pressed(KeyCode::Digit1) {
-        *mode = MapMode::Province;
-    }
-    if keys.just_pressed(KeyCode::Digit2) {
-        *mode = MapMode::Population;
-    }
-    if keys.just_pressed(KeyCode::Digit3) {
-        *mode = MapMode::Production;
-    }
-    if keys.just_pressed(KeyCode::Digit4) {
-        *mode = MapMode::Terrain;
-    }
-    if keys.just_pressed(KeyCode::Digit5) {
-        *mode = MapMode::Political;
     }
 }

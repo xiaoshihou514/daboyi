@@ -9,16 +9,20 @@ fn main() {
     let out_path = args
         .next()
         .unwrap_or_else(|| "assets/ownership.tsv".to_string());
+    let vassals_path = args
+        .next()
+        .unwrap_or_else(|| "assets/vassals.tsv".to_string());
 
     eprintln!("Parsing {}...", save_path);
 
-    let (compat_names, country_tags, ownership_ids) = parse_text_save(&save_path);
+    let (compat_names, country_tags, ownership_ids, dependency_ids) = parse_text_save(&save_path);
 
     eprintln!(
-        "Location names: {}, Country tags: {}, Raw ownerships: {}",
+        "Location names: {}, Country tags: {}, Raw ownerships: {}, Dependencies: {}",
         compat_names.len(),
         country_tags.len(),
-        ownership_ids.len()
+        ownership_ids.len(),
+        dependency_ids.len(),
     );
 
     // Join: location_id (GPKG_id, 1-based) → location_name → owner_tag
@@ -44,7 +48,7 @@ fn main() {
         eprintln!("  {name} -> {owner}");
     }
 
-    // Write TSV sorted by location name
+    // Write ownership TSV sorted by location name
     ownership.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = File::create(&out_path).expect("Failed to create output");
     writeln!(out, "location_tag\towner_tag").unwrap();
@@ -52,19 +56,45 @@ fn main() {
         writeln!(out, "{loc}\t{owner}").unwrap();
     }
     eprintln!("\nWritten {} entries to {out_path}", ownership.len());
+
+    // Resolve dependency integer IDs → country tags and write vassals.tsv
+    // subject_type included for all types: vassal, tributary, fiefdom, tusi,
+    // samanta, appanage, dominion — all render in overlord color.
+    let mut vassals: Vec<(String, String)> = Vec::new();
+    for (overlord_id, subject_id) in &dependency_ids {
+        let overlord = country_tags
+            .get(usize::try_from(*overlord_id).unwrap_or(usize::MAX))
+            .cloned()
+            .unwrap_or_default();
+        let subject = country_tags
+            .get(usize::try_from(*subject_id).unwrap_or(usize::MAX))
+            .cloned()
+            .unwrap_or_default();
+        if overlord.is_empty() || subject.is_empty() { continue; }
+        vassals.push((subject, overlord));
+    }
+    vassals.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut vout = File::create(&vassals_path).expect("Failed to create vassals output");
+    writeln!(vout, "subject_tag\toverlord_tag").unwrap();
+    for (subject, overlord) in &vassals {
+        writeln!(vout, "{subject}\t{overlord}").unwrap();
+    }
+    eprintln!("Written {} vassal entries to {vassals_path}", vassals.len());
 }
 
 /// Parse ti.eu5 and return:
 ///   - compat_names: Vec of province names, index i = GPKG_id (i+1)
 ///   - country_tags: Vec of country tags, index i = country integer id
 ///   - ownership_ids: Vec of (location_gpkg_id, owner_country_id)
-fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>) {
+///   - dependency_ids: Vec of (overlord_country_id, subject_country_id)
+fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>) {
     let file = File::open(path).expect("Failed to open text save");
     let reader = BufReader::new(file);
 
     let mut compat_names: Vec<String> = Vec::new();
     let mut country_tags: Vec<String> = Vec::new();
     let mut ownership_ids: Vec<(u32, u32)> = Vec::new();
+    let mut dependency_ids: Vec<(u32, u32)> = Vec::new();
 
     // Section state
     let mut in_compatibility = false;
@@ -78,9 +108,46 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>) {
     let mut current_owner_id: Option<u32> = None;
     let mut loc_block_depth: i32 = 0;
 
+    // Dependency section state
+    let mut in_dependency = false;
+    let mut dep_depth: i32 = 0;
+    let mut dep_first: Option<u32> = None;
+    let mut dep_second: Option<u32> = None;
+
     for line in reader.lines() {
         let line = line.expect("Read error");
         let trimmed = line.trim();
+
+        // ── Dependency blocks ────────────────────────────────────────────────
+        if trimmed == "dependency={" {
+            in_dependency = true;
+            dep_depth = 1;
+            dep_first = None;
+            dep_second = None;
+            continue;
+        }
+        if in_dependency {
+            if trimmed.contains('{') {
+                dep_depth += i32::try_from(trimmed.chars().filter(|&c| c == '{').count()).unwrap_or(0);
+            }
+            if trimmed.contains('}') {
+                dep_depth -= i32::try_from(trimmed.chars().filter(|&c| c == '}').count()).unwrap_or(0);
+                if dep_depth <= 0 {
+                    if let (Some(overlord), Some(subject)) = (dep_first.take(), dep_second.take()) {
+                        dependency_ids.push((overlord, subject));
+                    }
+                    in_dependency = false;
+                    dep_depth = 0;
+                    continue;
+                }
+            }
+            if let Some(val) = trimmed.strip_prefix("first=") {
+                dep_first = val.trim().parse::<u32>().ok();
+            } else if let Some(val) = trimmed.strip_prefix("second=") {
+                dep_second = val.trim().parse::<u32>().ok();
+            }
+            continue;
+        }
 
         // ── Compatibility section (location names) ──────────────────────────
         if trimmed == "compatibility={" {
@@ -88,7 +155,6 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>) {
             continue;
         }
         if in_compatibility {
-            // The compatibility.locations line contains all names space-separated
             if let Some(rest) = trimmed.strip_prefix("locations={") {
                 let names_str = rest.trim_end_matches('}');
                 compat_names = names_str.split_whitespace().map(str::to_string).collect();
@@ -204,5 +270,5 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>) {
         }
     }
 
-    (compat_names, country_tags, ownership_ids)
+    (compat_names, country_tags, ownership_ids, dependency_ids)
 }

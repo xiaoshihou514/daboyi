@@ -1,6 +1,8 @@
 use shared::{GameDate, GameState, Order};
 
 pub mod data;
+pub mod load;
+pub mod params;
 pub mod population;
 pub mod production;
 
