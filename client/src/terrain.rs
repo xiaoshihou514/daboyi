@@ -5,7 +5,7 @@ use shared::conv::usize_to_u32;
 use shared::map::TerrainData;
 
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
-const RIVERS_PNG_PATH: &str = "assets/rivers.png";
+const RIVERS_PNG_PATH: &str = "rivers.png";
 /// Three copies of the 360°-wide world for seamless horizontal wrapping.
 const WORLD_OFFSETS: [f32; 3] = [-360.0, 0.0, 360.0];
 /// World height in degrees (equirectangular: 180°).
