@@ -71,6 +71,12 @@ async fn ws_loop(
 
     let (mut sink, mut stream) = ws_stream.split();
 
+    // Fetch initial state immediately on connect (so political/pop/prod views
+    // work without having to unpause first).
+    if let Ok(json) = serde_json::to_string(&ClientMsg::FetchState) {
+        sink.send(Message::Text(json)).await.ok();
+    }
+
     loop {
         tokio::select! {
             // Incoming message from server (now bincode binary).

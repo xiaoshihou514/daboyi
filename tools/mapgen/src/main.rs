@@ -121,8 +121,8 @@ fn compute_centroid(outer: &[[f64; 2]]) -> [f32; 2] {
     }
 }
 
-/// Topography values that indicate water or wasteland (non-playable).
-fn is_non_playable(topography: &str) -> bool {
+/// Topography values that indicate water only (go to terrain.bin, not map.bin).
+fn is_water(topography: &str) -> bool {
     matches!(
         topography,
         "coastal_ocean"
@@ -134,7 +134,12 @@ fn is_non_playable(topography: &str) -> bool {
             | "high_lakes"
             | "atoll"
             | "salt_pans"
-    ) || topography.contains("wasteland")
+    )
+}
+
+/// Topography values that indicate water or wasteland (non-playable).
+fn is_non_playable(topography: &str) -> bool {
+    is_water(topography) || topography.contains("wasteland")
 }
 
 /// Pre-defined RGBA color for each non-playable topography type.
@@ -519,8 +524,8 @@ fn main() {
             row.expect("Failed to read row");
         total_read += 1;
 
-        // Filter non-playable (water + wasteland).
-        if is_non_playable(&topography) {
+        // Filter water-only features (water goes to terrain.bin; wasteland stays in map.bin).
+        if is_water(&topography) {
             skipped += 1;
             continue;
         }

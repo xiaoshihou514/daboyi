@@ -157,6 +157,8 @@ pub struct Order {
 pub enum ClientMsg {
     /// Advance simulation by one tick and return updated state.
     Tick,
+    /// Return the current state snapshot without advancing the tick.
+    FetchState,
     /// Queue a player order; applied on the next Tick.
     IssueOrder(Order),
 }

@@ -69,6 +69,10 @@ fn handle_msg(msg: ClientMsg, state: &AppState) -> Vec<u8> {
             }
             bincode::serialize(&ServerMsgRef::StateSnapshot(&*gs)).unwrap_or_default()
         }
+        ClientMsg::FetchState => {
+            let gs = state.game_state.lock().unwrap();
+            bincode::serialize(&ServerMsgRef::StateSnapshot(&*gs)).unwrap_or_default()
+        }
         ClientMsg::IssueOrder(order) => {
             state.command_queue.lock().unwrap().push(order);
             bincode::serialize(&ServerMsgRef::Ack).unwrap_or_default()

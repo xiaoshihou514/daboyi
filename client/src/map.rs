@@ -220,6 +220,11 @@ fn terrain_province_color(topography: &str) -> [f32; 4] {
         "wetlands" => [0.420, 0.545, 0.420, 1.0],     // muted teal-green
         "desert" | "sparse_desert" | "dunes" => [0.784, 0.659, 0.431, 1.0], // sandy
         "flatland" | "farmland" => [0.545, 0.667, 0.482, 1.0],              // green
+        "ocean_wasteland" => [0.671, 0.561, 0.384, 1.0], // sand/desert (#AB8F62)
+        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0],  // lighter sand
+        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0],  // reddish
+        "mountain_wasteland" => [0.369, 0.286, 0.224, 1.0], // dark brown
+        _ if topography.contains("wasteland") => [0.545, 0.482, 0.420, 1.0], // grayish brown
         _ => [0.604, 0.604, 0.545, 1.0],
     }
 }
@@ -290,6 +295,11 @@ fn color_provinces(
             MapMode::Province => map.0.provinces[pid].hex_color,
             MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
             MapMode::Political => {
+                // Wasteland provinces always show terrain color, not owner/unclaimed.
+                let topo = &map.0.provinces[pid].topography;
+                if topo.contains("wasteland") {
+                    return terrain_province_color(topo);
+                }
                 if let Some(gs) = &state.0 {
                     if pid < gs.provinces.len() {
                         if let Some(owner) = gs.provinces[pid].owner.as_deref() {
