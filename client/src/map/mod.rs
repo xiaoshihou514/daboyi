@@ -29,11 +29,11 @@ pub struct SelectedProvince(pub Option<u32>);
 /// Map coloring mode, switchable with keys 1/2/3/4/5.
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapMode {
-    #[default]
     Province,
     Population,
     Production,
     Terrain,
+    #[default]
     Political,
 }
 

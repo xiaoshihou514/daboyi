@@ -79,8 +79,8 @@ fn load_terrain(
     );
 }
 
-/// Build a quad-strip mesh for a single river polyline.
-/// Each segment becomes a rectangle (4 verts, 2 tris).
+/// Build a continuous quad-strip mesh for a river polyline with miter joins.
+/// Interior vertices share miter-bisected offsets — no gaps between segments.
 fn polyline_to_quads(
     points: &[[f32; 2]],
     half_w: f32,
@@ -92,29 +92,80 @@ fn polyline_to_quads(
     if points.len() < 2 {
         return;
     }
-    for seg in points.windows(2) {
-        let [x0, y0] = seg[0];
-        let [x1, y1] = seg[1];
-        let dx = x1 - x0;
-        let dy = y1 - y0;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1e-6 {
-            continue;
-        }
-        // Perpendicular unit vector
-        let px = -dy / len * half_w;
-        let py = dx / len * half_w;
+    let n = points.len();
 
-        let base = usize_to_u32(positions.len());
-        positions.push([x0 - px, y0 - py, z]);
-        positions.push([x0 + px, y0 + py, z]);
-        positions.push([x1 + px, y1 + py, z]);
-        positions.push([x1 - px, y1 - py, z]);
-        for _ in 0..4 {
-            colors.push(RIVER_COLOR);
+    // For each point compute the (left, right) world-space positions.
+    let mut left: Vec<[f32; 2]> = Vec::with_capacity(n);
+    let mut right: Vec<[f32; 2]> = Vec::with_capacity(n);
+
+    // Perpendicular (left-hand) unit vector of a segment direction.
+    let perp = |dx: f32, dy: f32| -> (f32, f32) {
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-9 {
+            (0.0, 0.0)
+        } else {
+            (-dy / len, dx / len)
         }
-        // Two triangles: (0,1,2) and (0,2,3)
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+
+    for i in 0..n {
+        let [x, y] = points[i];
+
+        let offset: (f32, f32) = if i == 0 {
+            // Endpoint: perpendicular of the first segment.
+            let [x1, y1] = points[1];
+            let (px, py) = perp(x1 - x, y1 - y);
+            (px * half_w, py * half_w)
+        } else if i == n - 1 {
+            // Endpoint: perpendicular of the last segment.
+            let [xp, yp] = points[n - 2];
+            let (px, py) = perp(x - xp, y - yp);
+            (px * half_w, py * half_w)
+        } else {
+            // Interior: miter of the two adjacent perpendiculars.
+            let [xp, yp] = points[i - 1];
+            let [xn, yn] = points[i + 1];
+            let (p0x, p0y) = perp(x - xp, y - yp);
+            let (p1x, p1y) = perp(xn - x, yn - y);
+            // Miter direction = bisector of the two perpendiculars (normalised).
+            let mx = p0x + p1x;
+            let my = p0y + p1y;
+            let mlen = (mx * mx + my * my).sqrt();
+            if mlen < 1e-9 {
+                (p0x * half_w, p0y * half_w)
+            } else {
+                let mux = mx / mlen;
+                let muy = my / mlen;
+                // Scale so the component along p0 = half_w; cap at 4× to avoid spikes.
+                let dot = mux * p0x + muy * p0y;
+                let scale = if dot.abs() < 1e-6 {
+                    half_w
+                } else {
+                    (half_w / dot).min(4.0 * half_w)
+                };
+                (mux * scale, muy * scale)
+            }
+        };
+
+        left.push([x - offset.0, y - offset.1]);
+        right.push([x + offset.0, y + offset.1]);
+    }
+
+    // Emit the shared quad-strip.
+    let base = usize_to_u32(positions.len());
+    for i in 0..n {
+        positions.push([left[i][0], left[i][1], z]);
+        positions.push([right[i][0], right[i][1], z]);
+        colors.push(RIVER_COLOR);
+        colors.push(RIVER_COLOR);
+    }
+    // 2 vertices per point. Segment i→i+1 uses verts (2i, 2i+1, 2i+2, 2i+3).
+    for i in 0..(n as u32 - 1) {
+        let l0 = base + i * 2;
+        let r0 = l0 + 1;
+        let l1 = l0 + 2;
+        let r1 = l0 + 3;
+        indices.extend_from_slice(&[l0, r0, r1, l0, r1, l1]);
     }
 }
 
