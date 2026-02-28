@@ -10,6 +10,7 @@ pub fn camera_controls(
     mut scroll_evts: EventReader<bevy::input::mouse::MouseWheel>,
     mut motion_evts: EventReader<bevy::input::mouse::MouseMotion>,
     mut camera_q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
+    windows: Query<&Window>,
 ) {
     let Ok((mut transform, mut projection)) = camera_q.get_single_mut() else {
         return;
@@ -31,15 +32,19 @@ pub fn camera_controls(
         motion_evts.clear();
     }
 
-    // Always clamp y to the map's latitude range so the camera never drifts off the map.
-    transform.translation.y = transform.translation.y.clamp(-90.0, 90.0);
-
     for ev in scroll_evts.read() {
         let zoom_factor = 1.0 - ev.y * 0.1;
         projection.scale *= zoom_factor.clamp(0.5, 2.0);
-        // Max scale 0.1 ensures the visible width ≤ MAP_WIDTH on screens up to ~3600px.
         projection.scale = projection.scale.clamp(0.002, 0.15);
     }
+
+    // Clamp Y so the viewport edges never leave the map (±90° latitude).
+    // half_h: how many world-space degrees the viewport covers from center to edge.
+    let window_height = windows.get_single().map(|w| w.height()).unwrap_or(1080.0);
+    let half_h = projection.scale * (window_height / 2.0);
+    let y_min = (-90.0_f32 + half_h).min(0.0);
+    let y_max = (90.0_f32 - half_h).max(0.0);
+    transform.translation.y = transform.translation.y.clamp(y_min, y_max);
 }
 
 /// Detect left-click on a province. Uses bounding box pre-filter.
