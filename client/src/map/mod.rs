@@ -7,6 +7,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use shared::conv::{u32_to_f32, u32_to_usize, usize_to_u32};
 use shared::map::MapData;
 use shared::GameState;
+use std::collections::HashMap;
 
 use crate::net::LatestGameState;
 use crate::state::AppState;
@@ -14,8 +15,13 @@ use color::{brighten, heatmap_rgba, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, map_mode_switch, province_click};
 
 pub const MAP_BIN_PATH: &str = "assets/map.bin";
+const COUNTRY_COLORS_TSV: &str = "assets/country_colors.tsv";
 /// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
 pub const MAP_WIDTH: f32 = 360.0;
+
+/// EU5 country tag → RGBA color loaded from country_colors.tsv.
+#[derive(Resource, Default)]
+pub struct CountryColors(pub HashMap<String, [f32; 4]>);
 
 pub struct MapPlugin;
 
@@ -76,6 +82,7 @@ impl Plugin for MapPlugin {
         app.insert_resource(SelectedProvince::default())
             .insert_resource(MapMode::default())
             .insert_resource(LastColorState::default())
+            .insert_resource(CountryColors::default())
             .add_systems(Startup, load_map)
             .add_systems(Update, color_provinces)
             .add_systems(
@@ -172,6 +179,33 @@ fn load_map(
         mesh_handle,
     });
     commands.insert_resource(MapResource(map_data));
+
+    // Load country colors from TSV (tag → rgba).
+    let mut color_map: HashMap<String, [f32; 4]> = HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(COUNTRY_COLORS_TSV) {
+        for line in content.lines().skip(1) {
+            let mut parts = line.splitn(4, '\t');
+            if let (Some(tag), Some(r), Some(g), Some(b)) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            {
+                if let (Ok(r), Ok(g), Ok(b)) = (r.parse::<u8>(), g.parse::<u8>(), b.parse::<u8>()) {
+                    color_map.insert(
+                        tag.to_string(),
+                        [
+                            f32::from(r) / 255.0,
+                            f32::from(g) / 255.0,
+                            f32::from(b) / 255.0,
+                            1.0,
+                        ],
+                    );
+                }
+            }
+        }
+        println!("Loaded {} country colors from {COUNTRY_COLORS_TSV}", color_map.len());
+    } else {
+        eprintln!("Warning: could not load {COUNTRY_COLORS_TSV}; falling back to hash colors");
+    }
+    commands.insert_resource(CountryColors(color_map));
 }
 
 /// Follow the vassal chain to find the top-level sovereign (cycle-safe, max 10 hops).
@@ -206,6 +240,7 @@ fn color_provinces(
     vertex_map: Option<Res<ProvinceVertexMap>>,
     mode: Res<MapMode>,
     selected: Res<SelectedProvince>,
+    country_colors: Res<CountryColors>,
     mut last: ResMut<LastColorState>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -277,7 +312,10 @@ fn color_provinces(
                         if let Some(owner) = gs.provinces[pid].owner.as_deref() {
                             // Chain-resolve through vassal relationships to find sovereign.
                             let sovereign = resolve_sovereign(owner, &gs.vassals);
-                            return owner_color_rgba(sovereign);
+                            // Use EU5 color if available, else fall back to hash.
+                            return country_colors.0.get(sovereign)
+                                .copied()
+                                .unwrap_or_else(|| owner_color_rgba(sovereign));
                         }
                         // Unclaimed: neutral gray
                         return [0.55, 0.55, 0.55, 1.0];

@@ -15,19 +15,23 @@ fn main() {
     let merchandize_path = args
         .next()
         .unwrap_or_else(|| "assets/merchandize.tsv".to_string());
+    let colors_path = args
+        .next()
+        .unwrap_or_else(|| "assets/country_colors.tsv".to_string());
 
     eprintln!("Parsing {}...", save_path);
 
-    let (compat_names, country_tags, ownership_ids, dependency_ids, merchandize) =
+    let (compat_names, country_tags, ownership_ids, dependency_ids, merchandize, colors) =
         parse_text_save(&save_path);
 
     eprintln!(
-        "Location names: {}, Country tags: {}, Raw ownerships: {}, Dependencies: {}, Merchandize entries: {}",
+        "Location names: {}, Country tags: {}, Raw ownerships: {}, Dependencies: {}, Merchandize entries: {}, Colors: {}",
         compat_names.len(),
         country_tags.len(),
         ownership_ids.len(),
         dependency_ids.len(),
         merchandize.len(),
+        colors.len(),
     );
 
     // Join: location_id (GPKG_id, 1-based) → location_name → owner_tag
@@ -95,6 +99,16 @@ fn main() {
         writeln!(mout, "{tag}\t{good}\t{amount}").unwrap();
     }
     eprintln!("Written {} merchandize rows to {merchandize_path}", m_rows.len());
+
+    // Write country colors TSV: country_tag \t r \t g \t b (0-255)
+    let mut cout = File::create(&colors_path).expect("Failed to create colors output");
+    writeln!(cout, "country_tag\tr\tg\tb").unwrap();
+    let mut color_rows: Vec<(String, u8, u8, u8)> = colors;
+    color_rows.sort_by(|a, b| a.0.cmp(&b.0));
+    for (tag, r, g, b) in &color_rows {
+        writeln!(cout, "{tag}\t{r}\t{g}\t{b}").unwrap();
+    }
+    eprintln!("Written {} country colors to {colors_path}", color_rows.len());
 }
 
 /// Parse ti.eu5 and return:
@@ -103,7 +117,8 @@ fn main() {
 ///   - ownership_ids: Vec of (location_gpkg_id, owner_country_id)
 ///   - dependency_ids: Vec of (overlord_country_id, subject_country_id)
 ///   - merchandize: Vec of (country_tag, good_name, amount)
-fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<(String, String, f32)>) {
+///   - colors: Vec of (country_tag, r, g, b) — from `color=rgb { r g b }` in country blocks
+fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<(String, String, f32)>, Vec<(String, u8, u8, u8)>) {
     let file = File::open(path).expect("Failed to open text save");
     let reader = BufReader::new(file);
 
@@ -112,6 +127,7 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
     let mut ownership_ids: Vec<(u32, u32)> = Vec::new();
     let mut dependency_ids: Vec<(u32, u32)> = Vec::new();
     let mut merchandize: Vec<(String, String, f32)> = Vec::new();
+    let mut colors: Vec<(String, u8, u8, u8)> = Vec::new();
 
     // Section state
     let mut in_compatibility = false;
@@ -185,6 +201,19 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
             if current_country_tag.is_some() && trimmed == "last_month_produced={" {
                 in_last_month_produced = true;
                 lmp_depth = 1;
+            }
+            // Detect color=rgb { r g b } inside a country block.
+            // Format: `color=rgb { 0 104 166 }`
+            if let Some(tag) = &current_country_tag {
+                if let Some(rest) = trimmed.strip_prefix("color=rgb {") {
+                    let rest = rest.trim_end_matches('}').trim();
+                    let nums: Vec<u8> = rest.split_whitespace()
+                        .filter_map(|s| s.parse::<u8>().ok())
+                        .collect();
+                    if nums.len() >= 3 {
+                        colors.push((tag.clone(), nums[0], nums[1], nums[2]));
+                    }
+                }
             }
         }
 
@@ -340,5 +369,5 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
         }
     }
 
-    (compat_names, country_tags, ownership_ids, dependency_ids, merchandize)
+    (compat_names, country_tags, ownership_ids, dependency_ids, merchandize, colors)
 }
