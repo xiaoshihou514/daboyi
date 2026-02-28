@@ -14,11 +14,18 @@ A grand strategy game set in 1337, in the style of EU4/Victoria, built with Rust
 - `mold` linker (configured in `.cargo/config.toml`)
 - EU5toGIS datasets — see [this Paradox forum post](https://forum.paradoxplaza.com/forum/threads/georeferenced-eu5-dataset-for-map-modding-via-gis.1903895/#post-31141035)
   - You need the `datasets/` directory containing `locations.gpkg` and `ports.gpkg`
+  - You also need `06_pops_totals.txt` from the same release (province population data)
 - A EU5 text save file (`.eu5` starting with `SAV`, not a ZIP) for province ownership data
 
 ## Setup
 
-### 1. Extract province ownership from a save file
+### 1. Copy population data
+
+```bash
+cp /path/to/EU5toGIS/06_pops_totals.txt assets/pops.tsv
+```
+
+### 2. Extract province ownership from a save file
 
 ```bash
 cargo run -p parse_save -- /path/to/your.eu5 assets/ownership.tsv
@@ -28,7 +35,7 @@ This reads the save's `compatibility.locations` section to map province IDs to n
 
 See `doc/province-ownership-extraction.md` for details on the save file format.
 
-### 2. Generate map assets
+### 3. Generate map assets
 
 ```bash
 cargo run --release -p mapgen -- /path/to/EU5toGIS/datasets
@@ -40,7 +47,7 @@ Reads `locations.gpkg` and `ports.gpkg` from the given directory, triangulates p
 
 Run with `--release` — debug mode is significantly slower.
 
-### 3. Start the server
+### 4. Start the server
 
 ```bash
 cargo run -p server
@@ -48,7 +55,7 @@ cargo run -p server
 
 Listens on `ws://127.0.0.1:8080/ws`. On first run, loads `assets/map.bin` and `assets/ownership.tsv` to generate the world state, then persists it in `daboyi.db/` (RocksDB). Subsequent runs load from the database.
 
-### 4. Start the client
+### 5. Start the client
 
 ```bash
 cargo run -p client

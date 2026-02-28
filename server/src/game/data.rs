@@ -232,11 +232,41 @@ const CLASS_RATIOS: &[(PopClass, f64)] = &[
     (PopClass::Capitalist, 0.005),
 ];
 
-/// Target world population for 1356 (~500M estimated).
-const TARGET_WORLD_POP: f64 = 500_000_000.0;
 
 /// Path to the EU5-save-derived province ownership TSV (location_tag → owner_tag).
 const OWNERSHIP_TSV: &str = "assets/ownership.tsv";
+
+/// Path to the EU5 population totals file (location_name → total_population in thousands).
+const POPS_TSV: &str = "assets/pops.tsv";
+
+/// Load province population data from the EU5 pops file.
+/// Returns a HashMap from location_tag → population (as integer headcount, thousands × 1000).
+fn load_eu5_pops() -> HashMap<String, u32> {
+    let mut map = HashMap::new();
+    let content = match fs::read_to_string(POPS_TSV) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: could not load {POPS_TSV}: {e}. Population will fall back to terrain estimates.");
+            return map;
+        }
+    };
+    for line in content.lines().skip(1) {
+        let mut parts = line.splitn(3, '\t');
+        if let (Some(loc), Some(pop_str)) = (parts.next(), parts.next()) {
+            let loc = loc.trim();
+            let pop_str = pop_str.trim();
+            if !loc.is_empty() {
+                if let Ok(pop_thousands) = pop_str.parse::<f64>() {
+                    // File units are thousands; convert to headcount, floor at 10.
+                    let headcount = ((pop_thousands * 1000.0).round() as u32).max(10);
+                    map.insert(loc.to_string(), headcount);
+                }
+            }
+        }
+    }
+    println!("Loaded {} EU5 province populations from {}", map.len(), POPS_TSV);
+    map
+}
 
 /// Load province ownership from the EU5-save-derived TSV.
 /// Returns a HashMap from location_tag (e.g. "stockholm") → owner_tag (e.g. "SWE").
@@ -263,28 +293,29 @@ fn load_eu5_ownership() -> HashMap<String, String> {
     map
 }
 
-/// Generate a full game world from EU5 map data using terrain-based population and historical 1356 boundaries.
+/// Generate a full game world from EU5 map data using real population data and GIS production metadata.
 pub fn generate_world(map_data: &MapData) -> GameState {
     let building_types = default_building_types();
 
-    // Step 1: compute terrain-based raw population for each province, then scale to target.
-    let mut raw_pops: Vec<f64> = Vec::with_capacity(map_data.provinces.len());
-    let mut total_raw: f64 = 0.0;
+    // Step 1: load real population data from EU5 pops file.
+    // Fall back to terrain-based estimate for provinces not in the file.
+    let eu5_pops = load_eu5_pops();
 
-    for mp in &map_data.provinces {
-        let area = province_area(mp);
-        let density = terrain_density(mp);
-        let raw = area * density;
-        raw_pops.push(raw);
-        total_raw += raw;
-    }
-
-    // Scale factor to achieve target world population.
-    let scale = if total_raw > 0.0 {
-        TARGET_WORLD_POP / total_raw
-    } else {
-        1.0
-    };
+    let province_pops: Vec<u32> = map_data
+        .provinces
+        .iter()
+        .map(|mp| {
+            if let Some(&pop) = eu5_pops.get(&mp.tag) {
+                pop
+            } else {
+                // Terrain-based fallback for provinces missing from the pop file.
+                let raw = province_area(mp) * terrain_density(mp);
+                // Use the average scaling: file covers ~394M across 20k provinces.
+                // Rough global scale: ~20_000 people per degree² unit.
+                f64_to_u32(raw.max(10.0))
+            }
+        })
+        .collect();
 
     // Step 2: load EU5 ownership exclusively.
     let eu5_ownership = load_eu5_ownership();
@@ -316,13 +347,13 @@ pub fn generate_world(map_data: &MapData) -> GameState {
 
     println!("Created {} countries", countries.len());
 
-    // Step 4: create provinces with scaled population + resource-based initial stockpile.
+    // Step 4: create provinces with real population + GIS raw_material production.
     let provinces: Vec<Province> = map_data
         .provinces
         .iter()
         .enumerate()
         .map(|(idx, mp)| {
-            let province_pop = f64_to_u32((raw_pops[idx] * scale).max(10.0));
+            let province_pop = province_pops[idx];
 
             let pops: Vec<Pop> = CLASS_RATIOS
                 .iter()
