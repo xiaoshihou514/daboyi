@@ -11,7 +11,7 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SelectedCountryForPlay>()
             // Start screen
-            .add_systems(OnEnter(AppState::StartScreen), setup_start_screen)
+            .add_systems(OnEnter(AppState::StartScreen), (setup_start_screen, set_political_mode))
             .add_systems(
                 Update,
                 start_screen_buttons.run_if(in_state(AppState::StartScreen)),

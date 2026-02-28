@@ -67,6 +67,8 @@ struct LastColorState {
     /// Cached normalization values (only change on economy ticks).
     max_pop: u32,
     max_prod: f32,
+    /// Whether we've done the initial recolor after first game-state arrival.
+    state_initialized: bool,
 }
 
 impl Plugin for MapPlugin {
@@ -216,6 +218,9 @@ fn color_provinces(
     // Modes that don't need game state can render immediately.
     let gs_independent = matches!(*mode, MapMode::Province | MapMode::Terrain);
 
+    // First state arrival triggers a forced recolor (handles tick=0 on fresh server).
+    let first_state = !last.state_initialized && state.0.is_some();
+
     let (tick_changed, economy_boundary) = if let Some(gs) = &state.0 {
         let tc = last.tick != gs.tick;
         let eb = tc && (last.tick == 0 || gs.tick / 100 != last.tick / 100);
@@ -224,7 +229,7 @@ fn color_provinces(
         (false, false)
     };
 
-    let needs_full_recolor = mode_changed || economy_boundary || (gs_independent && mode_changed);
+    let needs_full_recolor = mode_changed || economy_boundary || first_state || (gs_independent && mode_changed);
 
     if !needs_full_recolor && !selection_changed {
         if tick_changed {
@@ -332,6 +337,7 @@ fn color_provinces(
         last.selected = selected.0;
         if let Some(gs) = &state.0 {
             last.tick = gs.tick;
+            last.state_initialized = true;
         }
         return;
     }
@@ -339,6 +345,7 @@ fn color_provinces(
     // Full recolor.
     if let Some(gs) = &state.0 {
         last.tick = gs.tick;
+        last.state_initialized = true;
     }
     last.max_pop = max_pop;
     last.max_prod = max_prod;
