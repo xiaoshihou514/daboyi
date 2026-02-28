@@ -9,6 +9,7 @@ use shared::map::MapData;
 use shared::GameState;
 
 use crate::net::LatestGameState;
+use crate::state::AppState;
 use color::{brighten, heatmap_rgba, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, map_mode_switch, province_click};
 
@@ -74,14 +75,15 @@ impl Plugin for MapPlugin {
             .insert_resource(MapMode::default())
             .insert_resource(LastColorState::default())
             .add_systems(Startup, load_map)
+            .add_systems(Update, color_provinces)
             .add_systems(
                 Update,
-                (
-                    color_provinces,
-                    camera_controls,
-                    province_click,
-                    map_mode_switch,
-                ),
+                (camera_controls, province_click)
+                    .run_if(not(in_state(AppState::StartScreen))),
+            )
+            .add_systems(
+                Update,
+                map_mode_switch.run_if(in_state(AppState::Playing)),
             );
     }
 }

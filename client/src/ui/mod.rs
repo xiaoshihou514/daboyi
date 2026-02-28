@@ -5,13 +5,19 @@ use shared::{Good, PopClass};
 
 use crate::map::{MapMode, MapResource, SelectedProvince};
 use crate::net::{LatestGameState, Paused};
+use crate::state::AppState;
 
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
-            .add_systems(Update, (update_hud, update_province_panel, button_interactions, update_button_styles));
+        app.add_systems(Startup, setup_camera)
+            .add_systems(OnEnter(AppState::Playing), setup_game_ui)
+            .add_systems(
+                Update,
+                (update_hud, update_province_panel, button_interactions, update_button_styles)
+                    .run_if(in_state(AppState::Playing)),
+            );
     }
 }
 
@@ -83,10 +89,10 @@ fn building_name(id: &str) -> std::borrow::Cow<'static, str> {
     t!(key)
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_camera(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Load CJK font (Simplified Chinese) and store as a global resource.
     let cjk: Handle<Font> = asset_server.load("fonts/NotoSansCJKsc-Regular.otf");
-    commands.insert_resource(CjkFont(cjk.clone()));
+    commands.insert_resource(CjkFont(cjk));
 
     // Camera centered on East Asia (Equal Earth ≈ 105°E, 35°N → x≈105, y≈38).
     commands.spawn((
@@ -97,6 +103,10 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         Transform::from_xyz(105.0, 38.0, 999.9),
     ));
+}
+
+fn setup_game_ui(mut commands: Commands, cjk_res: Res<CjkFont>) {
+    let cjk = cjk_res.0.clone();
 
     // HUD: date + tick + map mode in the top-left corner.
     commands.spawn((
@@ -325,6 +335,18 @@ fn update_province_panel(
             info.push_str(&format!("\n{}:\n", t!("stockpile")));
             for (good, amount) in non_empty {
                 info.push_str(&format!("  {}: {:.1}\n", good_name(*good), amount));
+            }
+        }
+
+        // Country production (top goods)
+        if let Some(owner_tag) = province.owner.as_deref() {
+            if let Some(country) = gs.countries.iter().find(|c| c.tag == owner_tag) {
+                if !country.produced_goods.is_empty() {
+                    info.push_str(&format!("\n{}:\n", t!("produced_goods")));
+                    for (good, amount) in country.produced_goods.iter().take(5) {
+                        info.push_str(&format!("  {}: {:.1}\n", good, amount));
+                    }
+                }
             }
         }
 

@@ -4,7 +4,9 @@ rust_i18n::i18n!("../locales", fallback = "zh");
 
 mod capitals;
 mod map;
+mod menu;
 mod net;
+mod state;
 mod terrain;
 mod ui;
 
@@ -29,10 +31,13 @@ fn main() {
                 ..default()
             })
         )
+        .init_state::<state::AppState>()
+        .init_resource::<state::PlayerCountry>()
         .add_plugins(net::NetPlugin)
         .add_plugins(terrain::TerrainPlugin)
         .add_plugins(map::MapPlugin)
         .add_plugins(capitals::CapitalsPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(menu::MenuPlugin)
         .run();
 }

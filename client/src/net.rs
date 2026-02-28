@@ -5,6 +5,8 @@ use std::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
 
+use crate::state::AppState;
+
 pub struct NetPlugin;
 
 /// Send commands from Bevy systems → WS background task.
@@ -44,7 +46,11 @@ impl Plugin for NetPlugin {
             .insert_resource(LatestGameState::default())
             .insert_resource(GameSpeed(Timer::from_seconds(1.0, TimerMode::Repeating)))
             .insert_resource(Paused(true)) // Start paused
-            .add_systems(Update, (toggle_pause, tick_sender, state_receiver));
+            .add_systems(
+                Update,
+                (toggle_pause, tick_sender).run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(Update, state_receiver);
     }
 }
 

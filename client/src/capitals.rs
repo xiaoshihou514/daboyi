@@ -2,12 +2,16 @@ use bevy::prelude::*;
 
 use crate::map::{MapMode, MapResource};
 use crate::net::LatestGameState;
+use crate::state::AppState;
 
 pub struct CapitalsPlugin;
 
 impl Plugin for CapitalsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (spawn_capitals, sync_capitals_visibility));
+        app.add_systems(
+            Update,
+            (spawn_capitals, sync_capitals_visibility).run_if(in_state(AppState::Playing)),
+        );
     }
 }
 

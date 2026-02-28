@@ -12,17 +12,22 @@ fn main() {
     let vassals_path = args
         .next()
         .unwrap_or_else(|| "assets/vassals.tsv".to_string());
+    let merchandize_path = args
+        .next()
+        .unwrap_or_else(|| "assets/merchandize.tsv".to_string());
 
     eprintln!("Parsing {}...", save_path);
 
-    let (compat_names, country_tags, ownership_ids, dependency_ids) = parse_text_save(&save_path);
+    let (compat_names, country_tags, ownership_ids, dependency_ids, merchandize) =
+        parse_text_save(&save_path);
 
     eprintln!(
-        "Location names: {}, Country tags: {}, Raw ownerships: {}, Dependencies: {}",
+        "Location names: {}, Country tags: {}, Raw ownerships: {}, Dependencies: {}, Merchandize entries: {}",
         compat_names.len(),
         country_tags.len(),
         ownership_ids.len(),
         dependency_ids.len(),
+        merchandize.len(),
     );
 
     // Join: location_id (GPKG_id, 1-based) → location_name → owner_tag
@@ -80,6 +85,16 @@ fn main() {
         writeln!(vout, "{subject}\t{overlord}").unwrap();
     }
     eprintln!("Written {} vassal entries to {vassals_path}", vassals.len());
+
+    // Write merchandize TSV: country_tag \t good \t amount
+    let mut mout = File::create(&merchandize_path).expect("Failed to create merchandize output");
+    writeln!(mout, "country_tag\tgood\tamount").unwrap();
+    let mut m_rows: Vec<(String, String, f32)> = merchandize;
+    m_rows.sort_by(|a, b| a.0.cmp(&b.0).then(b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)));
+    for (tag, good, amount) in &m_rows {
+        writeln!(mout, "{tag}\t{good}\t{amount}").unwrap();
+    }
+    eprintln!("Written {} merchandize rows to {merchandize_path}", m_rows.len());
 }
 
 /// Parse ti.eu5 and return:
@@ -87,7 +102,8 @@ fn main() {
 ///   - country_tags: Vec of country tags, index i = country integer id
 ///   - ownership_ids: Vec of (location_gpkg_id, owner_country_id)
 ///   - dependency_ids: Vec of (overlord_country_id, subject_country_id)
-fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>) {
+///   - merchandize: Vec of (country_tag, good_name, amount)
+fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<(String, String, f32)>) {
     let file = File::open(path).expect("Failed to open text save");
     let reader = BufReader::new(file);
 
@@ -95,6 +111,7 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
     let mut country_tags: Vec<String> = Vec::new();
     let mut ownership_ids: Vec<(u32, u32)> = Vec::new();
     let mut dependency_ids: Vec<(u32, u32)> = Vec::new();
+    let mut merchandize: Vec<(String, String, f32)> = Vec::new();
 
     // Section state
     let mut in_compatibility = false;
@@ -114,9 +131,62 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
     let mut dep_first: Option<u32> = None;
     let mut dep_second: Option<u32> = None;
 
+    // Merchandize extraction state: track country blocks by country_name
+    let mut global_depth: i32 = 0;
+    let mut current_country_tag: Option<String> = None;
+    let mut country_entry_depth: i32 = -1;
+    let mut in_last_month_produced = false;
+    let mut lmp_depth: i32 = 0;
+
     for line in reader.lines() {
         let line = line.expect("Read error");
         let trimmed = line.trim();
+
+        // Track global brace depth for merchandize state machine.
+        let opens = i32::try_from(trimmed.chars().filter(|&c| c == '{').count()).unwrap_or(0);
+        let closes = i32::try_from(trimmed.chars().filter(|&c| c == '}').count()).unwrap_or(0);
+
+        // ── last_month_produced goods extraction ──────────────────────────────
+        if in_last_month_produced {
+            lmp_depth += opens - closes;
+            if lmp_depth <= 0 {
+                in_last_month_produced = false;
+                lmp_depth = 0;
+            } else if let Some(eq) = trimmed.find('=') {
+                let good = trimmed[..eq].trim();
+                if let Ok(amount) = trimmed[eq + 1..].trim().parse::<f32>() {
+                    if let Some(tag) = &current_country_tag {
+                        merchandize.push((tag.clone(), good.to_string(), amount));
+                    }
+                }
+            }
+            // Still update global_depth and check for country block exit below.
+        }
+
+        global_depth += opens - closes;
+
+        // Exit current country block when depth drops back to entry level.
+        if current_country_tag.is_some() && global_depth <= country_entry_depth {
+            current_country_tag = None;
+            country_entry_depth = -1;
+        }
+
+        // Detect definition=TAG — identifies the country tag for this entity block.
+        if !in_last_month_produced {
+            if let Some(rest) = trimmed.strip_prefix("definition=") {
+                let tag = rest.trim().trim_matches('"').to_string();
+                if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    current_country_tag = Some(tag);
+                    // depth of the *parent* container (one level above this line)
+                    country_entry_depth = global_depth - opens + closes - 1;
+                }
+            }
+            // Detect last_month_produced inside a country block.
+            if current_country_tag.is_some() && trimmed == "last_month_produced={" {
+                in_last_month_produced = true;
+                lmp_depth = 1;
+            }
+        }
 
         // ── Dependency blocks ────────────────────────────────────────────────
         if trimmed == "dependency={" {
@@ -217,8 +287,8 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
                 continue;
             }
             if in_locations_inner {
-                let opens = trimmed.chars().filter(|&c| c == '{').count();
-                let closes = trimmed.chars().filter(|&c| c == '}').count();
+                let opens2 = trimmed.chars().filter(|&c| c == '{').count();
+                let closes2 = trimmed.chars().filter(|&c| c == '}').count();
 
                 if locations_depth == 1 {
                     if let Some(rest) = trimmed.strip_suffix("={") {
@@ -249,8 +319,8 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
                         }
                     }
 
-                    let delta = i32::try_from(opens).unwrap_or(0)
-                        - i32::try_from(closes).unwrap_or(0);
+                    let delta = i32::try_from(opens2).unwrap_or(0)
+                        - i32::try_from(closes2).unwrap_or(0);
                     locations_depth += delta;
                     loc_block_depth += delta;
 
@@ -270,5 +340,5 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
         }
     }
 
-    (compat_names, country_tags, ownership_ids, dependency_ids)
+    (compat_names, country_tags, ownership_ids, dependency_ids, merchandize)
 }

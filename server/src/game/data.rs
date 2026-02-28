@@ -1,4 +1,4 @@
-use crate::game::load::{load_country_names, load_eu5_ownership, load_eu5_pops, load_province_names, load_vassals};
+use crate::game::load::{load_country_names, load_eu5_ownership, load_eu5_pops, load_merchandize, load_province_names, load_vassals};
 use crate::game::params::{
     climate_multiplier, topo_density, veg_multiplier, CLASS_RATIOS, FARM_POP_PER_LEVEL,
     INIT_CLOTHING, INIT_FUEL, INIT_GRAIN, KILN_POP_PER_LEVEL, MIN_PROVINCE_POP,
@@ -148,6 +148,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
         .collect();
 
     let eu5_ownership = load_eu5_ownership();
+    let merchandize = load_merchandize();
     let province_owners: Vec<Option<String>> = map_data
         .provinces
         .iter()
@@ -169,6 +170,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
             name: country_names.get(tag).cloned().unwrap_or_else(|| tag.clone()),
             tag: tag.clone(),
             capital_province: first_prov,
+            produced_goods: merchandize.get(tag).cloned().unwrap_or_default(),
         })
         .collect();
     countries.sort_by(|a, b| a.tag.cmp(&b.tag));

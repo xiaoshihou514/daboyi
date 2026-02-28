@@ -7,6 +7,7 @@ const POPS_TSV: &str = "assets/pops.tsv";
 const PROVINCE_NAMES_TSV: &str = "assets/province_names.tsv";
 const COUNTRY_NAMES_TSV: &str = "assets/country_names.tsv";
 const VASSALS_TSV: &str = "assets/vassals.tsv";
+const MERCHANDIZE_TSV: &str = "assets/merchandize.tsv";
 
 pub fn load_province_names() -> HashMap<String, String> {
     load_tsv(PROVINCE_NAMES_TSV, "province names")
@@ -73,4 +74,29 @@ pub fn load_eu5_ownership() -> HashMap<String, String> {
 /// Load vassal relationships: subject_tag → overlord_tag.
 pub fn load_vassals() -> HashMap<String, String> {
     load_tsv(VASSALS_TSV, "vassal relationships")
+}
+
+/// Load merchandize production: country_tag → Vec<(good, amount)> sorted by amount desc.
+pub fn load_merchandize() -> HashMap<String, Vec<(String, f32)>> {
+    let mut map: HashMap<String, Vec<(String, f32)>> = HashMap::new();
+    let content = match fs::read_to_string(MERCHANDIZE_TSV) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: could not load {MERCHANDIZE_TSV}: {e}");
+            return map;
+        }
+    };
+    for line in content.lines().skip(1) {
+        let mut parts = line.splitn(3, '\t');
+        if let (Some(tag), Some(good), Some(amt_str)) = (parts.next(), parts.next(), parts.next()) {
+            if let Ok(amount) = amt_str.trim().parse::<f32>() {
+                map.entry(tag.trim().to_string())
+                    .or_default()
+                    .push((good.trim().to_string(), amount));
+            }
+        }
+    }
+    // TSV is pre-sorted by amount desc (parse_save writes it that way), so no re-sort needed.
+    println!("Loaded merchandize for {} countries from {MERCHANDIZE_TSV}", map.len());
+    map
 }

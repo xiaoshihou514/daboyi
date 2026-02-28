@@ -119,6 +119,9 @@ pub struct Country {
     pub name: String,
     /// Province ID of the capital.
     pub capital_province: u32,
+    /// Goods produced last month (from EU5 save), sorted by amount descending.
+    /// Keys are EU5 good names: "iron", "lumber", "wheat", "clay", etc.
+    pub produced_goods: Vec<(String, f32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
