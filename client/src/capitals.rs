@@ -25,17 +25,24 @@ fn spawn_capitals(
     state: Res<LatestGameState>,
     map: Option<Res<MapResource>>,
     mode: Res<MapMode>,
-    mut last_tick: Local<Option<u64>>,
+    // Store fingerprint of (tag, capital_province) pairs — only respawn if this changes.
+    mut last_fingerprint: Local<Vec<(String, u32)>>,
     existing: Query<Entity, With<CapitalMarker>>,
 ) {
     let Some(map) = map else { return };
     let Some(gs) = &state.0 else { return };
 
-    // Only re-spawn when the game state tick changes (use None to force first spawn).
-    if *last_tick == Some(gs.tick) {
+    // Build fingerprint from country capital assignments.
+    let fingerprint: Vec<(String, u32)> = gs
+        .countries
+        .iter()
+        .map(|c| (c.tag.clone(), c.capital_province))
+        .collect();
+
+    if *last_fingerprint == fingerprint {
         return;
     }
-    *last_tick = Some(gs.tick);
+    *last_fingerprint = fingerprint;
 
     // Despawn old markers.
     for entity in existing.iter() {

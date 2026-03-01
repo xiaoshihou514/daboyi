@@ -8,7 +8,7 @@ use crate::net::LatestGameState;
 use crate::state::AppState;
 
 /// Border line half-width in world-space degrees.
-const BORDER_HALF_W: f32 = 0.04;
+const BORDER_HALF_W: f32 = 0.25;
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 
 /// Precomputed adjacency: pairs of province IDs that share an edge.
@@ -44,8 +44,8 @@ pub fn compute_adjacency(
     }
     let Some(map) = map else { return };
 
-    // Quantize f32 coords to i32 grid at 0.001° resolution.
-    let quantize = |v: f32| -> i32 { (v * 1000.0).round() as i32 };
+    // Quantize f32 coords to i32 grid at 0.01° resolution.
+    let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
 
     // Map from quantized edge (sorted point pair) → province ID.
     // An edge is a segment between two consecutive boundary points.
@@ -184,7 +184,7 @@ fn shared_segments(
     a: &shared::map::MapProvince,
     b: &shared::map::MapProvince,
 ) -> Vec<[[f32; 2]; 2]> {
-    let quantize = |v: f32| -> i32 { (v * 1000.0).round() as i32 };
+    let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
     let qpoint = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
     // Collect all edges from province b as a set of canonical (sorted) point pairs.
