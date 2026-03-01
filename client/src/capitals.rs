@@ -25,17 +25,17 @@ fn spawn_capitals(
     state: Res<LatestGameState>,
     map: Option<Res<MapResource>>,
     mode: Res<MapMode>,
-    mut last_tick: Local<u64>,
+    mut last_tick: Local<Option<u64>>,
     existing: Query<Entity, With<CapitalMarker>>,
 ) {
     let Some(map) = map else { return };
     let Some(gs) = &state.0 else { return };
 
-    // Only re-spawn when the game state tick changes.
-    if gs.tick == *last_tick {
+    // Only re-spawn when the game state tick changes (use None to force first spawn).
+    if *last_tick == Some(gs.tick) {
         return;
     }
-    *last_tick = gs.tick;
+    *last_tick = Some(gs.tick);
 
     // Despawn old markers.
     for entity in existing.iter() {

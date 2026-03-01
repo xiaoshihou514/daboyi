@@ -24,21 +24,24 @@ pub struct BordersPlugin;
 impl Plugin for BordersPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ProvinceAdjacency::default())
-            .add_systems(Startup, compute_adjacency)
             .add_systems(
                 Update,
-                rebuild_borders.run_if(in_state(AppState::Playing)),
+                (compute_adjacency, rebuild_borders)
+                    .chain()
+                    .run_if(in_state(AppState::Playing)),
             );
     }
 }
 
-/// Compute province adjacency from MapData boundary rings at startup.
-/// Two provinces are adjacent if they share at least one boundary edge
-/// (both endpoints match within ε). Uses a quantized-point HashMap.
+/// Compute province adjacency from MapData boundary rings — runs once when MapResource is ready.
 pub fn compute_adjacency(
     map: Option<Res<MapResource>>,
     mut adjacency: ResMut<ProvinceAdjacency>,
 ) {
+    // Run only once (after adjacency is populated it's non-empty).
+    if !adjacency.0.is_empty() {
+        return;
+    }
     let Some(map) = map else { return };
 
     // Quantize f32 coords to i32 grid at 0.001° resolution.
@@ -91,18 +94,23 @@ fn rebuild_borders(
     adjacency: Res<ProvinceAdjacency>,
     mode: Res<MapMode>,
     existing: Query<Entity, With<BorderMesh>>,
-    mut last_tick: Local<u64>,
+    mut last_tick: Local<Option<u64>>,
     mut last_mode: Local<Option<MapMode>>,
 ) {
     let Some(map) = map else { return };
     let Some(gs) = &state.0 else { return };
 
+    // Wait until adjacency is computed.
+    if adjacency.0.is_empty() {
+        return;
+    }
+
     let mode_changed = Some(*mode) != *last_mode;
-    let tick_changed = gs.tick != *last_tick;
+    let tick_changed = *last_tick != Some(gs.tick);
     if !mode_changed && !tick_changed {
         return;
     }
-    *last_tick = gs.tick;
+    *last_tick = Some(gs.tick);
     *last_mode = Some(*mode);
 
     // Despawn old border meshes.
