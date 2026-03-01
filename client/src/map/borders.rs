@@ -7,8 +7,6 @@ use crate::map::{MapMode, MapResource, MAP_WIDTH};
 use crate::net::LatestGameState;
 use crate::state::AppState;
 
-/// Border line half-width in world-space degrees.
-const BORDER_HALF_W: f32 = 0.06;
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 
 /// Precomputed adjacency: pairs of province IDs that share an edge.
@@ -75,7 +73,7 @@ pub fn compute_adjacency(
     adjacency.0 = pairs;
 }
 
-/// Rebuild the border mesh whenever the game state or mode changes.
+/// Rebuild the border mesh whenever the game state, mode, or zoom level changes.
 fn rebuild_borders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -84,9 +82,11 @@ fn rebuild_borders(
     map: Option<Res<MapResource>>,
     adjacency: Res<ProvinceAdjacency>,
     mode: Res<MapMode>,
+    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     existing: Query<Entity, With<BorderMesh>>,
     mut last_tick: Local<Option<u64>>,
     mut last_mode: Local<Option<MapMode>>,
+    mut last_cam_scale: Local<f32>,
 ) {
     let Some(map) = map else { return };
     let Some(gs) = &state.0 else { return };
@@ -95,13 +95,17 @@ fn rebuild_borders(
         return;
     }
 
+    let cam_scale = camera_q.get_single().map(|p| p.scale).unwrap_or(0.1);
+    let scale_changed = (*last_cam_scale - cam_scale).abs() / cam_scale.max(1e-6) > 0.15;
+
     let mode_changed = Some(*mode) != *last_mode;
     let tick_changed = *last_tick != Some(gs.tick);
-    if !mode_changed && !tick_changed {
+    if !mode_changed && !tick_changed && !scale_changed {
         return;
     }
     *last_tick = Some(gs.tick);
     *last_mode = Some(*mode);
+    *last_cam_scale = cam_scale;
 
     for e in existing.iter() {
         commands.entity(e).despawn();
@@ -111,18 +115,17 @@ fn rebuild_borders(
         return;
     }
 
+    // Border half-width: constant ~1 screen pixel at any zoom level.
+    let half_w = cam_scale * 0.8;
+
     let province_owner: Vec<Option<&str>> = gs
         .provinces
         .iter()
         .map(|p| p.owner.as_deref())
         .collect();
-    let is_owned_wasteland = |idx: usize| -> bool {
-        if idx >= map.0.provinces.len() {
-            return false;
-        }
-        map.0.provinces[idx].topography.contains("wasteland")
-            && idx < gs.provinces.len()
-            && gs.provinces[idx].owner.is_some()
+    // Skip border if either province is wasteland (owned or unowned).
+    let is_wasteland = |idx: usize| -> bool {
+        idx < map.0.provinces.len() && map.0.provinces[idx].topography.contains("wasteland")
     };
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
@@ -135,7 +138,7 @@ fn rebuild_borders(
         if ia >= province_owner.len() || ib >= province_owner.len() {
             continue;
         }
-        if is_owned_wasteland(ia) || is_owned_wasteland(ib) {
+        if is_wasteland(ia) || is_wasteland(ib) {
             continue;
         }
         if province_owner[ia] == province_owner[ib] {
@@ -145,7 +148,7 @@ fn rebuild_borders(
         // Get shared boundary segments in ring order, chain into polylines.
         let segs = shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]);
         for chain in chain_polylines(segs) {
-            polyline_to_quads(&chain, BORDER_HALF_W, &mut positions, &mut colors, &mut indices, 0.8);
+            polyline_to_quads(&chain, half_w, &mut positions, &mut colors, &mut indices, 0.8);
         }
     }
 

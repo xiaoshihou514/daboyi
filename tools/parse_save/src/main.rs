@@ -18,10 +18,13 @@ fn main() {
     let colors_path = args
         .next()
         .unwrap_or_else(|| "assets/country_colors.tsv".to_string());
+    let capitals_path = args
+        .next()
+        .unwrap_or_else(|| "assets/capitals.tsv".to_string());
 
     eprintln!("Parsing {}...", save_path);
 
-    let (compat_names, country_tags, ownership_ids, dependency_ids, merchandize, colors) =
+    let (compat_names, country_tags, ownership_ids, dependency_ids, merchandize, colors, capitals_ids) =
         parse_text_save(&save_path);
 
     eprintln!(
@@ -109,6 +112,24 @@ fn main() {
         writeln!(cout, "{tag}\t{r}\t{g}\t{b}").unwrap();
     }
     eprintln!("Written {} country colors to {colors_path}", color_rows.len());
+
+    // Resolve capitals_ids (country_tag, GPKG_id) → (country_tag, location_name).
+    let mut cap_rows: Vec<(String, String)> = capitals_ids
+        .into_iter()
+        .filter_map(|(tag, gpkg_id)| {
+            let idx = (gpkg_id as usize).checked_sub(1)?;
+            let loc_name = compat_names.get(idx)?;
+            if loc_name.is_empty() { return None; }
+            Some((tag, loc_name.clone()))
+        })
+        .collect();
+    cap_rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut kout = File::create(&capitals_path).expect("Failed to create capitals output");
+    writeln!(kout, "country_tag\tcapital_location").unwrap();
+    for (tag, loc) in &cap_rows {
+        writeln!(kout, "{tag}\t{loc}").unwrap();
+    }
+    eprintln!("Written {} capital entries to {capitals_path}", cap_rows.len());
 }
 
 /// Parse ti.eu5 and return:
@@ -118,7 +139,8 @@ fn main() {
 ///   - dependency_ids: Vec of (overlord_country_id, subject_country_id)
 ///   - merchandize: Vec of (country_tag, good_name, amount)
 ///   - colors: Vec of (country_tag, r, g, b) — from `color=rgb { r g b }` in country blocks
-fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<(String, String, f32)>, Vec<(String, u8, u8, u8)>) {
+///   - capitals_ids: Vec of (country_tag, capital_gpkg_id)
+fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<(String, String, f32)>, Vec<(String, u8, u8, u8)>, Vec<(String, u32)>) {
     let file = File::open(path).expect("Failed to open text save");
     let reader = BufReader::new(file);
 
@@ -128,6 +150,10 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
     let mut dependency_ids: Vec<(u32, u32)> = Vec::new();
     let mut merchandize: Vec<(String, String, f32)> = Vec::new();
     let mut colors: Vec<(String, u8, u8, u8)> = Vec::new();
+    let mut capitals_ids: Vec<(String, u32)> = Vec::new();
+
+    // Capital tracking: current country's capital GPKG_id.
+    let mut current_country_capital_id: Option<u32> = None;
 
     // Section state
     let mut in_compatibility = false;
@@ -183,6 +209,11 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
 
         // Exit current country block when depth drops back to entry level.
         if current_country_tag.is_some() && global_depth <= country_entry_depth {
+            if let Some(cap_id) = current_country_capital_id.take() {
+                if let Some(tag) = &current_country_tag {
+                    capitals_ids.push((tag.clone(), cap_id));
+                }
+            }
             current_country_tag = None;
             country_entry_depth = -1;
         }
@@ -212,6 +243,12 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
                         .collect();
                     if nums.len() >= 3 {
                         colors.push((tag.clone(), nums[0], nums[1], nums[2]));
+                    }
+                }
+                // Detect capital=N inside a country block.
+                if let Some(rest) = trimmed.strip_prefix("capital=") {
+                    if let Ok(cap_id) = rest.trim().parse::<u32>() {
+                        current_country_capital_id = Some(cap_id);
                     }
                 }
             }
@@ -369,5 +406,5 @@ fn parse_text_save(path: &str) -> (Vec<String>, Vec<String>, Vec<(u32, u32)>, Ve
         }
     }
 
-    (compat_names, country_tags, ownership_ids, dependency_ids, merchandize, colors)
+    (compat_names, country_tags, ownership_ids, dependency_ids, merchandize, colors, capitals_ids)
 }

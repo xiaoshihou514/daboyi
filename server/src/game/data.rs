@@ -1,4 +1,4 @@
-use crate::game::load::{load_country_names, load_eu5_ownership, load_eu5_pops, load_merchandize, load_province_names, load_vassals};
+use crate::game::load::{load_capitals, load_country_names, load_eu5_ownership, load_eu5_pops, load_merchandize, load_province_names, load_vassals};
 use crate::game::params::{
     climate_multiplier, topo_density, veg_multiplier, CLASS_RATIOS, FARM_POP_PER_LEVEL,
     INIT_CLOTHING, INIT_FUEL, INIT_GRAIN, KILN_POP_PER_LEVEL, MIN_PROVINCE_POP,
@@ -149,11 +149,80 @@ pub fn generate_world(map_data: &MapData) -> GameState {
 
     let eu5_ownership = load_eu5_ownership();
     let merchandize = load_merchandize();
+    let capitals_map = load_capitals();
     let province_owners: Vec<Option<String>> = map_data
         .provinces
         .iter()
         .map(|mp| eu5_ownership.get(&mp.tag).cloned())
         .collect();
+
+    // Build location_name → province_index lookup.
+    let name_to_idx: HashMap<&str, u32> = map_data
+        .provinces
+        .iter()
+        .enumerate()
+        .map(|(i, mp)| (mp.tag.as_str(), u32::try_from(i).unwrap()))
+        .collect();
+
+    // Infer wasteland owner from neighbors (majority vote among adjacent non-wasteland).
+    // Repeat until convergence (handles chains of wasteland).
+    let province_owners = {
+        let mut owners = province_owners;
+        let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
+        let mut edge_map: HashMap<[(i32, i32); 2], u32> = HashMap::new();
+        let mut neighbor_map: HashMap<u32, Vec<u32>> = HashMap::new();
+        for province in &map_data.provinces {
+            let pid = province.id;
+            for ring in &province.boundary {
+                let n = ring.len();
+                for i in 0..n {
+                    let a = ring[i];
+                    let b = ring[(i + 1) % n];
+                    let qa = (quantize(a[0]), quantize(a[1]));
+                    let qb = (quantize(b[0]), quantize(b[1]));
+                    let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
+                    if let Some(&other) = edge_map.get(&key) {
+                        if other != pid {
+                            neighbor_map.entry(pid).or_default().push(other);
+                            neighbor_map.entry(other).or_default().push(pid);
+                        }
+                    } else {
+                        edge_map.insert(key, pid);
+                    }
+                }
+            }
+        }
+        // Iteratively assign wasteland provinces from non-wasteland neighbors.
+        loop {
+            let mut changed = false;
+            for (idx, mp) in map_data.provinces.iter().enumerate() {
+                if !mp.topography.contains("wasteland") || owners[idx].is_some() {
+                    continue;
+                }
+                let mut votes: HashMap<&str, u32> = HashMap::new();
+                if let Some(neighbors) = neighbor_map.get(&mp.id) {
+                    for &nid in neighbors {
+                        let nidx = nid as usize;
+                        if nidx < map_data.provinces.len()
+                            && !map_data.provinces[nidx].topography.contains("wasteland")
+                        {
+                            if let Some(owner) = owners[nidx].as_deref() {
+                                *votes.entry(owner).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+                if let Some((&best, _)) = votes.iter().max_by_key(|(_, &v)| v) {
+                    owners[idx] = Some(best.to_string());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        owners
+    };
 
     // Collect unique country tags → create Country entities.
     let mut active_tags: HashMap<String, u32> = HashMap::new();
@@ -166,12 +235,19 @@ pub fn generate_world(map_data: &MapData) -> GameState {
     }
     let mut countries: Vec<Country> = active_tags
         .iter()
-        .map(|(tag, &first_prov)| Country {
-            name: country_names.get(tag).cloned().unwrap_or_else(|| tag.clone()),
-            tag: tag.clone(),
-            capital_province: first_prov,
-            produced_goods: merchandize.get(tag).cloned().unwrap_or_default(),
-            treasury: 0.0,
+        .map(|(tag, &first_prov)| {
+            // Use proper capital from EU5 save if available, else fall back to first_prov.
+            let capital_province = capitals_map
+                .get(tag.as_str())
+                .and_then(|loc| name_to_idx.get(loc.as_str()).copied())
+                .unwrap_or(first_prov);
+            Country {
+                name: country_names.get(tag).cloned().unwrap_or_else(|| tag.clone()),
+                tag: tag.clone(),
+                capital_province,
+                produced_goods: merchandize.get(tag).cloned().unwrap_or_default(),
+                treasury: 0.0,
+            }
         })
         .collect();
     countries.sort_by(|a, b| a.tag.cmp(&b.tag));

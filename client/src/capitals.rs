@@ -5,11 +5,6 @@ use crate::net::LatestGameState;
 use crate::state::AppState;
 use crate::ui::CjkFont;
 
-/// Minimum province count a country must have to be visible at a given zoom level.
-/// Show if: province_count as f32 >= camera_scale * LOD_K
-/// scale=0.15 → need ≥30; scale=0.01 → need ≥2; scale=0.002 → need ≥0.4 (all)
-const LOD_K: f32 = 200.0;
-
 pub struct CapitalsPlugin;
 
 impl Plugin for CapitalsPlugin {
@@ -25,13 +20,18 @@ impl Plugin for CapitalsPlugin {
 #[derive(Component)]
 pub struct CapitalMarker;
 
-/// Province count of the owning country — drives LOD visibility.
+/// Drives EU4-style LOD: territory_factor = sqrt(province_count).
+/// Name world-space size = territory_factor * NAME_BASE_SIZE.
+/// Star is always constant screen-space size.
 #[derive(Component)]
-struct CapitalCountrySize(u32);
+struct CapitalTerritoryFactor(f32);
 
-/// Whether this marker is the star (true) or name label (false) — drives scale target.
+/// Whether this marker is the star (true) or name label (false).
 #[derive(Component)]
 struct CapitalIsStar(bool);
+
+/// Base world-space size (degrees) per unit of territory_factor for name labels.
+const NAME_BASE_SIZE: f32 = 0.6;
 
 fn spawn_capitals(
     mut commands: Commands,
@@ -78,9 +78,14 @@ fn spawn_capitals(
         let centroid = map.0.provinces[cap_id].centroid;
         let x = centroid[0];
         let y = centroid[1];
-        let size = *province_counts.get(country.tag.as_str()).unwrap_or(&0);
+        let size = *province_counts.get(country.tag.as_str()).unwrap_or(&1);
+        let territory_factor = (size as f32).sqrt();
 
-        // Spawn with scale=1 — update_capitals_scale sets the real scale each frame.
+        // Name world-space size is fixed (not zoom-dependent) — proportional to territory.
+        let name_world = territory_factor * NAME_BASE_SIZE;
+        let name_scale = name_world / 36.0;
+        let name_y = y - name_world * 0.6;
+
         commands.spawn((
             Text2d::new("★"),
             TextFont { font: cjk.clone(), font_size: 48.0, ..default() },
@@ -88,7 +93,7 @@ fn spawn_capitals(
             Transform::from_xyz(x, y, 1.5),
             Visibility::Hidden,
             CapitalMarker,
-            CapitalCountrySize(size),
+            CapitalTerritoryFactor(territory_factor),
             CapitalIsStar(true),
         ));
 
@@ -96,21 +101,21 @@ fn spawn_capitals(
             Text2d::new(country.name.clone()),
             TextFont { font: cjk.clone(), font_size: 36.0, ..default() },
             TextColor(Color::srgba(1.0, 1.0, 1.0, 0.9)),
-            Transform::from_xyz(x, y - 1.5, 1.5),
+            Transform::from_xyz(x, name_y, 1.5).with_scale(Vec3::splat(name_scale)),
             Visibility::Hidden,
             CapitalMarker,
-            CapitalCountrySize(size),
+            CapitalTerritoryFactor(territory_factor),
             CapitalIsStar(false),
         ));
     }
 }
 
-/// Every frame: update scale (zoom-aware) and visibility (mode + LOD) for all capital entities.
+/// Every frame: update star scale (zoom-aware) and visibility (mode + EU4-style LOD).
 fn update_capitals_scale(
     mode: Res<MapMode>,
     camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     mut markers: Query<
-        (&mut Transform, &mut Visibility, &CapitalCountrySize, &CapitalIsStar),
+        (&mut Transform, &mut Visibility, &CapitalTerritoryFactor, &CapitalIsStar),
         With<CapitalMarker>,
     >,
 ) {
@@ -118,24 +123,32 @@ fn update_capitals_scale(
     let cam_scale = proj.scale;
     let political = *mode == MapMode::Political;
 
-    for (mut transform, mut vis, CapitalCountrySize(size), CapitalIsStar(is_star)) in
+    for (mut transform, mut vis, CapitalTerritoryFactor(tf), CapitalIsStar(is_star)) in
         markers.iter_mut()
     {
-        // LOD: hide if country is too small for current zoom level.
-        let lod_ok = (*size as f32) >= cam_scale * LOD_K;
-        *vis = if political && lod_ok {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        if *is_star {
+            // Star: constant ~10 screen pixels, zoom-aware.
+            let entity_scale = 10.0 * cam_scale / 48.0;
+            transform.scale = Vec3::splat(entity_scale);
 
-        // Scale so the entity appears at a constant screen-space pixel size.
-        // entity_scale = target_screen_px * cam_scale / font_size
-        let entity_scale = if *is_star {
-            12.0 * cam_scale / 48.0
+            // Show when territory is in a reasonable zoom window.
+            let max_cam = tf / 40.0;
+            let min_cam = tf / 800.0;
+            *vis = if political && cam_scale > min_cam && cam_scale < max_cam {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
         } else {
-            10.0 * cam_scale / 36.0
-        };
-        transform.scale = Vec3::splat(entity_scale);
+            // Name: world-space scale is fixed (set at spawn). Only update visibility.
+            // Show when the name would appear between ~8px and ~150px on screen.
+            let name_world = tf * NAME_BASE_SIZE;
+            let screen_size = name_world / cam_scale;
+            *vis = if political && screen_size > 8.0 && screen_size < 150.0 {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+        }
     }
 }
