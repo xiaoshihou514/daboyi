@@ -13,6 +13,8 @@ pub struct AppState {
     pub game_state: Mutex<GameState>,
     pub command_queue: Mutex<Vec<Order>>,
     pub db: Mutex<db::GameDb>,
+    /// The country tag the player is currently controlling (set by client on game start).
+    pub player_country: Mutex<Option<String>>,
 }
 
 #[actix_web::main]
@@ -39,6 +41,7 @@ async fn main() -> std::io::Result<()> {
         game_state: Mutex::new(initial_state),
         command_queue: Mutex::new(Vec::new()),
         db: Mutex::new(db),
+        player_country: Mutex::new(None),
     });
 
     println!("Server listening on ws://127.0.0.1:8080/ws");

@@ -53,7 +53,7 @@ fn spawn_capitals(
         let x = centroid[0];
         let y = centroid[1];
 
-        // Star marker: world-space Text2d at the capital province centroid.
+        // Star marker at capital centroid.
         commands.spawn((
             Text2d::new("★"),
             TextFont {
@@ -62,6 +62,23 @@ fn spawn_capitals(
             },
             TextColor(Color::srgba(1.0, 0.9, 0.0, 0.95)),
             Transform::from_xyz(x, y, 1.5),
+            Visibility::from(if visible {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            }),
+            CapitalMarker,
+        ));
+
+        // Country name label slightly below the star.
+        commands.spawn((
+            Text2d::new(country.name.clone()),
+            TextFont {
+                font_size: 3.0,
+                ..default()
+            },
+            TextColor(Color::srgba(1.0, 1.0, 1.0, 0.9)),
+            Transform::from_xyz(x, y - 1.0, 1.5),
             Visibility::from(if visible {
                 Visibility::Visible
             } else {

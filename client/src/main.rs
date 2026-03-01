@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 rust_i18n::i18n!("../locales", fallback = "zh");
 
+mod armies;
 mod capitals;
 mod map;
 mod menu;
@@ -36,7 +37,9 @@ fn main() {
         .add_plugins(net::NetPlugin)
         .add_plugins(terrain::TerrainPlugin)
         .add_plugins(map::MapPlugin)
+        .add_plugins(map::BordersPlugin)
         .add_plugins(capitals::CapitalsPlugin)
+        .add_plugins(armies::ArmiesPlugin)
         .add_plugins(ui::UiPlugin)
         .add_plugins(menu::MenuPlugin)
         .run();

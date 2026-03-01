@@ -171,6 +171,7 @@ pub fn generate_world(map_data: &MapData) -> GameState {
             tag: tag.clone(),
             capital_province: first_prov,
             produced_goods: merchandize.get(tag).cloned().unwrap_or_default(),
+            treasury: 0.0,
         })
         .collect();
     countries.sort_by(|a, b| a.tag.cmp(&b.tag));
@@ -233,5 +234,6 @@ pub fn generate_world(map_data: &MapData) -> GameState {
         provinces,
         building_types,
         vassals,
+        armies: Vec::new(),
     }
 }

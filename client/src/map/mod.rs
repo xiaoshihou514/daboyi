@@ -1,4 +1,5 @@
 mod color;
+pub mod borders;
 mod interact;
 
 use bevy::prelude::*;
@@ -13,6 +14,7 @@ use crate::net::LatestGameState;
 use crate::state::AppState;
 use color::{brighten, heatmap_rgba, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, map_mode_switch, province_click};
+pub use borders::BordersPlugin;
 
 pub const MAP_BIN_PATH: &str = "assets/map.bin";
 const COUNTRY_COLORS_TSV: &str = "assets/country_colors.tsv";

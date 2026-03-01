@@ -5,7 +5,7 @@ use std::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{connect_async_with_config, tungstenite::Message};
 
-use crate::state::AppState;
+use crate::state::{AppState, PlayerCountry};
 
 pub struct NetPlugin;
 
@@ -46,6 +46,7 @@ impl Plugin for NetPlugin {
             .insert_resource(LatestGameState::default())
             .insert_resource(GameSpeed(Timer::from_seconds(1.0, TimerMode::Repeating)))
             .insert_resource(Paused(true)) // Start paused
+            .add_systems(OnEnter(AppState::Playing), notify_server_player_country)
             .add_systems(
                 Update,
                 (toggle_pause, tick_sender).run_if(in_state(AppState::Playing)),
@@ -119,6 +120,16 @@ async fn ws_loop(
                 }
             }
         }
+    }
+}
+
+/// On entering Playing state, inform the server which country the player controls.
+fn notify_server_player_country(
+    player_country: Res<PlayerCountry>,
+    sender: Res<CmdSender>,
+) {
+    if let Some(ref tag) = player_country.0 {
+        sender.0.send(ClientMsg::SetPlayerCountry(tag.clone())).ok();
     }
 }
 

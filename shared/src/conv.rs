@@ -74,6 +74,12 @@ pub fn u64_to_f64(v: u64) -> f64 {
     v as f64
 }
 
+/// `f32 → u32`, saturating (negative → 0, > u32::MAX → u32::MAX).
+#[inline]
+pub fn f32_to_u32(v: f32) -> u32 {
+    v.clamp(0.0, u32::MAX as f32) as u32
+}
+
 /// `u32 → usize` (infallible on 32/64-bit platforms).
 #[inline]
 pub fn u32_to_usize(v: u32) -> usize {

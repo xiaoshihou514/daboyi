@@ -109,6 +109,21 @@ pub struct Building {
     pub level: u32,
 }
 
+// ── Military ─────────────────────────────────────────────────────────────────
+
+/// An army unit owned by a country, currently in a province.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Army {
+    /// Unique army identifier.
+    pub id: u64,
+    /// Owning country tag.
+    pub owner: String,
+    /// Province where this army is currently located.
+    pub province_id: u32,
+    /// Number of soldiers.
+    pub size: u32,
+}
+
 // ── World entities ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +137,8 @@ pub struct Country {
     /// Goods produced last month (from EU5 save), sorted by amount descending.
     /// Keys are EU5 good names: "iron", "lumber", "wheat", "clay", etc.
     pub produced_goods: Vec<(String, f32)>,
+    /// Gold treasury — accumulated via tax collection each economy tick.
+    pub treasury: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +162,8 @@ pub struct GameState {
     pub building_types: Vec<BuildingType>,
     /// Maps subject_tag → overlord_tag for all dependency relationships.
     pub vassals: HashMap<String, String>,
+    /// All active armies on the map.
+    pub armies: Vec<Army>,
 }
 
 // ── Player commands ──────────────────────────────────────────────────────────
@@ -156,6 +175,12 @@ pub enum OrderKind {
     BuildFarm { province_id: u32 },
     /// Build a charcoal kiln in the target province.
     BuildKiln { province_id: u32 },
+    /// Raise an army in an owned province (costs `size * RAISE_COST_PER_SOLDIER` treasury).
+    RaiseArmy { province_id: u32, size: u32 },
+    /// Move an army to a target province.
+    MoveArmy { army_id: u64, target_province_id: u32 },
+    /// Disband an army, returning half its treasury cost.
+    DisbandArmy { army_id: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +199,8 @@ pub enum ClientMsg {
     FetchState,
     /// Queue a player order; applied on the next Tick.
     IssueOrder(Order),
+    /// Tell the server which country tag the player is controlling.
+    SetPlayerCountry(String),
 }
 
 /// Messages sent from server → client.

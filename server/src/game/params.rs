@@ -8,6 +8,30 @@ use shared::{Good, PopClass};
 /// Number of game-days between economy simulation ticks (population + production).
 pub const ECONOMY_TICK_INTERVAL: u64 = 100;
 
+// ── Tax ───────────────────────────────────────────────────────────────────────
+
+/// Fraction of each province's production value collected as tax each economy tick.
+pub const TAX_RATE: f32 = 0.20;
+
+/// Gold price per unit of each good (for computing production value for tax).
+pub const GOOD_PRICES: &[(Good, f32)] = &[
+    (Good::Grain, 1.0),
+    (Good::Clothing, 3.0),
+    (Good::Fuel, 1.0),
+    (Good::Tools, 5.0),
+    (Good::Luxuries, 10.0),
+    (Good::Metal, 4.0),
+    (Good::BuildingMaterials, 2.0),
+];
+
+// ── Military ──────────────────────────────────────────────────────────────────
+
+/// Treasury cost per soldier when raising an army.
+pub const RAISE_COST_PER_SOLDIER: f32 = 0.01;
+
+/// Fraction of army size lost by each side per combat tick (both attacker and defender).
+pub const COMBAT_ATTRITION: f32 = 0.10;
+
 // ── Population density ────────────────────────────────────────────────────────
 
 /// Base population density (people per degree²) by topography.

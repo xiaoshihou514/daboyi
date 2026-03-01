@@ -61,8 +61,9 @@ fn handle_msg(msg: ClientMsg, state: &AppState) -> Vec<u8> {
     match msg {
         ClientMsg::Tick => {
             let orders = state.command_queue.lock().unwrap().drain(..).collect();
+            let player_country = state.player_country.lock().unwrap().clone();
             let mut gs = state.game_state.lock().unwrap();
-            gs.apply_commands(orders);
+            gs.apply_commands(orders, player_country.as_deref());
             gs.advance();
             if gs.tick % 300 == 0 {
                 state.db.lock().unwrap().save_state(&gs).ok();
@@ -75,6 +76,10 @@ fn handle_msg(msg: ClientMsg, state: &AppState) -> Vec<u8> {
         }
         ClientMsg::IssueOrder(order) => {
             state.command_queue.lock().unwrap().push(order);
+            bincode::serialize(&ServerMsgRef::Ack).unwrap_or_default()
+        }
+        ClientMsg::SetPlayerCountry(tag) => {
+            *state.player_country.lock().unwrap() = Some(tag);
             bincode::serialize(&ServerMsgRef::Ack).unwrap_or_default()
         }
     }

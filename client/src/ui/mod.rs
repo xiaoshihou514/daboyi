@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 use rust_i18n::t;
 use shared::conv::u32_to_usize;
-use shared::{Good, PopClass};
+use shared::{Good, Order, OrderKind, PopClass};
 
 use crate::map::{MapMode, MapResource, SelectedProvince};
-use crate::net::{LatestGameState, Paused};
-use crate::state::AppState;
+use crate::net::{CmdSender, LatestGameState, Paused};
+use crate::state::{AppState, PlayerCountry};
+use shared::ClientMsg;
 
 pub struct UiPlugin;
 
@@ -35,6 +36,10 @@ struct ProvincePanel;
 /// Marker for a map-mode button; stores which mode it activates.
 #[derive(Component)]
 struct MapModeButton(MapMode);
+
+/// Marker for the raise-army button.
+#[derive(Component)]
+struct RaiseArmyButton;
 
 /// Marker for the pause/unpause button.
 #[derive(Component)]
@@ -194,6 +199,28 @@ fn setup_game_ui(mut commands: Commands, cjk_res: Res<CjkFont>) {
                 // Spacer.
                 row.spawn(Node { width: Val::Px(20.0), ..default() });
 
+                // Raise Army button (1000 soldiers in selected province).
+                row.spawn((
+                    Button,
+                    RaiseArmyButton,
+                    Node {
+                        padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.55, 0.20, 0.20)),
+                    BorderRadius::all(Val::Px(4.0)),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new(t!("raise_army_btn").to_string()),
+                        TextFont { font: cjk.clone(), font_size: 13.0, ..default() },
+                        TextColor(TEXT_COLOR),
+                    ));
+                });
+
+                // Spacer.
+                row.spawn(Node { width: Val::Px(20.0), ..default() });
+
                 // Pause button.
                 row.spawn((
                     Button,
@@ -338,9 +365,10 @@ fn update_province_panel(
             }
         }
 
-        // Country production (top goods)
+        // Country production (top goods) + treasury
         if let Some(owner_tag) = province.owner.as_deref() {
             if let Some(country) = gs.countries.iter().find(|c| c.tag == owner_tag) {
+                info.push_str(&format!("\n{}: {:.1} 金\n", t!("treasury"), country.treasury));
                 if !country.produced_goods.is_empty() {
                     info.push_str(&format!("\n{}:\n", t!("produced_goods")));
                     for (good, amount) in country.produced_goods.iter().take(5) {
@@ -354,16 +382,20 @@ fn update_province_panel(
     }
 }
 
-/// Handle button clicks → update MapMode or toggle Paused.
+/// Handle button clicks → update MapMode, toggle Paused, or issue military orders.
 fn button_interactions(
     interaction_q: Query<
-        (&Interaction, Option<&MapModeButton>, Option<&PauseButton>),
+        (&Interaction, Option<&MapModeButton>, Option<&PauseButton>, Option<&RaiseArmyButton>),
         (Changed<Interaction>, With<Button>),
     >,
     mut mode: ResMut<MapMode>,
     mut paused: ResMut<Paused>,
+    selected: Res<SelectedProvince>,
+    player_country: Res<PlayerCountry>,
+    state: Res<LatestGameState>,
+    sender: Res<CmdSender>,
 ) {
-    for (interaction, map_btn, pause_btn) in &interaction_q {
+    for (interaction, map_btn, pause_btn, raise_btn) in &interaction_q {
         if *interaction != Interaction::Pressed {
             continue;
         }
@@ -372,6 +404,22 @@ fn button_interactions(
         }
         if pause_btn.is_some() {
             paused.0 = !paused.0;
+        }
+        if raise_btn.is_some() {
+            // Issue a RaiseArmy order for the selected province (1000 soldiers).
+            if let (Some(pid), Some(ref tag)) = (selected.0, &player_country.0) {
+                // Only if player owns this province.
+                let owns = state.0.as_ref().map(|gs| {
+                    gs.provinces.get(u32_to_usize(pid))
+                        .and_then(|p| p.owner.as_deref())
+                        == Some(tag.as_str())
+                }).unwrap_or(false);
+                if owns {
+                    sender.0.send(ClientMsg::IssueOrder(Order {
+                        kind: OrderKind::RaiseArmy { province_id: pid, size: 1000 },
+                    })).ok();
+                }
+            }
         }
     }
 }
