@@ -8,7 +8,7 @@ use crate::net::LatestGameState;
 use crate::state::AppState;
 
 /// Border line half-width in world-space degrees.
-const BORDER_HALF_W: f32 = 0.25;
+const BORDER_HALF_W: f32 = 0.10;
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 
 /// Precomputed adjacency: pairs of province IDs that share an edge.
@@ -123,12 +123,18 @@ fn rebuild_borders(
         return;
     }
 
-    // Find owner of each province (by index).
+    // Find owner of each province (by index) and whether it's owned wasteland.
     let province_owner: Vec<Option<&str>> = gs
         .provinces
         .iter()
         .map(|p| p.owner.as_deref())
         .collect();
+    let is_owned_wasteland = |idx: usize| -> bool {
+        if idx >= map.0.provinces.len() { return false; }
+        let is_wasteland = map.0.provinces[idx].topography.contains("wasteland");
+        let is_owned = idx < gs.provinces.len() && gs.provinces[idx].owner.is_some();
+        is_wasteland && is_owned
+    };
 
     // Build border segments: shared edges where adjacent provinces have different owners.
     let mut positions: Vec<[f32; 3]> = Vec::new();
@@ -139,6 +145,10 @@ fn rebuild_borders(
         let ia = pid_a as usize;
         let ib = pid_b as usize;
         if ia >= province_owner.len() || ib >= province_owner.len() {
+            continue;
+        }
+        // Skip borders involving owned wasteland provinces.
+        if is_owned_wasteland(ia) || is_owned_wasteland(ib) {
             continue;
         }
         let owner_a = province_owner[ia];

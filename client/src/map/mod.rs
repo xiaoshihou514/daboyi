@@ -304,10 +304,30 @@ fn color_provinces(
             MapMode::Province => map.0.provinces[pid].hex_color,
             MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
             MapMode::Political => {
-                // Wasteland provinces always show terrain color, not owner/unclaimed.
+                // Wasteland provinces: show terrain color normally, or blended with
+                // owner color if the province is owned by a country.
                 let topo = &map.0.provinces[pid].topography;
                 if topo.contains("wasteland") {
-                    return terrain_province_color(topo);
+                    let wasteland_color = terrain_province_color(topo);
+                    if let Some(gs) = &state.0 {
+                        if pid < gs.provinces.len() {
+                            if let Some(owner) = gs.provinces[pid].owner.as_deref() {
+                                let sovereign = resolve_sovereign(owner, &gs.vassals);
+                                let country_color = country_colors.0.get(sovereign)
+                                    .copied()
+                                    .unwrap_or_else(|| owner_color_rgba(sovereign));
+                                // 50/50 blend: visually distinct from both pure wasteland
+                                // and normal country provinces.
+                                return [
+                                    (wasteland_color[0] + country_color[0]) * 0.5,
+                                    (wasteland_color[1] + country_color[1]) * 0.5,
+                                    (wasteland_color[2] + country_color[2]) * 0.5,
+                                    1.0,
+                                ];
+                            }
+                        }
+                    }
+                    return wasteland_color;
                 }
                 if let Some(gs) = &state.0 {
                     if pid < gs.provinces.len() {
