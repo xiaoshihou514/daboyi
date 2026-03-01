@@ -8,7 +8,7 @@ use crate::net::LatestGameState;
 use crate::state::AppState;
 
 /// Border line half-width in world-space degrees.
-const BORDER_HALF_W: f32 = 0.10;
+const BORDER_HALF_W: f32 = 0.06;
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 
 /// Precomputed adjacency: pairs of province IDs that share an edge.
@@ -38,20 +38,14 @@ pub fn compute_adjacency(
     map: Option<Res<MapResource>>,
     mut adjacency: ResMut<ProvinceAdjacency>,
 ) {
-    // Run only once (after adjacency is populated it's non-empty).
     if !adjacency.0.is_empty() {
         return;
     }
     let Some(map) = map else { return };
 
-    // Quantize f32 coords to i32 grid at 0.01° resolution.
     let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
-
-    // Map from quantized edge (sorted point pair) → province ID.
-    // An edge is a segment between two consecutive boundary points.
     let mut edge_map: std::collections::HashMap<[(i32, i32); 2], u32> =
         std::collections::HashMap::new();
-
     let mut pairs: Vec<[u32; 2]> = Vec::new();
 
     for province in &map.0.provinces {
@@ -63,7 +57,6 @@ pub fn compute_adjacency(
                 let b = ring[(i + 1) % n];
                 let qa = (quantize(a[0]), quantize(a[1]));
                 let qb = (quantize(b[0]), quantize(b[1]));
-                // Canonical key: sort endpoints so (a→b) == (b→a).
                 let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
                 if let Some(&other_pid) = edge_map.get(&key) {
                     if other_pid != pid {
@@ -76,15 +69,13 @@ pub fn compute_adjacency(
         }
     }
 
-    // Deduplicate.
     pairs.sort_unstable();
     pairs.dedup();
-
     println!("Province adjacency: {} pairs", pairs.len());
     adjacency.0 = pairs;
 }
 
-/// Rebuild the border mesh whenever the game state changes or mode changes.
+/// Rebuild the border mesh whenever the game state or mode changes.
 fn rebuild_borders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -100,7 +91,6 @@ fn rebuild_borders(
     let Some(map) = map else { return };
     let Some(gs) = &state.0 else { return };
 
-    // Wait until adjacency is computed.
     if adjacency.0.is_empty() {
         return;
     }
@@ -113,30 +103,28 @@ fn rebuild_borders(
     *last_tick = Some(gs.tick);
     *last_mode = Some(*mode);
 
-    // Despawn old border meshes.
     for e in existing.iter() {
         commands.entity(e).despawn();
     }
 
-    // Only show borders in political mode.
     if *mode != MapMode::Political {
         return;
     }
 
-    // Find owner of each province (by index) and whether it's owned wasteland.
     let province_owner: Vec<Option<&str>> = gs
         .provinces
         .iter()
         .map(|p| p.owner.as_deref())
         .collect();
     let is_owned_wasteland = |idx: usize| -> bool {
-        if idx >= map.0.provinces.len() { return false; }
-        let is_wasteland = map.0.provinces[idx].topography.contains("wasteland");
-        let is_owned = idx < gs.provinces.len() && gs.provinces[idx].owner.is_some();
-        is_wasteland && is_owned
+        if idx >= map.0.provinces.len() {
+            return false;
+        }
+        map.0.provinces[idx].topography.contains("wasteland")
+            && idx < gs.provinces.len()
+            && gs.provinces[idx].owner.is_some()
     };
 
-    // Build border segments: shared edges where adjacent provinces have different owners.
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -147,21 +135,17 @@ fn rebuild_borders(
         if ia >= province_owner.len() || ib >= province_owner.len() {
             continue;
         }
-        // Skip borders involving owned wasteland provinces.
         if is_owned_wasteland(ia) || is_owned_wasteland(ib) {
             continue;
         }
-        let owner_a = province_owner[ia];
-        let owner_b = province_owner[ib];
-        // Draw border if owners differ (including one being None).
-        if owner_a == owner_b {
+        if province_owner[ia] == province_owner[ib] {
             continue;
         }
 
-        // Find the shared boundary segments between province a and b.
-        let shared = shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]);
-        for seg in shared {
-            emit_quad(&seg, BORDER_HALF_W, &mut positions, &mut colors, &mut indices, 0.8);
+        // Get shared boundary segments in ring order, chain into polylines.
+        let segs = shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]);
+        for chain in chain_polylines(segs) {
+            polyline_to_quads(&chain, BORDER_HALF_W, &mut positions, &mut colors, &mut indices, 0.8);
         }
     }
 
@@ -189,22 +173,22 @@ fn rebuild_borders(
     }
 }
 
-/// Find boundary segments shared between two provinces (within ε tolerance).
+/// Return segments from province `a`'s rings that are shared with province `b`.
+/// Returned in ring-traversal order so consecutive entries form connected chains.
 fn shared_segments(
     a: &shared::map::MapProvince,
     b: &shared::map::MapProvince,
 ) -> Vec<[[f32; 2]; 2]> {
     let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
-    let qpoint = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
+    let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
-    // Collect all edges from province b as a set of canonical (sorted) point pairs.
     let mut b_edges: std::collections::HashSet<[(i32, i32); 2]> =
         std::collections::HashSet::new();
     for ring in &b.boundary {
         let n = ring.len();
         for i in 0..n {
-            let qa = qpoint(ring[i]);
-            let qb = qpoint(ring[(i + 1) % n]);
+            let qa = qpt(ring[i]);
+            let qb = qpt(ring[(i + 1) % n]);
             let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
             b_edges.insert(key);
         }
@@ -216,8 +200,8 @@ fn shared_segments(
         for i in 0..n {
             let p0 = ring[i];
             let p1 = ring[(i + 1) % n];
-            let qa = qpoint(p0);
-            let qb = qpoint(p1);
+            let qa = qpt(p0);
+            let qb = qpt(p1);
             let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
             if b_edges.contains(&key) {
                 result.push([p0, p1]);
@@ -227,33 +211,103 @@ fn shared_segments(
     result
 }
 
-/// Emit a thick quad for a border segment [p0, p1] with `half_w` width.
-fn emit_quad(
-    seg: &[[f32; 2]; 2],
+/// Group ring-ordered segments into connected polyline chains.
+/// A new chain starts whenever consecutive segments are not connected end-to-start.
+fn chain_polylines(segments: Vec<[[f32; 2]; 2]>) -> Vec<Vec<[f32; 2]>> {
+    if segments.is_empty() {
+        return vec![];
+    }
+    let pts_eq = |a: [f32; 2], b: [f32; 2]| {
+        (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5
+    };
+    let mut chains: Vec<Vec<[f32; 2]>> = Vec::new();
+    let mut current: Vec<[f32; 2]> = vec![segments[0][0], segments[0][1]];
+
+    for seg in segments.iter().skip(1) {
+        let last = *current.last().unwrap();
+        if pts_eq(last, seg[0]) {
+            current.push(seg[1]);
+        } else {
+            chains.push(current);
+            current = vec![seg[0], seg[1]];
+        }
+    }
+    chains.push(current);
+    chains
+}
+
+/// Build a continuous quad-strip mesh for a polyline with miter joins at interior points.
+/// Ported from terrain.rs (same algorithm used for rivers).
+fn polyline_to_quads(
+    points: &[[f32; 2]],
     half_w: f32,
     positions: &mut Vec<[f32; 3]>,
     colors: &mut Vec<[f32; 4]>,
     indices: &mut Vec<u32>,
     z: f32,
 ) {
-    let [p0, p1] = *seg;
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 1e-9 {
+    if points.len() < 2 {
         return;
     }
-    // Perpendicular unit vector.
-    let nx = -dy / len * half_w;
-    let ny = dx / len * half_w;
+    let n = points.len();
+
+    let perp = |dx: f32, dy: f32| -> (f32, f32) {
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-9 { (0.0, 0.0) } else { (-dy / len, dx / len) }
+    };
+
+    let mut left: Vec<[f32; 2]> = Vec::with_capacity(n);
+    let mut right: Vec<[f32; 2]> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let [x, y] = points[i];
+        let offset = if i == 0 {
+            let [x1, y1] = points[1];
+            let (px, py) = perp(x1 - x, y1 - y);
+            (px * half_w, py * half_w)
+        } else if i == n - 1 {
+            let [xp, yp] = points[n - 2];
+            let (px, py) = perp(x - xp, y - yp);
+            (px * half_w, py * half_w)
+        } else {
+            let [xp, yp] = points[i - 1];
+            let [xn, yn] = points[i + 1];
+            let (p0x, p0y) = perp(x - xp, y - yp);
+            let (p1x, p1y) = perp(xn - x, yn - y);
+            let mx = p0x + p1x;
+            let my = p0y + p1y;
+            let mlen = (mx * mx + my * my).sqrt();
+            if mlen < 1e-9 {
+                (p0x * half_w, p0y * half_w)
+            } else {
+                let mux = mx / mlen;
+                let muy = my / mlen;
+                let dot = mux * p0x + muy * p0y;
+                let scale = if dot.abs() < 1e-6 {
+                    half_w
+                } else {
+                    (half_w / dot).min(4.0 * half_w)
+                };
+                (mux * scale, muy * scale)
+            }
+        };
+        left.push([x - offset.0, y - offset.1]);
+        right.push([x + offset.0, y + offset.1]);
+    }
 
     let base = usize_to_u32(positions.len());
-    positions.push([p0[0] - nx, p0[1] - ny, z]);
-    positions.push([p0[0] + nx, p0[1] + ny, z]);
-    positions.push([p1[0] + nx, p1[1] + ny, z]);
-    positions.push([p1[0] - nx, p1[1] - ny, z]);
-    for _ in 0..4 {
+    for i in 0..n {
+        positions.push([left[i][0], left[i][1], z]);
+        positions.push([right[i][0], right[i][1], z]);
+        colors.push(BORDER_COLOR);
         colors.push(BORDER_COLOR);
     }
-    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    for i in 0..(n as u32 - 1) {
+        let l0 = base + i * 2;
+        let r0 = l0 + 1;
+        let l1 = l0 + 2;
+        let r1 = l0 + 3;
+        indices.extend_from_slice(&[l0, r0, r1, l0, r1, l1]);
+    }
 }
+
