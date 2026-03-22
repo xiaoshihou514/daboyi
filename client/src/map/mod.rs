@@ -9,7 +9,7 @@ use shared::conv::{u32_to_usize, usize_to_u32};
 use shared::map::MapData;
 use std::collections::HashMap;
 
-use crate::editor::{ActiveCountry, EditorCountries, MapColoring};
+use crate::editor::{AdminAreas, AdminAssignments, EditorCountries, MapColoring};
 use crate::state::AppState;
 use color::{brighten, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, map_mode_switch, province_click};
@@ -23,6 +23,10 @@ pub const MAP_WIDTH: f32 = 360.0;
 /// EU5 country tag → RGBA color loaded from country_colors.tsv (for Province seed data).
 #[derive(Resource, Default)]
 pub struct CountryColors(pub HashMap<String, [f32; 4]>);
+
+/// Province tag (lowercased) → Chinese display name.
+#[derive(Resource, Default)]
+pub struct ProvinceNames(pub HashMap<String, String>);
 
 pub struct MapPlugin;
 
@@ -45,12 +49,12 @@ pub enum MapMode {
 
 impl std::fmt::Display for MapMode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let key = match self {
-            MapMode::Province => "map_province",
-            MapMode::Terrain => "map_terrain",
-            MapMode::Political => "map_political",
+        let s = match self {
+            MapMode::Province => "省份",
+            MapMode::Terrain => "地形",
+            MapMode::Political => "政治",
         };
-        write!(f, "{}", rust_i18n::t!(key))
+        write!(f, "{s}")
     }
 }
 
@@ -81,6 +85,7 @@ impl Plugin for MapPlugin {
             .insert_resource(LastColorState::default())
             .insert_resource(CountryColors::default())
             .insert_resource(ColoringVersion::default())
+            .insert_resource(ProvinceNames::default())
             .add_systems(Startup, load_map)
             .add_systems(Update, color_provinces.run_if(in_state(AppState::Editing)))
             .add_systems(
@@ -198,6 +203,19 @@ fn load_map(
     }
     commands.insert_resource(CountryColors(color_map));
 
+    // Load province names (official Chinese translations).
+    let mut province_name_map: HashMap<String, String> = HashMap::new();
+    if let Ok(content) = std::fs::read_to_string("assets/province_names.tsv") {
+        for line in content.lines() {
+            let mut parts = line.splitn(2, '\t');
+            if let (Some(en), Some(zh)) = (parts.next(), parts.next()) {
+                province_name_map.insert(en.trim().to_lowercase(), zh.trim().to_string());
+            }
+        }
+        println!("已加载 {} 个省份名称", province_name_map.len());
+    }
+    commands.insert_resource(ProvinceNames(province_name_map));
+
     next_state.set(AppState::Editing);
 }
 
@@ -209,6 +227,8 @@ fn color_provinces(
     selected: Res<SelectedProvince>,
     coloring: Res<MapColoring>,
     countries: Res<EditorCountries>,
+    admin_areas: Res<AdminAreas>,
+    admin_assignments: Res<AdminAssignments>,
     coloring_version: Res<ColoringVersion>,
     mut last: ResMut<LastColorState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -240,6 +260,21 @@ fn color_provinces(
             MapMode::Political => {
                 let topo = &map.0.provinces[pid].topography;
                 let prov_id = map.0.provinces[pid].id;
+
+                // Admin area assignment overrides country.
+                if let Some(&area_id) = admin_assignments.0.get(&prov_id) {
+                    let area_color = resolve_area_color(area_id, &admin_areas.0, &country_color_lookup);
+                    if topo.contains("wasteland") {
+                        let wc = terrain_province_color(topo);
+                        return [
+                            (wc[0] + area_color[0]) * 0.5,
+                            (wc[1] + area_color[1]) * 0.5,
+                            (wc[2] + area_color[2]) * 0.5,
+                            1.0,
+                        ];
+                    }
+                    return area_color;
+                }
 
                 if let Some(tag) = coloring.assignments.get(&prov_id) {
                     // Province is assigned to a country.
@@ -323,6 +358,33 @@ fn color_provinces(
             for i in *start..(*start + *count) {
                 colors[i] = color;
             }
+        }
+    }
+}
+
+/// Walk the area parent chain to find the first explicit color, falling back to country color.
+fn resolve_area_color(
+    area_id: u32,
+    admin_areas: &[shared::AdminArea],
+    country_color_lookup: &HashMap<&str, [f32; 4]>,
+) -> [f32; 4] {
+    let mut current = area_id;
+    loop {
+        if let Some(area) = admin_areas.iter().find(|a| a.id == current) {
+            if let Some(col) = area.color {
+                return col;
+            }
+            match area.parent_id {
+                Some(pid) => current = pid,
+                None => {
+                    return country_color_lookup
+                        .get(area.country_tag.as_str())
+                        .copied()
+                        .unwrap_or([0.55, 0.55, 0.55, 1.0]);
+                }
+            }
+        } else {
+            return [0.55, 0.55, 0.55, 1.0];
         }
     }
 }

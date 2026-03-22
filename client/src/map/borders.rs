@@ -3,7 +3,7 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use shared::conv::usize_to_u32;
 
-use crate::editor::MapColoring;
+use crate::editor::{AdminAssignments, MapColoring};
 use crate::map::{ColoringVersion, MapMode, MapResource, MAP_WIDTH};
 use crate::state::AppState;
 
@@ -79,6 +79,7 @@ fn rebuild_borders(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     coloring: Res<MapColoring>,
+    admin_assignments: Res<AdminAssignments>,
     coloring_version: Res<ColoringVersion>,
     map: Option<Res<MapResource>>,
     adjacency: Res<ProvinceAdjacency>,
@@ -118,13 +119,17 @@ fn rebuild_borders(
     // Border half-width: constant ~1 screen pixel at any zoom level.
     let half_w = cam_scale * 0.8;
 
-    // Use MapColoring assignments as province owner.
+    // Use MapColoring assignments as province owner; admin area overrides country.
     let is_wasteland = |idx: usize| -> bool {
         idx < map.0.provinces.len() && map.0.provinces[idx].topography.contains("wasteland")
     };
-    let province_owner = |idx: usize| -> Option<&str> {
+    let province_owner = |idx: usize| -> Option<String> {
         if idx < map.0.provinces.len() {
-            coloring.assignments.get(&map.0.provinces[idx].id).map(|s| s.as_str())
+            let prov_id = map.0.provinces[idx].id;
+            if let Some(&area_id) = admin_assignments.0.get(&prov_id) {
+                return Some(format!("area:{area_id}"));
+            }
+            coloring.assignments.get(&prov_id).map(|s| s.to_string())
         } else {
             None
         }

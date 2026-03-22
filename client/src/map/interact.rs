@@ -47,16 +47,20 @@ pub fn camera_controls(
     transform.translation.y = transform.translation.y.clamp(y_min, y_max);
 }
 
-/// Detect left-click on a province. Uses bounding box pre-filter.
-/// Iterates in reverse so CN provinces (higher z, later IDs) are checked first.
+/// Detect the province under the cursor.
+/// Runs on initial left-click, and also on every frame during a drag (brush mode).
 pub fn province_click(
     mouse_input: Res<ButtonInput<MouseButton>>,
+    cursor_moved: EventReader<CursorMoved>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     map: Option<Res<MapResource>>,
     mut selected: ResMut<SelectedProvince>,
 ) {
-    if !mouse_input.just_pressed(MouseButton::Left) {
+    // Run on initial press, or while held and cursor has moved (brush drag).
+    let should_run = mouse_input.just_pressed(MouseButton::Left)
+        || (mouse_input.pressed(MouseButton::Left) && !cursor_moved.is_empty());
+    if !should_run {
         return;
     }
     let Some(map) = map else { return };
@@ -100,7 +104,10 @@ pub fn province_click(
             return;
         }
     }
-    selected.0 = None;
+    // Only clear selection on fresh click, not on drag (keeps last valid selection).
+    if mouse_input.just_pressed(MouseButton::Left) {
+        selected.0 = None;
+    }
 }
 
 /// Keyboard shortcuts: 1 = Province, 2 = Terrain, 3 = Political.

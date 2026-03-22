@@ -1,7 +1,5 @@
 use bevy::prelude::*;
 
-rust_i18n::i18n!("../locales", fallback = "zh");
-
 mod capitals;
 mod editor;
 mod map;
@@ -10,15 +8,13 @@ mod terrain;
 mod ui;
 
 fn main() {
-    rust_i18n::set_locale("zh");
-
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.1, 0.26, 0.55)))
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Daboyi Map Editor".into(),
+                        title: "大博弈 地图编辑器".into(),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -31,7 +27,11 @@ fn main() {
         .init_state::<state::AppState>()
         .init_resource::<editor::MapColoring>()
         .init_resource::<editor::EditorCountries>()
+        .init_resource::<editor::AdminAreas>()
+        .init_resource::<editor::AdminAssignments>()
         .init_resource::<editor::ActiveCountry>()
+        .init_resource::<editor::ActiveArea>()
+        .init_resource::<editor::NextAreaId>()
         .add_plugins(terrain::TerrainPlugin)
         .add_plugins(map::MapPlugin)
         .add_plugins(map::BordersPlugin)
