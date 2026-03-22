@@ -1,120 +1,162 @@
-# 大博弈
+# Daboyi Map Editor
 
-大博弈 — 以 **1356 年**（元末）为背景的大型战略游戏，风格参考 EU4/Victoria，使用 Rust 构建。
+A standalone **alternative-history map editor** built with Bevy and Rust. Paint EU5 provinces with custom countries and administrative areas, then export your coloring as JSON.
 
-- **后端**：actix-web + RocksDB
-- **前端**：Bevy 0.15（2D）
-- **通信**：WebSocket（JSON 指令 / bincode 快照）
-- **地图数据**：EU5toGIS GeoPackage 数据集（全球 28,573 个省份）
-- **界面语言**：中文优先（rust-i18n，简体中文字体）
+## Tech Stack
 
-## 前置条件
+| Layer | Choice | Notes |
+|-------|--------|-------|
+| Engine | Bevy 0.15 | ECS game engine, 2D rendering |
+| Language | Rust stable (2021 edition) | |
+| Linker | mold + clang | configured in `.cargo/config.toml` |
+| Serialization | serde + JSON / bincode | coloring files in JSON; map geometry in bincode |
+| Font | NotoSansCJKsc-Regular.otf | Chinese text rendering |
+| Map data | EU5toGIS GeoPackage | ~22,688 provinces worldwide |
 
-- Rust 工具链（stable，2021 edition 及以上）
-- `clang` / `clang++`（RocksDB 依赖）
-- `mold` 链接器（已配置在 `.cargo/config.toml`）
-- EU5toGIS 数据集 — 参见 [Paradox 论坛帖子](https://forum.paradoxplaza.com/forum/threads/georeferenced-eu5-dataset-for-map-modding-via-gis.1903895/#post-31141035)
-  - `datasets/` 目录，包含 `locations.gpkg`、`ports.gpkg` 和 `rivers.tif`
-  - 同版本中的 `06_pops_totals.txt`（省份人口数据）
-- EU5 **文本格式**存档（`.eu5`，以 `SAV` 开头，**非** ZIP 压缩包），用于提取省份归属与商品产出
+## Prerequisites
 
-## 初始化步骤
+- Rust toolchain (stable, 2021 edition or later)
+- `clang` / `clang++` (required for some dependencies)
+- `mold` linker (configured in `.cargo/config.toml`)
+- [EU5toGIS dataset](https://forum.paradoxplaza.com/forum/threads/georeferenced-eu5-dataset-for-map-modding-via-gis.1903895/) — provides `datasets/locations.gpkg` and `ports.gpkg`
+- An EU5 **plain-text** save file (`.eu5`, starts with `SAV`, not a ZIP archive) — for extracting province ownership and country colors
 
-### 1. 复制人口数据
+## Asset Setup
 
-```bash
-cp /path/to/EU5toGIS/06_pops_totals.txt assets/pops.tsv
-```
+Assets are generated offline and are not committed to the repository.
 
-### 2. 从存档提取数据
-
-```bash
-cargo run -p parse_save -- /path/to/your.eu5 assets/ownership.tsv assets/vassals.tsv assets/merchandize.tsv assets/country_colors.tsv
-```
-
-读取存档中的 `compatibility.locations`（省份名称列表）、`locations.locations`（省份→所有者映射）、`dependency`（宗主-附庸关系）、各国 `last_month_produced`（商品产出）以及各国 `color=rgb`（国家颜色），分别写入：
-
-- `assets/ownership.tsv` — 省份标签 → 所有者国家标签
-- `assets/vassals.tsv` — 附庸标签 → 宗主标签
-- `assets/merchandize.tsv` — 国家标签 + 商品 + 产量
-- `assets/country_colors.tsv` — 国家标签 → RGB 颜色（0–255）
-
-### 3. 生成地图资产
+### 1. Generate map geometry
 
 ```bash
 cargo run --release -p mapgen
 ```
 
-读取 EU5toGIS `datasets/` 中的 `locations.gpkg` 和 `ports.gpkg`，对省份多边形进行三角剖分，输出：
+Reads `locations.gpkg` and `ports.gpkg` from the EU5toGIS `datasets/` directory, triangulates province polygons, and writes:
 
-- `assets/map.bin` — 可游玩省份几何体 + 元数据（约 80 MB）
-- `assets/terrain.bin` — 不可游玩地形/水域多边形，用于背景渲染（约 40 MB）
+- `assets/map.bin` — playable province geometry (~80 MB)
+- `assets/terrain.bin` — wasteland/ocean background polygons (~40 MB)
 
-建议使用 `--release` 编译，Debug 模式速度较慢。
+> Use `--release`; debug mode is very slow for geometry processing.
 
-### 4. 启动服务端
+### 2. Extract EU5 save data
 
 ```bash
-cargo run -p server
+cargo run -p parse_save -- /path/to/your.eu5 \
+    assets/ownership.tsv \
+    assets/vassals.tsv \
+    assets/merchandize.tsv \
+    assets/country_colors.tsv
 ```
 
-监听 `ws://127.0.0.1:8080/ws`。首次运行时加载 `assets/map.bin`、`assets/ownership.tsv`、`assets/vassals.tsv`、`assets/merchandize.tsv`、`assets/pops.tsv`、`assets/province_names.tsv` 和 `assets/country_names.tsv` 生成世界状态，然后持久化至 `daboyi.db/`（RocksDB）。后续运行直接从数据库加载。
+Outputs:
 
-### 5. 启动客户端
+- `assets/ownership.tsv` — province tag → owner country tag
+- `assets/vassals.tsv` — vassal tag → overlord tag
+- `assets/merchandize.tsv` — country tag + goods + output
+- `assets/country_colors.tsv` — country tag → RGB color (0–255)
+
+### 3. (Optional) Copy population data
+
+```bash
+cp /path/to/EU5toGIS/06_pops_totals.txt assets/pops.tsv
+```
+
+Population data is loaded but not actively used in the current editor version.
+
+## Running the Editor
 
 ```bash
 cargo run -p client
 ```
 
-连接服务端并渲染地图。请在服务端运行的同时，在另一个终端启动客户端。
+The editor opens directly; no server is needed.
 
-## 游戏流程
+## Editor Usage
 
-1. **开始界面** — 点击"开始游戏"进入国家选择
-2. **选择国家** — 点击地图上任意省份，底部栏显示所属国家；点击"以此国开始游戏"进入正式游玩
-3. **正式游玩** — 可切换地图模式、暂停/继续模拟、查看省份详情
+**Map modes** (keyboard shortcuts):
 
-## 操作说明
+| Key | Mode | Description |
+|-----|------|-------------|
+| `1` | Province | EU5 province identification colors |
+| `2` | Terrain | Highlights wasteland and ocean |
+| `3` | Political | Country-colored map (default) |
 
-| 输入 | 操作 |
-|------|------|
-| 右键拖拽 | 平移视角 |
-| 滚轮 | 缩放 |
-| 左键单击 | 选择省份 |
-| `1` | 省份模式（EU5 识别颜色） |
-| `2` | 人口模式（热力图） |
-| `3` | 产出模式（热力图） |
-| `4` | 地形模式 |
-| `5` | 政治模式（国家归属） |
-| 空格 | 暂停 / 继续模拟 |
+**Controls:**
 
-## 项目结构
+| Input | Action |
+|-------|--------|
+| Right-click drag | Pan camera |
+| Scroll wheel | Zoom |
+| Left-click | Select province |
+| Left-click drag | Brush-paint provinces |
+
+**Painting workflow (Political mode):**
+
+1. Select a country or administrative area in the left panel.
+2. Left-click or drag on the map to paint provinces.
+3. Click **保存** (Save) to write `coloring.json`; click **加载** (Load) to reload.
+
+**Administrative areas:**
+
+Countries support an unlimited hierarchy of sub-areas (ADM1 → ADM2 → ADM3 …). Each area can have its own color or inherit from its parent. Painting a province to an area overrides the country-level assignment for rendering.
+
+## Coloring File Format
+
+The editor saves to `coloring.json`:
+
+```json
+{
+  "countries": [
+    { "tag": "MNG", "name": "蒙古", "color": [0.8, 0.2, 0.1, 1.0], "capital_province": 1234 }
+  ],
+  "assignments": { "1234": "MNG", "5678": "MNG" },
+  "admin_areas": [
+    { "id": 1, "name": "漠北", "country_tag": "MNG", "parent_id": null, "color": null }
+  ],
+  "admin_assignments": { "9999": 1 }
+}
+```
+
+- `assignments` — maps province ID → country tag
+- `admin_assignments` — maps province ID → admin area ID (overrides country color in rendering)
+- `admin_areas` — supports `parent_id` for nested hierarchies; `color: null` inherits from parent/country
+
+## Project Structure
 
 ```
 daboyi/
-├── shared/          # 公共类型（GameState、Province、Pop、Good、MapData）
-├── server/          # actix-web 服务端、RocksDB 持久化、游戏模拟
-├── client/          # Bevy 前端、WebSocket 客户端、地图与地形渲染
-├── assets/          # 生成/数据资产（见下表）
-├── locales/         # rust-i18n 本地化文件（zh.yml、en.yml）
-├── doc/             # 设计与技术文档（中文）
+├── shared/          # Shared types: EditorCountry, AdminArea, ColoringFile, MapData
+├── client/          # Bevy editor application
+│   └── src/
+│       ├── main.rs         # App entry, resource initialization
+│       ├── state.rs        # AppState enum (reserved for future use)
+│       ├── editor.rs       # MapColoring, EditorCountries, AdminAreas resources + save/load
+│       ├── terrain.rs      # TerrainPlugin: wasteland/ocean rendering
+│       ├── capitals.rs     # CapitalsPlugin: capital star markers
+│       ├── map/
+│       │   ├── mod.rs      # MapPlugin: province mesh rendering, coloring logic
+│       │   ├── borders.rs  # BordersPlugin: borders between owners/areas
+│       │   └── interact.rs # Camera pan/zoom, province selection, brush paint
+│       └── ui/
+│           └── mod.rs      # UiPlugin: left panel, right info panel, toolbar
+├── assets/          # Generated/data assets (see table below)
+├── doc/             # Technical documentation (Chinese)
 └── tools/
     ├── mapgen/      # GeoPackage → assets/map.bin + assets/terrain.bin
-    └── parse_save/  # EU5 文本存档 → TSV 数据文件
+    └── parse_save/  # EU5 text save → TSV asset files
 ```
 
-### `assets/` 目录说明
+### `assets/` Reference
 
-| 文件 | 来源 | 用途 |
-|------|------|------|
-| `map.bin` | `cargo run -p mapgen` | 可游玩省份几何体（约 80 MB） |
-| `terrain.bin` | `cargo run -p mapgen` | 不可游玩地形多边形（约 40 MB） |
-| `rivers.png` | EU5toGIS `datasets/rivers.tif` | 河流叠加贴图 |
-| `ownership.tsv` | `cargo run -p parse_save` | 省份标签 → 所有者国家标签 |
-| `vassals.tsv` | `cargo run -p parse_save` | 附庸标签 → 宗主标签 |
-| `merchandize.tsv` | `cargo run -p parse_save` | 国家标签 + 商品产出（上月） |
-| `country_colors.tsv` | `cargo run -p parse_save` | 国家标签 → RGB 颜色（政治地图用） |
-| `pops.tsv` | EU5toGIS `06_pops_totals.txt` | 省份人口数量 |
-| `province_names.tsv` | qwen 批量翻译 | 省份标签 → 中文名称 |
-| `country_names.tsv` | qwen 批量翻译 | 国家标签 → 中文名称 |
-| `fonts/NotoSansCJKsc-Regular.otf` | 系统字体 | 简体中文渲染 |
+| File | Source | Purpose |
+|------|--------|---------|
+| `map.bin` | `cargo run -p mapgen` | Province geometry (~80 MB, gitignored) |
+| `terrain.bin` | `cargo run -p mapgen` | Wasteland/ocean geometry (~40 MB, gitignored) |
+| `ownership.tsv` | `cargo run -p parse_save` | Province tag → owner country tag |
+| `vassals.tsv` | `cargo run -p parse_save` | Vassal tag → overlord tag |
+| `merchandize.tsv` | `cargo run -p parse_save` | Country tag + goods output |
+| `country_colors.tsv` | `cargo run -p parse_save` | Country tag → RGB color |
+| `pops.tsv` | EU5toGIS `06_pops_totals.txt` | Province population (future use) |
+| `province_names.tsv` | extracted from EU5 localisation | Province tag → Chinese name |
+| `country_names.tsv` | extracted from EU5 localisation | Country tag → Chinese name |
+| `fonts/NotoSansCJKsc-Regular.otf` | system font | Chinese text rendering |
