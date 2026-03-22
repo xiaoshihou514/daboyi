@@ -3,8 +3,8 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use shared::conv::usize_to_u32;
 
-use crate::map::{MapMode, MapResource, MAP_WIDTH};
-use crate::net::LatestGameState;
+use crate::editor::MapColoring;
+use crate::map::{ColoringVersion, MapMode, MapResource, MAP_WIDTH};
 use crate::state::AppState;
 
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
@@ -26,7 +26,7 @@ impl Plugin for BordersPlugin {
                 Update,
                 (compute_adjacency, rebuild_borders)
                     .chain()
-                    .run_if(in_state(AppState::Playing)),
+                    .run_if(in_state(AppState::Editing)),
             );
     }
 }
@@ -73,23 +73,23 @@ pub fn compute_adjacency(
     adjacency.0 = pairs;
 }
 
-/// Rebuild the border mesh whenever the game state, mode, or zoom level changes.
+/// Rebuild the border mesh whenever the coloring, mode, or zoom level changes.
 fn rebuild_borders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    state: Res<LatestGameState>,
+    coloring: Res<MapColoring>,
+    coloring_version: Res<ColoringVersion>,
     map: Option<Res<MapResource>>,
     adjacency: Res<ProvinceAdjacency>,
     mode: Res<MapMode>,
     camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     existing: Query<Entity, With<BorderMesh>>,
-    mut last_tick: Local<Option<u64>>,
+    mut last_version: Local<u64>,
     mut last_mode: Local<Option<MapMode>>,
     mut last_cam_scale: Local<f32>,
 ) {
     let Some(map) = map else { return };
-    let Some(gs) = &state.0 else { return };
 
     if adjacency.0.is_empty() {
         return;
@@ -99,11 +99,11 @@ fn rebuild_borders(
     let scale_changed = (*last_cam_scale - cam_scale).abs() / cam_scale.max(1e-6) > 0.15;
 
     let mode_changed = Some(*mode) != *last_mode;
-    let tick_changed = *last_tick != Some(gs.tick);
-    if !mode_changed && !tick_changed && !scale_changed {
+    let coloring_changed = *last_version != coloring_version.0;
+    if !mode_changed && !coloring_changed && !scale_changed {
         return;
     }
-    *last_tick = Some(gs.tick);
+    *last_version = coloring_version.0;
     *last_mode = Some(*mode);
     *last_cam_scale = cam_scale;
 
@@ -118,14 +118,16 @@ fn rebuild_borders(
     // Border half-width: constant ~1 screen pixel at any zoom level.
     let half_w = cam_scale * 0.8;
 
-    let province_owner: Vec<Option<&str>> = gs
-        .provinces
-        .iter()
-        .map(|p| p.owner.as_deref())
-        .collect();
-    // Skip border if either province is wasteland (owned or unowned).
+    // Use MapColoring assignments as province owner.
     let is_wasteland = |idx: usize| -> bool {
         idx < map.0.provinces.len() && map.0.provinces[idx].topography.contains("wasteland")
+    };
+    let province_owner = |idx: usize| -> Option<&str> {
+        if idx < map.0.provinces.len() {
+            coloring.assignments.get(&map.0.provinces[idx].id).map(|s| s.as_str())
+        } else {
+            None
+        }
     };
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
@@ -135,13 +137,10 @@ fn rebuild_borders(
     for &[pid_a, pid_b] in &adjacency.0 {
         let ia = pid_a as usize;
         let ib = pid_b as usize;
-        if ia >= province_owner.len() || ib >= province_owner.len() {
-            continue;
-        }
         if is_wasteland(ia) || is_wasteland(ib) {
             continue;
         }
-        if province_owner[ia] == province_owner[ib] {
+        if province_owner(ia) == province_owner(ib) {
             continue;
         }
 

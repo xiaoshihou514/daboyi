@@ -5,14 +5,13 @@ mod interact;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
-use shared::conv::{u32_to_f32, u32_to_usize, usize_to_u32};
+use shared::conv::{u32_to_usize, usize_to_u32};
 use shared::map::MapData;
-use shared::GameState;
 use std::collections::HashMap;
 
-use crate::net::LatestGameState;
+use crate::editor::{ActiveCountry, EditorCountries, MapColoring};
 use crate::state::AppState;
-use color::{brighten, heatmap_rgba, owner_color_rgba, terrain_province_color};
+use color::{brighten, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, map_mode_switch, province_click};
 pub use borders::BordersPlugin;
 
@@ -21,7 +20,7 @@ const COUNTRY_COLORS_TSV: &str = "assets/country_colors.tsv";
 /// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
 pub const MAP_WIDTH: f32 = 360.0;
 
-/// EU5 country tag → RGBA color loaded from country_colors.tsv.
+/// EU5 country tag → RGBA color loaded from country_colors.tsv (for Province seed data).
 #[derive(Resource, Default)]
 pub struct CountryColors(pub HashMap<String, [f32; 4]>);
 
@@ -35,12 +34,10 @@ pub struct MapResource(pub MapData);
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
 
-/// Map coloring mode, switchable with keys 1/2/3/4/5.
+/// Map coloring mode, switchable with keys 1/2/3.
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapMode {
     Province,
-    Population,
-    Production,
     Terrain,
     #[default]
     Political,
@@ -50,8 +47,6 @@ impl std::fmt::Display for MapMode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let key = match self {
             MapMode::Province => "map_province",
-            MapMode::Population => "map_population",
-            MapMode::Production => "map_production",
             MapMode::Terrain => "map_terrain",
             MapMode::Political => "map_political",
         };
@@ -66,18 +61,18 @@ struct ProvinceVertexMap {
     mesh_handle: Handle<Mesh>,
 }
 
-/// Tracks the last state we colored for, to avoid redundant recoloring.
+/// Tracks the last coloring state to avoid redundant recoloring.
 #[derive(Resource, Default)]
 struct LastColorState {
-    tick: u64,
     mode: Option<MapMode>,
     selected: Option<u32>,
-    /// Cached normalization values (only change on economy ticks).
-    max_pop: u32,
-    max_prod: f32,
-    /// Whether we've done the initial recolor after first game-state arrival.
-    state_initialized: bool,
+    /// Counter incremented whenever MapColoring changes (detected via version bump).
+    coloring_version: u64,
 }
+
+/// Incremented every time MapColoring is modified, so color_provinces can detect changes.
+#[derive(Resource, Default)]
+pub struct ColoringVersion(pub u64);
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
@@ -85,31 +80,30 @@ impl Plugin for MapPlugin {
             .insert_resource(MapMode::default())
             .insert_resource(LastColorState::default())
             .insert_resource(CountryColors::default())
+            .insert_resource(ColoringVersion::default())
             .add_systems(Startup, load_map)
-            .add_systems(Update, color_provinces)
+            .add_systems(Update, color_provinces.run_if(in_state(AppState::Editing)))
             .add_systems(
                 Update,
-                (camera_controls, province_click)
-                    .run_if(not(in_state(AppState::StartScreen))),
-            )
-            .add_systems(
-                Update,
-                map_mode_switch.run_if(in_state(AppState::Playing)),
+                (camera_controls, province_click, map_mode_switch)
+                    .run_if(in_state(AppState::Editing)),
             );
     }
 }
 
-/// Build a single merged mesh for ALL provinces (all at z=0.0, no overlaps after mapgen filtering).
+/// Build a single merged mesh for ALL provinces.
 fn load_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     let map_data = match MapData::load(MAP_BIN_PATH) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Failed to load {MAP_BIN_PATH}: {e}");
             eprintln!("Map will not be rendered. Run mapgen first.");
+            next_state.set(AppState::Editing);
             return;
         }
     };
@@ -146,10 +140,9 @@ fn load_map(
         ranges.push((start, mp.vertices.len()));
     }
 
-    let total_verts = all_positions.len();
     println!(
         "Map mesh: {} vertices, {} triangles",
-        total_verts,
+        all_positions.len(),
         all_indices.len() / 3
     );
 
@@ -165,8 +158,6 @@ fn load_map(
 
     let mesh_handle = meshes.add(mesh);
 
-    // Spawn 3 side-by-side copies sharing the same mesh asset for seamless wrapping.
-    // All 3 instances reflect color changes automatically when we mutate the shared mesh.
     let material = materials.add(ColorMaterial::from_color(Color::WHITE));
     for &x_offset in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
         commands.spawn((
@@ -182,7 +173,7 @@ fn load_map(
     });
     commands.insert_resource(MapResource(map_data));
 
-    // Load country colors from TSV (tag → rgba).
+    // Load EU5 country colors (used when seeding from EU5 ownership data).
     let mut color_map: HashMap<String, [f32; 4]> = HashMap::new();
     if let Ok(content) = std::fs::read_to_string(COUNTRY_COLORS_TSV) {
         for line in content.lines().skip(1) {
@@ -204,45 +195,21 @@ fn load_map(
             }
         }
         println!("Loaded {} country colors from {COUNTRY_COLORS_TSV}", color_map.len());
-    } else {
-        eprintln!("Warning: could not load {COUNTRY_COLORS_TSV}; falling back to hash colors");
     }
     commands.insert_resource(CountryColors(color_map));
+
+    next_state.set(AppState::Editing);
 }
 
-/// Follow the vassal chain to find the top-level sovereign (cycle-safe, max 10 hops).
-fn resolve_sovereign<'a>(tag: &'a str, vassals: &'a std::collections::HashMap<String, String>) -> &'a str {
-    let mut current = tag;
-    for _ in 0..10 {
-        match vassals.get(current) {
-            Some(overlord) => current = overlord.as_str(),
-            None => break,
-        }
-    }
-    current
-}
-
-/// Compute heatmap normalization values from game state.
-fn compute_normalization(gs: &GameState) -> (u32, f32) {
-    let mut mp = 0u32;
-    let mut mprod = 0.0f32;
-    for p in &gs.provinces {
-        let total_pop: u32 = p.pops.iter().map(|pop| pop.size).sum();
-        mp = mp.max(total_pop);
-        let total_prod: f32 = p.stockpile.values().sum();
-        mprod = mprod.max(total_prod);
-    }
-    (mp.max(1), mprod.max(1.0))
-}
-
-/// Skips expensive full recolor on non-economy ticks (economy runs every 100 ticks).
+/// Recolor the province mesh based on current mode and coloring assignments.
 fn color_provinces(
-    state: Res<LatestGameState>,
     map: Option<Res<MapResource>>,
     vertex_map: Option<Res<ProvinceVertexMap>>,
     mode: Res<MapMode>,
     selected: Res<SelectedProvince>,
-    country_colors: Res<CountryColors>,
+    coloring: Res<MapColoring>,
+    countries: Res<EditorCountries>,
+    coloring_version: Res<ColoringVersion>,
     mut last: ResMut<LastColorState>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -251,127 +218,68 @@ fn color_provinces(
 
     let mode_changed = last.mode != Some(*mode);
     let selection_changed = last.selected != selected.0;
+    let coloring_changed = last.coloring_version != coloring_version.0;
 
-    // Modes that don't need game state can render immediately.
-    let gs_independent = matches!(*mode, MapMode::Province | MapMode::Terrain);
-
-    // First state arrival triggers a forced recolor (handles tick=0 on fresh server).
-    let first_state = !last.state_initialized && state.0.is_some();
-
-    let (tick_changed, economy_boundary) = if let Some(gs) = &state.0 {
-        let tc = last.tick != gs.tick;
-        let eb = tc && (last.tick == 0 || gs.tick / 100 != last.tick / 100);
-        (tc, eb)
-    } else {
-        (false, false)
-    };
-
-    let needs_full_recolor = mode_changed || economy_boundary || first_state || (gs_independent && mode_changed);
+    let needs_full_recolor = mode_changed || coloring_changed;
 
     if !needs_full_recolor && !selection_changed {
-        if tick_changed {
-            if let Some(gs) = &state.0 {
-                last.tick = gs.tick;
+        return;
+    }
+
+    // Build a quick lookup: tag → color for editor countries.
+    let country_color_lookup: HashMap<&str, [f32; 4]> = countries
+        .0
+        .iter()
+        .map(|c| (c.tag.as_str(), c.color))
+        .collect();
+
+    let base_color = |pid: usize| -> [f32; 4] {
+        match *mode {
+            MapMode::Province => map.0.provinces[pid].hex_color,
+            MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
+            MapMode::Political => {
+                let topo = &map.0.provinces[pid].topography;
+                let prov_id = map.0.provinces[pid].id;
+
+                if let Some(tag) = coloring.assignments.get(&prov_id) {
+                    // Province is assigned to a country.
+                    let country_color = country_color_lookup
+                        .get(tag.as_str())
+                        .copied()
+                        .unwrap_or_else(|| owner_color_rgba(tag));
+
+                    if topo.contains("wasteland") {
+                        // Blend 50/50 with terrain color for wasteland.
+                        let wc = terrain_province_color(topo);
+                        return [
+                            (wc[0] + country_color[0]) * 0.5,
+                            (wc[1] + country_color[1]) * 0.5,
+                            (wc[2] + country_color[2]) * 0.5,
+                            1.0,
+                        ];
+                    }
+                    return country_color;
+                }
+
+                // Unassigned: wasteland shows terrain, others neutral gray.
+                if topo.contains("wasteland") {
+                    terrain_province_color(topo)
+                } else {
+                    [0.55, 0.55, 0.55, 1.0]
+                }
             }
         }
-        return;
-    }
-
-    // For game-state-dependent modes we need a game state.
-    if !gs_independent && state.0.is_none() {
-        last.mode = Some(*mode);
-        return;
-    }
-
-    // Pre-compute normalization and update last BEFORE the closure borrows last.
-    let (max_pop, max_prod) = if let Some(gs) = &state.0 {
-        if !matches!(*mode, MapMode::Province | MapMode::Terrain | MapMode::Political) {
-            compute_normalization(gs)
-        } else {
-            (last.max_pop.max(1), last.max_prod.max(1.0))
-        }
-    } else {
-        (last.max_pop.max(1), last.max_prod.max(1.0))
     };
 
     let Some(mesh) = meshes.get_mut(&vm.mesh_handle) else {
         return;
     };
 
-    // Helper closure: pure read of state, map, mode, max_pop/max_prod (no last borrow).
-    let base_color = |pid: usize| -> [f32; 4] {
-        match *mode {
-            MapMode::Province => map.0.provinces[pid].hex_color,
-            MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
-            MapMode::Political => {
-                // Wasteland provinces: show terrain color normally, or blended with
-                // owner color if the province is owned by a country.
-                let topo = &map.0.provinces[pid].topography;
-                if topo.contains("wasteland") {
-                    let wasteland_color = terrain_province_color(topo);
-                    if let Some(gs) = &state.0 {
-                        if pid < gs.provinces.len() {
-                            if let Some(owner) = gs.provinces[pid].owner.as_deref() {
-                                let sovereign = resolve_sovereign(owner, &gs.vassals);
-                                let country_color = country_colors.0.get(sovereign)
-                                    .copied()
-                                    .unwrap_or_else(|| owner_color_rgba(sovereign));
-                                // 50/50 blend: visually distinct from both pure wasteland
-                                // and normal country provinces.
-                                return [
-                                    (wasteland_color[0] + country_color[0]) * 0.5,
-                                    (wasteland_color[1] + country_color[1]) * 0.5,
-                                    (wasteland_color[2] + country_color[2]) * 0.5,
-                                    1.0,
-                                ];
-                            }
-                        }
-                    }
-                    return wasteland_color;
-                }
-                if let Some(gs) = &state.0 {
-                    if pid < gs.provinces.len() {
-                        if let Some(owner) = gs.provinces[pid].owner.as_deref() {
-                            // Chain-resolve through vassal relationships to find sovereign.
-                            let sovereign = resolve_sovereign(owner, &gs.vassals);
-                            // Use EU5 color if available, else fall back to hash.
-                            return country_colors.0.get(sovereign)
-                                .copied()
-                                .unwrap_or_else(|| owner_color_rgba(sovereign));
-                        }
-                        // Unclaimed: neutral gray
-                        return [0.55, 0.55, 0.55, 1.0];
-                    }
-                }
-                map.0.provinces[pid].hex_color
-            }
-            MapMode::Population => {
-                if let Some(gs) = &state.0 {
-                    if pid < gs.provinces.len() {
-                        let total: u32 = gs.provinces[pid].pops.iter().map(|p| p.size).sum();
-                        return heatmap_rgba(u32_to_f32(total) / u32_to_f32(max_pop));
-                    }
-                }
-                map.0.provinces[pid].hex_color
-            }
-            MapMode::Production => {
-                if let Some(gs) = &state.0 {
-                    if pid < gs.provinces.len() {
-                        let total: f32 = gs.provinces[pid].stockpile.values().sum();
-                        return heatmap_rgba(total / max_prod);
-                    }
-                }
-                map.0.provinces[pid].hex_color
-            }
-        }
-    };
-
-    // Targeted selection-only update (cheap: ~60 vertices instead of millions).
+    // Targeted selection-only update (cheap).
     if !needs_full_recolor && selection_changed {
         if let Some(VertexAttributeValues::Float32x4(colors)) =
             mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
         {
-            // Restore old selection to base color.
             if let Some(old_id) = last.selected {
                 let pid = u32_to_usize(old_id);
                 if pid < vm.ranges.len() {
@@ -382,7 +290,6 @@ fn color_provinces(
                     }
                 }
             }
-            // Highlight new selection.
             if let Some(new_id) = selected.0 {
                 let pid = u32_to_usize(new_id);
                 if pid < vm.ranges.len() {
@@ -395,22 +302,13 @@ fn color_provinces(
             }
         }
         last.selected = selected.0;
-        if let Some(gs) = &state.0 {
-            last.tick = gs.tick;
-            last.state_initialized = true;
-        }
         return;
     }
 
     // Full recolor.
-    if let Some(gs) = &state.0 {
-        last.tick = gs.tick;
-        last.state_initialized = true;
-    }
-    last.max_pop = max_pop;
-    last.max_prod = max_prod;
     last.mode = Some(*mode);
     last.selected = selected.0;
+    last.coloring_version = coloring_version.0;
 
     if let Some(VertexAttributeValues::Float32x4(colors)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
+use crate::editor::{EditorCountries, MapColoring};
 use crate::map::{MapMode, MapResource};
-use crate::net::LatestGameState;
 use crate::state::AppState;
 use crate::ui::CjkFont;
 
@@ -11,7 +11,7 @@ impl Plugin for CapitalsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (spawn_capitals, update_capitals_scale).run_if(in_state(AppState::Playing)),
+            (spawn_capitals, update_capitals_scale).run_if(in_state(AppState::Editing)),
         );
     }
 }
@@ -20,9 +20,7 @@ impl Plugin for CapitalsPlugin {
 #[derive(Component)]
 pub struct CapitalMarker;
 
-/// Drives EU4-style LOD: territory_factor = sqrt(province_count).
-/// Name world-space size = territory_factor * NAME_BASE_SIZE.
-/// Star is always constant screen-space size.
+/// Drives EU4-style LOD: territory_factor = sqrt(province_count assigned to this country).
 #[derive(Component)]
 struct CapitalTerritoryFactor(f32);
 
@@ -35,20 +33,20 @@ const NAME_BASE_SIZE: f32 = 0.6;
 
 fn spawn_capitals(
     mut commands: Commands,
-    state: Res<LatestGameState>,
+    countries: Res<EditorCountries>,
+    coloring: Res<MapColoring>,
     map: Option<Res<MapResource>>,
     cjk_res: Option<Res<CjkFont>>,
-    mut last_fingerprint: Local<Vec<(String, u32)>>,
+    mut last_fingerprint: Local<Vec<(String, Option<u32>)>>,
     existing: Query<Entity, With<CapitalMarker>>,
 ) {
     let Some(map) = map else { return };
-    let Some(gs) = &state.0 else { return };
     let Some(cjk_res) = cjk_res else { return };
     let cjk = cjk_res.0.clone();
 
     // Fingerprint: (tag, capital_province) — only re-spawn when this changes.
-    let fingerprint: Vec<(String, u32)> = gs
-        .countries
+    let fingerprint: Vec<(String, Option<u32>)> = countries
+        .0
         .iter()
         .map(|c| (c.tag.clone(), c.capital_province))
         .collect();
@@ -61,27 +59,24 @@ fn spawn_capitals(
         commands.entity(entity).despawn();
     }
 
-    // Count provinces per country tag.
-    let mut province_counts: std::collections::HashMap<&str, u32> =
-        std::collections::HashMap::new();
-    for prov in &gs.provinces {
-        if let Some(owner) = prov.owner.as_deref() {
-            *province_counts.entry(owner).or_insert(0) += 1;
-        }
+    // Count province assignments per country tag.
+    let mut province_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for tag in coloring.assignments.values() {
+        *province_counts.entry(tag.as_str()).or_insert(0) += 1;
     }
 
-    for country in &gs.countries {
-        let cap_id = country.capital_province as usize;
-        if cap_id >= map.0.provinces.len() {
+    for country in &countries.0 {
+        let Some(cap_id) = country.capital_province else { continue };
+        let cap_idx = cap_id as usize;
+        if cap_idx >= map.0.provinces.len() {
             continue;
         }
-        let centroid = map.0.provinces[cap_id].centroid;
+        let centroid = map.0.provinces[cap_idx].centroid;
         let x = centroid[0];
         let y = centroid[1];
         let size = *province_counts.get(country.tag.as_str()).unwrap_or(&1);
         let territory_factor = (size as f32).sqrt();
 
-        // Name world-space size is fixed (not zoom-dependent) — proportional to territory.
         let name_world = territory_factor * NAME_BASE_SIZE;
         let name_scale = name_world / 36.0;
         let name_y = y - name_world * 0.6;
@@ -127,11 +122,9 @@ fn update_capitals_scale(
         markers.iter_mut()
     {
         if *is_star {
-            // Star: constant ~10 screen pixels, zoom-aware.
             let entity_scale = 10.0 * cam_scale / 48.0;
             transform.scale = Vec3::splat(entity_scale);
 
-            // Show when territory is in a reasonable zoom window.
             let max_cam = tf / 40.0;
             let min_cam = tf / 800.0;
             *vis = if political && cam_scale > min_cam && cam_scale < max_cam {
@@ -140,8 +133,6 @@ fn update_capitals_scale(
                 Visibility::Hidden
             };
         } else {
-            // Name: world-space scale is fixed (set at spawn). Only update visibility.
-            // Show when the name would appear between ~8px and ~150px on screen.
             let name_world = tf * NAME_BASE_SIZE;
             let screen_size = name_world / cam_scale;
             *vis = if political && screen_size > 8.0 && screen_size < 150.0 {

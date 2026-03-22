@@ -103,21 +103,15 @@ pub fn province_click(
     selected.0 = None;
 }
 
-/// Keyboard shortcuts: 1 = Province, 2 = Population, 3 = Production, 4 = Terrain, 5 = Political.
+/// Keyboard shortcuts: 1 = Province, 2 = Terrain, 3 = Political.
 pub fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
     if keys.just_pressed(KeyCode::Digit1) {
         *mode = MapMode::Province;
     }
     if keys.just_pressed(KeyCode::Digit2) {
-        *mode = MapMode::Population;
-    }
-    if keys.just_pressed(KeyCode::Digit3) {
-        *mode = MapMode::Production;
-    }
-    if keys.just_pressed(KeyCode::Digit4) {
         *mode = MapMode::Terrain;
     }
-    if keys.just_pressed(KeyCode::Digit5) {
+    if keys.just_pressed(KeyCode::Digit3) {
         *mode = MapMode::Political;
     }
 }

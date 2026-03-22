@@ -1,472 +1,484 @@
 use bevy::prelude::*;
-use rust_i18n::t;
-use shared::conv::u32_to_usize;
-use shared::{Good, Order, OrderKind, PopClass};
 
-use crate::map::{MapMode, MapResource, SelectedProvince};
-use crate::net::{CmdSender, LatestGameState, Paused};
-use crate::state::{AppState, PlayerCountry};
-use shared::ClientMsg;
+use crate::editor::{self, ActiveCountry, EditorCountries, MapColoring};
+use crate::map::{ColoringVersion, MapMode, MapResource, SelectedProvince};
+use crate::state::AppState;
+use shared::EditorCountry;
 
 pub struct UiPlugin;
 
-impl Plugin for UiPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_camera)
-            .add_systems(OnEnter(AppState::Playing), setup_game_ui)
-            .add_systems(
-                Update,
-                (update_hud, update_province_panel, button_interactions, update_button_styles)
-                    .run_if(in_state(AppState::Playing)),
-            );
-    }
-}
+const FONT_PATH: &str = "fonts/NotoSansCJKsc-Regular.otf";
 
 /// Holds the loaded CJK font handle (Simplified Chinese).
 #[derive(Resource)]
-#[allow(dead_code)]
 pub struct CjkFont(pub Handle<Font>);
 
-#[derive(Component)]
-struct DateLabel;
+// ── UI component markers ───────────────────────────────────────────────────────
 
 #[derive(Component)]
-struct ProvincePanel;
+struct CountryListItem(String); // stores country tag
 
-/// Marker for a map-mode button; stores which mode it activates.
+#[derive(Component)]
+struct CountryListPanel;
+
+#[derive(Component)]
+struct ProvinceInfoPanel;
+
 #[derive(Component)]
 struct MapModeButton(MapMode);
 
-/// Marker for the raise-army button.
 #[derive(Component)]
-struct RaiseArmyButton;
+struct SaveButton;
 
-/// Marker for the pause/unpause button.
 #[derive(Component)]
-struct PauseButton;
+struct LoadButton;
+
+#[derive(Component)]
+struct AddCountryButton;
+
+#[derive(Component)]
+struct DeleteCountryButton(String);
+
+// ── Colors ─────────────────────────────────────────────────────────────────────
 
 const BTN_NORMAL: Color = Color::srgb(0.18, 0.20, 0.22);
 const BTN_HOVER: Color = Color::srgb(0.28, 0.31, 0.34);
 const BTN_ACTIVE: Color = Color::srgb(0.22, 0.50, 0.80);
+const BTN_SELECTED: Color = Color::srgb(0.15, 0.45, 0.15);
 const TEXT_COLOR: Color = Color::srgb(0.92, 0.92, 0.92);
+const PANEL_BG: Color = Color::srgba(0.08, 0.08, 0.10, 0.92);
 
-fn good_name(good: Good) -> std::borrow::Cow<'static, str> {
-    let key = match good {
-        Good::Grain => "good_grain",
-        Good::Clothing => "good_clothing",
-        Good::Fuel => "good_fuel",
-        Good::Tools => "good_tools",
-        Good::Luxuries => "good_luxuries",
-        Good::Metal => "good_metal",
-        Good::BuildingMaterials => "good_building_materials",
-    };
-    t!(key)
+impl Plugin for UiPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, (load_font, setup_camera))
+            .add_systems(OnEnter(AppState::Editing), setup_editor_ui)
+            .add_systems(
+                Update,
+                (
+                    button_interactions,
+                    update_province_panel,
+                    update_country_list,
+                    paint_province,
+                )
+                    .run_if(in_state(AppState::Editing)),
+            );
+    }
 }
 
-fn pop_class_name(class: PopClass) -> std::borrow::Cow<'static, str> {
-    let key = match class {
-        PopClass::TenantFarmer => "pop_tenant_farmer",
-        PopClass::Yeoman => "pop_yeoman",
-        PopClass::Landlord => "pop_landlord",
-        PopClass::Capitalist => "pop_capitalist",
-        PopClass::PetitBourgeois => "pop_petit_bourgeois",
-        PopClass::Clergy => "pop_clergy",
-        PopClass::Bureaucrat => "pop_bureaucrat",
-        PopClass::Nobility => "pop_nobility",
-        PopClass::Soldier => "pop_soldier",
-        PopClass::Intelligentsia => "pop_intelligentsia",
-    };
-    t!(key)
+fn load_font(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load(FONT_PATH);
+    commands.insert_resource(CjkFont(font));
 }
 
-fn building_name(id: &str) -> std::borrow::Cow<'static, str> {
-    let key = match id {
-        "farm" => "building_farm",
-        "yeoman_farm" => "building_yeoman_farm",
-        "textile_workshop" => "building_textile_workshop",
-        "mine" => "building_mine",
-        "charcoal_kiln" => "building_charcoal_kiln",
-        "smithy" => "building_smithy",
-        "luxury_workshop" => "building_luxury_workshop",
-        "sawmill" => "building_sawmill",
-        _ => return std::borrow::Cow::Owned(id.to_string()),
-    };
-    t!(key)
+fn setup_camera(mut commands: Commands) {
+    commands.spawn(Camera2d);
 }
 
-fn setup_camera(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // Load CJK font (Simplified Chinese) and store as a global resource.
-    let cjk: Handle<Font> = asset_server.load("fonts/NotoSansCJKsc-Regular.otf");
-    commands.insert_resource(CjkFont(cjk));
+fn setup_editor_ui(mut commands: Commands, cjk: Option<Res<CjkFont>>) {
+    let font = cjk.map(|r| r.0.clone()).unwrap_or_default();
 
-    // Camera centered on East Asia (Equal Earth ≈ 105°E, 35°N → x≈105, y≈38).
-    commands.spawn((
-        Camera2d,
-        OrthographicProjection {
-            scale: 0.1,
-            ..OrthographicProjection::default_2d()
-        },
-        Transform::from_xyz(105.0, 38.0, 999.9),
-    ));
-}
-
-fn setup_game_ui(mut commands: Commands, cjk_res: Res<CjkFont>) {
-    let cjk = cjk_res.0.clone();
-
-    // HUD: date + tick + map mode in the top-left corner.
-    commands.spawn((
-        Text::new(t!("connecting").to_string()),
-        TextFont {
-            font: cjk.clone(),
-            font_size: 18.0,
-            ..default()
-        },
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            left: Val::Px(10.0),
-            ..default()
-        },
-        DateLabel,
-    ));
-
-    // Province info panel on the right side.
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font: cjk.clone(),
-            font_size: 14.0,
-            ..default()
-        },
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            right: Val::Px(10.0),
-            max_width: Val::Px(300.0),
-            padding: UiRect::all(Val::Px(8.0)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-        ProvincePanel,
-    ));
-
-    // Bottom toolbar: map mode buttons + pause button.
-    commands
-        .spawn(Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::FlexEnd,
-            align_items: AlignItems::Center,
-            padding: UiRect::bottom(Val::Px(12.0)),
-            ..default()
-        })
-        .with_children(|root| {
-            root.spawn(Node {
+    // Root full-screen container
+    commands.spawn(Node {
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        flex_direction: FlexDirection::Column,
+        ..default()
+    })
+    .with_children(|root| {
+        // Top toolbar
+        root.spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(44.0),
                 flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::horizontal(Val::Px(8.0)),
                 column_gap: Val::Px(6.0),
                 ..default()
-            })
-            .with_children(|row| {
-                let modes: &[(MapMode, u8)] = &[
-                    (MapMode::Province, 1),
-                    (MapMode::Population, 2),
-                    (MapMode::Production, 3),
-                    (MapMode::Terrain, 4),
-                    (MapMode::Political, 5),
-                ];
-                for &(mode, key_num) in modes {
-                    let label = format!("{} [{}]", mode, key_num);
-                    row.spawn((
-                        Button,
-                        MapModeButton(mode),
-                        Node {
-                            padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
-                            ..default()
-                        },
-                        BackgroundColor(BTN_NORMAL),
-                        BorderRadius::all(Val::Px(4.0)),
-                    ))
-                    .with_children(|btn| {
-                        btn.spawn((
-                            Text::new(label),
-                            TextFont { font: cjk.clone(), font_size: 13.0, ..default() },
-                            TextColor(TEXT_COLOR),
-                        ));
-                    });
-                }
+            },
+            BackgroundColor(PANEL_BG),
+            GlobalZIndex(10),
+        ))
+        .with_children(|bar| {
+            // Title
+            bar.spawn((
+                Text::new("Daboyi Map Editor  "),
+                TextFont { font: font.clone(), font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.8, 0.8, 0.6)),
+            ));
 
-                // Spacer.
-                row.spawn(Node { width: Val::Px(20.0), ..default() });
-
-                // Raise Army button (1000 soldiers in selected province).
-                row.spawn((
+            // Map mode buttons
+            for (label, mode) in [("Province (1)", MapMode::Province), ("Terrain (2)", MapMode::Terrain), ("Political (3)", MapMode::Political)] {
+                bar.spawn((
                     Button,
-                    RaiseArmyButton,
                     Node {
-                        padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                        padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.55, 0.20, 0.20)),
-                    BorderRadius::all(Val::Px(4.0)),
+                    BackgroundColor(BTN_NORMAL),
+                    MapModeButton(mode),
                 ))
-                .with_children(|btn| {
-                    btn.spawn((
-                        Text::new(t!("raise_army_btn").to_string()),
-                        TextFont { font: cjk.clone(), font_size: 13.0, ..default() },
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new(label),
+                        TextFont { font: font.clone(), font_size: 13.0, ..default() },
                         TextColor(TEXT_COLOR),
                     ));
                 });
+            }
 
-                // Spacer.
-                row.spawn(Node { width: Val::Px(20.0), ..default() });
+            // Spacer
+            bar.spawn(Node { flex_grow: 1.0, ..default() });
 
-                // Pause button.
-                row.spawn((
+            // Save / Load
+            bar.spawn((
+                Button,
+                Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)), ..default() },
+                BackgroundColor(BTN_NORMAL),
+                SaveButton,
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("Save"),
+                    TextFont { font: font.clone(), font_size: 13.0, ..default() },
+                    TextColor(TEXT_COLOR),
+                ));
+            });
+
+            bar.spawn((
+                Button,
+                Node { padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)), ..default() },
+                BackgroundColor(BTN_NORMAL),
+                LoadButton,
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("Load"),
+                    TextFont { font: font.clone(), font_size: 13.0, ..default() },
+                    TextColor(TEXT_COLOR),
+                ));
+            });
+        });
+
+        // Main area row
+        root.spawn(Node {
+            flex_grow: 1.0,
+            flex_direction: FlexDirection::Row,
+            ..default()
+        })
+        .with_children(|row| {
+            // Left panel: country list
+            row.spawn((
+                Node {
+                    width: Val::Px(200.0),
+                    height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(6.0)),
+                    row_gap: Val::Px(4.0),
+                    overflow: Overflow::clip_y(),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                CountryListPanel,
+                GlobalZIndex(9),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("Countries"),
+                    TextFont { font: font.clone(), font_size: 14.0, ..default() },
+                    TextColor(Color::srgb(0.7, 0.7, 0.9)),
+                ));
+
+                panel.spawn((
                     Button,
-                    PauseButton,
                     Node {
-                        padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                        width: Val::Percent(100.0),
+                        padding: UiRect::axes(Val::Px(6.0), Val::Px(4.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.22, 0.60, 0.28)),
-                    BorderRadius::all(Val::Px(4.0)),
+                    BackgroundColor(Color::srgb(0.15, 0.35, 0.15)),
+                    AddCountryButton,
                 ))
-                .with_children(|btn| {
-                    btn.spawn((
-                        Text::new(t!("unpause_btn").to_string()),
-                        TextFont { font: cjk.clone(), font_size: 13.0, ..default() },
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new("+ Add Country"),
+                        TextFont { font: font.clone(), font_size: 12.0, ..default() },
                         TextColor(TEXT_COLOR),
                     ));
                 });
             });
+
+            // Center: empty space (map renders behind UI)
+            row.spawn(Node { flex_grow: 1.0, ..default() });
+
+            // Right panel: province info
+            row.spawn((
+                Node {
+                    width: Val::Px(210.0),
+                    height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(8.0)),
+                    row_gap: Val::Px(6.0),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                ProvinceInfoPanel,
+                GlobalZIndex(9),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("Province Info"),
+                    TextFont { font: font.clone(), font_size: 14.0, ..default() },
+                    TextColor(Color::srgb(0.7, 0.7, 0.9)),
+                ));
+
+                panel.spawn((
+                    Text::new("Click a province"),
+                    TextFont { font: font.clone(), font_size: 12.0, ..default() },
+                    TextColor(Color::srgb(0.6, 0.6, 0.6)),
+                    ProvinceInfoText,
+                ));
+            });
         });
+    });
 }
 
-fn update_hud(
-    state: Res<LatestGameState>,
-    mode: Res<MapMode>,
-    paused: Res<Paused>,
-    mut query: Query<&mut Text, With<DateLabel>>,
-) {
-    if let Some(gs) = &state.0 {
-        let pause_str = if paused.0 { t!("paused") } else { t!("playing") };
-        for mut text in query.iter_mut() {
-            *text = Text::new(format!(
-                "{}: {}-{:02}-{:02}   {}: {}   [{}]  {}  {}",
-                t!("hud_date"), gs.date.year, gs.date.month, gs.date.day,
-                t!("hud_tick"), gs.tick, *mode, pause_str,
-                t!("hud_hint")
-            ));
-        }
-    }
-}
+/// Marker for the province info text entity.
+#[derive(Component)]
+struct ProvinceInfoText;
 
+/// Update the province info panel when the selection changes.
 fn update_province_panel(
-    state: Res<LatestGameState>,
     selected: Res<SelectedProvince>,
     map: Option<Res<MapResource>>,
-    mut query: Query<&mut Text, With<ProvincePanel>>,
+    coloring: Res<MapColoring>,
+    countries: Res<EditorCountries>,
+    mut info_q: Query<&mut Text, With<ProvinceInfoText>>,
 ) {
-    for mut text in query.iter_mut() {
-        let Some(pid) = selected.0 else {
-            *text = Text::new(t!("click_province").to_string());
-            return;
-        };
+    let Ok(mut text) = info_q.get_single_mut() else { return };
 
-        let Some(gs) = &state.0 else {
-            *text = Text::new("");
-            return;
-        };
+    let Some(pid) = selected.0 else {
+        *text = Text::new("Click a province");
+        return;
+    };
+    let Some(map) = map else { return };
 
-        let Some(province) = gs.provinces.get(u32_to_usize(pid)) else {
-            *text = Text::new(format!("#{pid} ({})", t!("no_data")));
-            return;
-        };
+    let pidx = pid as usize;
+    if pidx >= map.0.provinces.len() {
+        return;
+    }
+    let mp = &map.0.provinces[pidx];
+    let owner = coloring.assignments.get(&pid).and_then(|tag| {
+        countries.0.iter().find(|c| &c.tag == tag).map(|c| c.name.clone())
+    });
 
-        let mut info = String::new();
+    let info = format!(
+        "ID: {}\nTag: {}\nTerrain: {}\nOwner: {}",
+        pid,
+        mp.tag,
+        mp.topography,
+        owner.as_deref().unwrap_or("(unassigned)")
+    );
+    *text = Text::new(info);
+}
 
-        // Province name: prefer Chinese name from GameState (loaded from province_names.tsv)
-        // Fall back to map tag if GameState name is just the raw tag
-        let name = &province.name;
-        info.push_str(&format!("=== {} ===\n", name));
-        // Show Chinese country name if available, else tag
-        let owner_display = province.owner.as_deref().map(|tag| {
-            gs.countries
-                .iter()
-                .find(|c| c.tag == tag)
-                .map(|c| c.name.as_str())
-                .unwrap_or(tag)
-                .to_string()
-        });
-        info.push_str(&format!(
-            "{}: {}\n",
-            t!("owner"),
-            owner_display.as_deref().unwrap_or(&t!("none_owner"))
-        ));
+/// Rebuild the country list whenever EditorCountries changes.
+fn update_country_list(
+    mut commands: Commands,
+    countries: Res<EditorCountries>,
+    active: Res<ActiveCountry>,
+    cjk: Option<Res<CjkFont>>,
+    panel_q: Query<Entity, With<CountryListPanel>>,
+    items_q: Query<Entity, With<CountryListItem>>,
+) {
+    if !countries.is_changed() && !active.is_changed() {
+        return;
+    }
+    let Ok(panel) = panel_q.get_single() else { return };
+    let font = cjk.map(|r| r.0.clone()).unwrap_or_default();
 
-        // Terrain / geography info from map data
-        if let Some(mp) = map
-            .as_ref()
-            .and_then(|m| m.0.provinces.get(u32_to_usize(pid)))
-        {
-            info.push_str(&format!("{}: {}\n", t!("topography"), mp.topography));
-            info.push_str(&format!("{}: {}\n", t!("vegetation"), mp.vegetation));
-            info.push_str(&format!("{}: {}\n", t!("climate"), mp.climate));
-            if !mp.raw_material.is_empty() {
-                info.push_str(&format!("{}: {}\n", t!("resource"), mp.raw_material));
-            }
-            if mp.harbor_suitability > 0.0 {
-                info.push_str(&format!("{}: {:.0}%\n", t!("harbor"), mp.harbor_suitability * 100.0));
-            }
-            if let Some(sz) = &mp.port_sea_zone {
-                info.push_str(&format!("{}: {}\n", t!("sea_zone"), sz));
-            }
-        }
+    // Despawn old country items.
+    for e in items_q.iter() {
+        commands.entity(e).despawn_recursive();
+    }
 
-        // Population
-        let total_pop: u32 = province.pops.iter().map(|p| p.size).sum();
-        info.push_str(&format!("\n{}: {}\n", t!("population"), total_pop));
-        for pop in &province.pops {
-            if pop.size > 0 {
-                info.push_str(&format!(
-                    "  {}: {} ({:.0}%)\n",
-                    pop_class_name(pop.class),
-                    pop.size,
-                    pop.needs_satisfaction * 100.0
+    for country in &countries.0 {
+        let is_active = active.0.as_deref() == Some(&country.tag);
+        let swatch_color = Color::srgba(
+            country.color[0],
+            country.color[1],
+            country.color[2],
+            country.color[3],
+        );
+        let row_bg = if is_active { BTN_SELECTED } else { BTN_NORMAL };
+        let tag = country.tag.clone();
+        let name = country.name.clone();
+
+        let row = commands.spawn((
+            Button,
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::axes(Val::Px(4.0), Val::Px(3.0)),
+                column_gap: Val::Px(5.0),
+                ..default()
+            },
+            BackgroundColor(row_bg),
+            CountryListItem(tag.clone()),
+        ))
+        .with_children(|row| {
+            // Color swatch
+            row.spawn((
+                Node {
+                    width: Val::Px(14.0),
+                    height: Val::Px(14.0),
+                    ..default()
+                },
+                BackgroundColor(swatch_color),
+            ));
+            // Country name
+            row.spawn((
+                Text::new(format!("{name} [{tag}]")),
+                TextFont { font: font.clone(), font_size: 11.0, ..default() },
+                TextColor(TEXT_COLOR),
+                Node { flex_grow: 1.0, ..default() },
+            ));
+            // Delete button
+            row.spawn((
+                Button,
+                Node {
+                    width: Val::Px(16.0),
+                    height: Val::Px(16.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.5, 0.1, 0.1)),
+                DeleteCountryButton(tag.clone()),
+            ))
+            .with_children(|d| {
+                d.spawn((
+                    Text::new("×"),
+                    TextFont { font: font.clone(), font_size: 11.0, ..default() },
+                    TextColor(TEXT_COLOR),
                 ));
-            }
-        }
+            });
+        })
+        .id();
 
-        // Buildings
-        if !province.buildings.is_empty() {
-            info.push_str(&format!("\n{}:\n", t!("buildings")));
-            for b in &province.buildings {
-                let bname = gs
-                    .building_types
-                    .iter()
-                    .find(|bt| bt.id == b.type_id)
-                    .map(|bt| building_name(&bt.id))
-                    .unwrap_or_else(|| building_name(&b.type_id));
-                info.push_str(&format!("  {} Lv.{}\n", bname, b.level));
-            }
-        }
-
-        // Stockpile
-        let non_empty: Vec<_> = province
-            .stockpile
-            .iter()
-            .filter(|(_, v)| **v > 0.01)
-            .collect();
-        if !non_empty.is_empty() {
-            info.push_str(&format!("\n{}:\n", t!("stockpile")));
-            for (good, amount) in non_empty {
-                info.push_str(&format!("  {}: {:.1}\n", good_name(*good), amount));
-            }
-        }
-
-        // Country production (top goods) + treasury
-        if let Some(owner_tag) = province.owner.as_deref() {
-            if let Some(country) = gs.countries.iter().find(|c| c.tag == owner_tag) {
-                info.push_str(&format!("\n{}: {:.1} 金\n", t!("treasury"), country.treasury));
-                if !country.produced_goods.is_empty() {
-                    info.push_str(&format!("\n{}:\n", t!("produced_goods")));
-                    for (good, amount) in country.produced_goods.iter().take(5) {
-                        info.push_str(&format!("  {}: {:.1}\n", good, amount));
-                    }
-                }
-            }
-        }
-
-        *text = Text::new(info);
+        commands.entity(panel).add_child(row);
     }
 }
 
-/// Handle button clicks → update MapMode, toggle Paused, or issue military orders.
+/// Handle all button clicks.
 fn button_interactions(
     interaction_q: Query<
-        (&Interaction, Option<&MapModeButton>, Option<&PauseButton>, Option<&RaiseArmyButton>),
+        (
+            &Interaction,
+            Option<&MapModeButton>,
+            Option<&SaveButton>,
+            Option<&LoadButton>,
+            Option<&AddCountryButton>,
+            Option<&CountryListItem>,
+            Option<&DeleteCountryButton>,
+        ),
         (Changed<Interaction>, With<Button>),
     >,
     mut mode: ResMut<MapMode>,
-    mut paused: ResMut<Paused>,
-    selected: Res<SelectedProvince>,
-    player_country: Res<PlayerCountry>,
-    state: Res<LatestGameState>,
-    sender: Res<CmdSender>,
+    mut coloring: ResMut<MapColoring>,
+    mut countries: ResMut<EditorCountries>,
+    mut active: ResMut<ActiveCountry>,
+    mut coloring_version: ResMut<ColoringVersion>,
 ) {
-    for (interaction, map_btn, pause_btn, raise_btn) in &interaction_q {
+    for (interaction, mode_btn, save_btn, load_btn, add_btn, list_item, delete_btn) in
+        interaction_q.iter()
+    {
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(MapModeButton(m)) = map_btn {
+
+        if let Some(MapModeButton(m)) = mode_btn {
             *mode = *m;
-        }
-        if pause_btn.is_some() {
-            paused.0 = !paused.0;
-        }
-        if raise_btn.is_some() {
-            // Issue a RaiseArmy order for the selected province (1000 soldiers).
-            if let (Some(pid), Some(ref tag)) = (selected.0, &player_country.0) {
-                // Only if player owns this province.
-                let owns = state.0.as_ref().map(|gs| {
-                    gs.provinces.get(u32_to_usize(pid))
-                        .and_then(|p| p.owner.as_deref())
-                        == Some(tag.as_str())
-                }).unwrap_or(false);
-                if owns {
-                    sender.0.send(ClientMsg::IssueOrder(Order {
-                        kind: OrderKind::RaiseArmy { province_id: pid, size: 1000 },
-                    })).ok();
-                }
+        } else if save_btn.is_some() {
+            editor::save_coloring(&coloring, &countries);
+        } else if load_btn.is_some() {
+            editor::load_coloring(&mut coloring, &mut countries);
+            coloring_version.0 += 1;
+        } else if add_btn.is_some() {
+            let idx = countries.0.len();
+            let tag = format!("C{idx:03}");
+            // Cycle through distinct hues.
+            let hue = (idx as f32 * 137.5) % 360.0;
+            let color = hsl_to_rgba(hue, 0.65, 0.50);
+            countries.0.push(EditorCountry {
+                tag: tag.clone(),
+                name: format!("Country {}", idx + 1),
+                color,
+                capital_province: None,
+            });
+            active.0 = Some(tag);
+        } else if let Some(CountryListItem(tag)) = list_item {
+            active.0 = Some(tag.clone());
+        } else if let Some(DeleteCountryButton(tag)) = delete_btn {
+            countries.0.retain(|c| &c.tag != tag);
+            coloring.assignments.retain(|_, v| v != tag);
+            coloring_version.0 += 1;
+            if active.0.as_deref() == Some(tag) {
+                active.0 = None;
             }
         }
     }
 }
 
-/// Keep button backgrounds and pause button label in sync with current state.
-fn update_button_styles(
+/// Left-click on a province (while in Political mode) assigns it to the active country.
+/// Right-click deassigns.
+fn paint_province(
+    mouse: Res<ButtonInput<MouseButton>>,
+    selected: Res<SelectedProvince>,
     mode: Res<MapMode>,
-    paused: Res<Paused>,
-    mut mode_btns: Query<(&MapModeButton, &Interaction, &mut BackgroundColor)>,
-    mut pause_btns: Query<
-        (&Interaction, &mut BackgroundColor, &Children),
-        (With<PauseButton>, Without<MapModeButton>),
-    >,
-    mut texts: Query<&mut Text>,
+    active: Res<ActiveCountry>,
+    mut coloring: ResMut<MapColoring>,
+    mut coloring_version: ResMut<ColoringVersion>,
 ) {
-    for (MapModeButton(btn_mode), interaction, mut bg) in &mut mode_btns {
-        *bg = if *btn_mode == *mode {
-            BackgroundColor(BTN_ACTIVE)
-        } else if *interaction == Interaction::Hovered {
-            BackgroundColor(BTN_HOVER)
-        } else {
-            BackgroundColor(BTN_NORMAL)
-        };
+    if *mode != MapMode::Political {
+        return;
     }
+    let Some(pid) = selected.0 else { return };
 
-    // Pause button: green when paused (game stopped), red when running.
-    let (pause_base, pause_label) = if paused.0 {
-        (Color::srgb(0.22, 0.60, 0.28), t!("unpause_btn").to_string())
-    } else {
-        (Color::srgb(0.60, 0.22, 0.18), t!("pause_btn").to_string())
-    };
-    for (interaction, mut bg, children) in &mut pause_btns {
-        let lighter = *interaction == Interaction::Hovered;
-        let c = pause_base.to_srgba();
-        *bg = BackgroundColor(if lighter {
-            Color::srgb(
-                (c.red + 0.1).min(1.0),
-                (c.green + 0.1).min(1.0),
-                (c.blue + 0.1).min(1.0),
-            )
-        } else {
-            pause_base
-        });
-        for &child in children {
-            if let Ok(mut t) = texts.get_mut(child) {
-                *t = Text::new(pause_label.clone());
-            }
+    // Left-click: assign to active country.
+    if mouse.just_pressed(MouseButton::Left) {
+        if let Some(tag) = &active.0 {
+            coloring.assignments.insert(pid, tag.clone());
+            coloring_version.0 += 1;
         }
     }
+
+    // Right-click: deassign province.
+    if mouse.just_pressed(MouseButton::Right) {
+        if coloring.assignments.remove(&pid).is_some() {
+            coloring_version.0 += 1;
+        }
+    }
+}
+
+/// Convert HSL color to RGBA [0,1].
+fn hsl_to_rgba(h: f32, s: f32, l: f32) -> [f32; 4] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    [r + m, g + m, b + m, 1.0]
 }
