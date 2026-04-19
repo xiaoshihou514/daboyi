@@ -164,6 +164,13 @@ fn rebuild_borders(
     *last_border_version = border_version.0;
     *last_scale = proj_scale;
 
+    // Early-return for non-political mode BEFORE touching the mesh, so
+    // recycle_mesh_buffers never strips it and leaves zero vertices for the GPU allocator.
+    if *mode != MapMode::Political {
+        despawn_border_entities(&mut commands, &existing);
+        return;
+    }
+
     if let Some(mesh_handle) = border_assets.mesh.clone() {
         if let Some(mesh) = meshes.get_mut(&mesh_handle) {
             recycle_mesh_buffers(mesh, &mut scratch);
@@ -176,11 +183,6 @@ fn rebuild_borders(
         scratch.positions.clear();
         scratch.colors.clear();
         scratch.indices.clear();
-    }
-
-    if *mode != MapMode::Political {
-        despawn_border_entities(&mut commands, &existing);
-        return;
     }
 
     let mut country_keys: HashMap<&str, u32> = HashMap::new();
@@ -242,6 +244,22 @@ fn rebuild_borders(
 
     if positions.is_empty() {
         despawn_border_entities(&mut commands, &existing);
+        // Restore minimal valid geometry so the GPU allocator doesn't divide by zero
+        // when it processes this mesh handle (entities are still alive this frame
+        // until deferred despawns are flushed).
+        if let Some(mesh_handle) = border_assets.mesh.clone() {
+            if let Some(mesh) = meshes.get_mut(&mesh_handle) {
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_POSITION,
+                    vec![[0.0f32, 0.0, 0.0]; 3],
+                );
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_COLOR,
+                    vec![[0.0f32, 0.0, 0.0, 0.0]; 3],
+                );
+                mesh.insert_indices(Indices::U32(vec![0, 1, 2]));
+            }
+        }
         return;
     }
 
