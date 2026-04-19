@@ -1,7 +1,9 @@
-/// Camera controls, province click detection, and map mode switching.
+/// Camera controls and province click detection.
 use bevy::prelude::*;
 
-use super::{MapMode, MapResource, SelectedProvince, MAP_WIDTH};
+use crate::editor::BrushTool;
+use crate::ui::UiInputBlock;
+use super::{MapResource, SelectedProvince, MAP_WIDTH};
 use crate::map::color::point_in_province;
 
 /// Camera pan (right-click drag) and zoom (scroll wheel).
@@ -11,7 +13,16 @@ pub fn camera_controls(
     mut motion_evts: EventReader<bevy::input::mouse::MouseMotion>,
     mut camera_q: Query<(&mut Transform, &mut OrthographicProjection), With<Camera2d>>,
     windows: Query<&Window>,
+    keys: Res<ButtonInput<KeyCode>>,
+    brush: Res<BrushTool>,
+    ui_input_block: Res<UiInputBlock>,
 ) {
+    if ui_input_block.0 {
+        motion_evts.clear();
+        scroll_evts.clear();
+        return;
+    }
+
     let Ok((mut transform, mut projection)) = camera_q.get_single_mut() else {
         return;
     };
@@ -32,7 +43,12 @@ pub fn camera_controls(
         motion_evts.clear();
     }
 
+    let brush_resize_modifier =
+        brush.enabled && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
     for ev in scroll_evts.read() {
+        if brush_resize_modifier {
+            continue;
+        }
         let zoom_factor = 1.0 - ev.y * 0.1;
         projection.scale *= zoom_factor.clamp(0.5, 2.0);
         projection.scale = projection.scale.clamp(0.002, 0.15);
@@ -55,8 +71,13 @@ pub fn province_click(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     map: Option<Res<MapResource>>,
+    brush: Res<BrushTool>,
     mut selected: ResMut<SelectedProvince>,
+    ui_input_block: Res<UiInputBlock>,
 ) {
+    if brush.enabled || ui_input_block.0 {
+        return;
+    }
     // Run on initial press, or while held and cursor has moved (brush drag).
     let should_run = mouse_input.just_pressed(MouseButton::Left)
         || (mouse_input.pressed(MouseButton::Left) && !cursor_moved.is_empty());
@@ -107,18 +128,5 @@ pub fn province_click(
     // Only clear selection on fresh click, not on drag (keeps last valid selection).
     if mouse_input.just_pressed(MouseButton::Left) {
         selected.0 = None;
-    }
-}
-
-/// Keyboard shortcuts: 1 = Province, 2 = Terrain, 3 = Political.
-pub fn map_mode_switch(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<MapMode>) {
-    if keys.just_pressed(KeyCode::Digit1) {
-        *mode = MapMode::Province;
-    }
-    if keys.just_pressed(KeyCode::Digit2) {
-        *mode = MapMode::Terrain;
-    }
-    if keys.just_pressed(KeyCode::Digit3) {
-        *mode = MapMode::Political;
     }
 }

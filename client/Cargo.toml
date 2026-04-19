@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.15"
+bevy_egui = "0.31"
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { path = "../shared" }

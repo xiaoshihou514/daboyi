@@ -86,3 +86,16 @@ pub fn u32_to_usize(v: u32) -> usize {
     // Infallible on any platform where usize >= 32 bits.
     usize::try_from(v).unwrap()
 }
+
+/// Unit `f32` in `[0, 1]` → `u8` in `[0, 255]`.
+#[inline]
+pub fn unit_f32_to_u8(v: f32) -> u8 {
+    let scaled = f32_to_u32((v.clamp(0.0, 1.0) * 255.0).round());
+    u8::try_from(scaled).unwrap_or(u8::MAX)
+}
+
+/// `u8` in `[0, 255]` → unit `f32` in `[0, 1]`.
+#[inline]
+pub fn u8_to_unit_f32(v: u8) -> f32 {
+    f32::from(v) / 255.0
+}

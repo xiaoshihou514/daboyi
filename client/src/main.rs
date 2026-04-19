@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_egui::EguiPlugin;
 
 mod capitals;
 mod editor;
@@ -24,14 +25,9 @@ fn main() {
                     ..Default::default()
                 }),
         )
+        .add_plugins(EguiPlugin)
         .init_state::<state::AppState>()
-        .init_resource::<editor::MapColoring>()
-        .init_resource::<editor::EditorCountries>()
-        .init_resource::<editor::AdminAreas>()
-        .init_resource::<editor::AdminAssignments>()
-        .init_resource::<editor::ActiveCountry>()
-        .init_resource::<editor::ActiveArea>()
-        .init_resource::<editor::NextAreaId>()
+        .add_plugins(editor::EditorPlugin)
         .add_plugins(terrain::TerrainPlugin)
         .add_plugins(map::MapPlugin)
         .add_plugins(map::BordersPlugin)

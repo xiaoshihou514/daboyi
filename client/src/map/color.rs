@@ -18,19 +18,20 @@ pub fn owner_color_rgba(tag: &str) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-pub fn heatmap_rgba(t: f32) -> [f32; 4] {
-    let t = t.clamp(0.0, 1.0);
-    let r = (2.0 * t - 0.5).clamp(0.0, 1.0);
-    let g = (1.0 - (2.0 * t - 1.0).abs()).clamp(0.0, 1.0);
-    let b = (1.0 - 2.0 * t).clamp(0.0, 1.0);
-    [r * 0.8 + 0.1, g * 0.8 + 0.1, b * 0.8 + 0.1, 1.0]
-}
-
 pub fn brighten(c: [f32; 4]) -> [f32; 4] {
     [
         (c[0] + 0.25).min(1.0),
         (c[1] + 0.25).min(1.0),
         (c[2] + 0.25).min(1.0),
+        c[3],
+    ]
+}
+
+pub fn dim(c: [f32; 4], factor: f32) -> [f32; 4] {
+    [
+        c[0] * factor,
+        c[1] * factor,
+        c[2] * factor,
         c[3],
     ]
 }

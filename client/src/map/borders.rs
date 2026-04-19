@@ -1,27 +1,56 @@
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
-use shared::conv::usize_to_u32;
+use shared::conv::{u32_to_usize, usize_to_u32};
+use std::collections::HashMap;
 
-use crate::editor::{AdminAssignments, MapColoring};
-use crate::map::{ColoringVersion, MapMode, MapResource, MAP_WIDTH};
+use crate::editor::{AdminMap, CountryMap};
+use crate::map::{BorderVersion, MapMode, MapResource, MAP_WIDTH};
 use crate::state::AppState;
 
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
+const BORDER_HALF_WIDTH: f32 = 0.05;
 
-/// Precomputed adjacency: pairs of province IDs that share an edge.
+#[derive(Clone)]
+pub(crate) struct CachedBorder {
+    provinces: [u32; 2],
+    chains: Vec<Vec<[f32; 2]>>,
+}
+
+/// Precomputed border chains keyed by adjacent province pairs.
 #[derive(Resource, Default)]
-pub struct ProvinceAdjacency(pub Vec<[u32; 2]>);
+pub struct ProvinceAdjacency(pub Vec<CachedBorder>);
 
 /// Marker for the border mesh entities.
 #[derive(Component)]
 pub struct BorderMesh;
+
+#[derive(Resource, Default)]
+struct BorderAssets {
+    mesh: Option<Handle<Mesh>>,
+    material: Option<Handle<ColorMaterial>>,
+}
+
+#[derive(Resource, Default)]
+struct BorderScratch {
+    positions: Vec<[f32; 3]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnerKey {
+    Country(u32),
+    Admin(u32),
+}
 
 pub struct BordersPlugin;
 
 impl Plugin for BordersPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ProvinceAdjacency::default())
+            .insert_resource(BorderAssets::default())
+            .insert_resource(BorderScratch::default())
             .add_systems(
                 Update,
                 (compute_adjacency, rebuild_borders)
@@ -31,7 +60,7 @@ impl Plugin for BordersPlugin {
     }
 }
 
-/// Compute province adjacency from MapData boundary rings — runs once when MapResource is ready.
+/// Compute province adjacency and shared border chains once from province boundaries.
 pub fn compute_adjacency(
     map: Option<Res<MapResource>>,
     mut adjacency: ResMut<ProvinceAdjacency>,
@@ -69,26 +98,42 @@ pub fn compute_adjacency(
 
     pairs.sort_unstable();
     pairs.dedup();
-    println!("Province adjacency: {} pairs", pairs.len());
-    adjacency.0 = pairs;
+    let mut cached_borders = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let ia = u32_to_usize(pair[0]);
+        let ib = u32_to_usize(pair[1]);
+        if ia >= map.0.provinces.len() || ib >= map.0.provinces.len() {
+            continue;
+        }
+        let chains = chain_polylines(shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]));
+        if !chains.is_empty() {
+            cached_borders.push(CachedBorder {
+                provinces: pair,
+                chains,
+            });
+        }
+    }
+
+    println!("Province adjacency: {} pairs", cached_borders.len());
+    adjacency.0 = cached_borders;
 }
 
-/// Rebuild the border mesh whenever the coloring, mode, or zoom level changes.
+/// Rebuild the border mesh whenever political ownership semantics change.
 fn rebuild_borders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    coloring: Res<MapColoring>,
-    admin_assignments: Res<AdminAssignments>,
-    coloring_version: Res<ColoringVersion>,
+    border_version: Res<BorderVersion>,
+    country_map: Res<CountryMap>,
+    admin_assignments: Res<AdminMap>,
     map: Option<Res<MapResource>>,
     adjacency: Res<ProvinceAdjacency>,
     mode: Res<MapMode>,
-    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     existing: Query<Entity, With<BorderMesh>>,
-    mut last_version: Local<u64>,
+    mut border_assets: ResMut<BorderAssets>,
+    mut scratch: ResMut<BorderScratch>,
     mut last_mode: Local<Option<MapMode>>,
-    mut last_cam_scale: Local<f32>,
+    mut last_border_version: Local<u64>,
 ) {
     let Some(map) = map else { return };
 
@@ -96,52 +141,71 @@ fn rebuild_borders(
         return;
     }
 
-    let cam_scale = camera_q.get_single().map(|p| p.scale).unwrap_or(0.1);
-    let scale_changed = (*last_cam_scale - cam_scale).abs() / cam_scale.max(1e-6) > 0.15;
-
     let mode_changed = Some(*mode) != *last_mode;
-    let coloring_changed = *last_version != coloring_version.0;
-    if !mode_changed && !coloring_changed && !scale_changed {
+    let border_changed = *last_border_version != border_version.0;
+    if !mode_changed && !border_changed {
         return;
     }
-    *last_version = coloring_version.0;
     *last_mode = Some(*mode);
-    *last_cam_scale = cam_scale;
+    *last_border_version = border_version.0;
 
-    for e in existing.iter() {
-        commands.entity(e).despawn();
+    if let Some(mesh_handle) = border_assets.mesh.clone() {
+        if let Some(mesh) = meshes.get_mut(&mesh_handle) {
+            recycle_mesh_buffers(mesh, &mut scratch);
+        } else {
+            scratch.positions.clear();
+            scratch.colors.clear();
+            scratch.indices.clear();
+        }
+    } else {
+        scratch.positions.clear();
+        scratch.colors.clear();
+        scratch.indices.clear();
     }
 
     if *mode != MapMode::Political {
+        despawn_border_entities(&mut commands, &existing);
         return;
     }
 
-    // Border half-width: constant ~1 screen pixel at any zoom level.
-    let half_w = cam_scale * 0.8;
+    let mut country_keys: HashMap<&str, u32> = HashMap::new();
+    let mut next_country_key = 0_u32;
+    for tag in country_map.0.values() {
+        country_keys.entry(tag.as_str()).or_insert_with(|| {
+            let key = next_country_key;
+            next_country_key = next_country_key.saturating_add(1);
+            key
+        });
+    }
 
-    // Use MapColoring assignments as province owner; admin area overrides country.
     let is_wasteland = |idx: usize| -> bool {
         idx < map.0.provinces.len() && map.0.provinces[idx].topography.contains("wasteland")
     };
-    let province_owner = |idx: usize| -> Option<String> {
+    let province_owner = |idx: usize| -> Option<OwnerKey> {
         if idx < map.0.provinces.len() {
             let prov_id = map.0.provinces[idx].id;
             if let Some(&area_id) = admin_assignments.0.get(&prov_id) {
-                return Some(format!("area:{area_id}"));
+                return Some(OwnerKey::Admin(area_id));
             }
-            coloring.assignments.get(&prov_id).map(|s| s.to_string())
+            return country_map
+                .0
+                .get(&prov_id)
+                .and_then(|tag| country_keys.get(tag.as_str()).copied())
+                .map(OwnerKey::Country);
         } else {
             None
         }
     };
 
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut colors: Vec<[f32; 4]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
+    let BorderScratch {
+        positions,
+        colors,
+        indices,
+    } = &mut *scratch;
 
-    for &[pid_a, pid_b] in &adjacency.0 {
-        let ia = pid_a as usize;
-        let ib = pid_b as usize;
+    for border in &adjacency.0 {
+        let ia = u32_to_usize(border.provinces[0]);
+        let ib = u32_to_usize(border.provinces[1]);
         if is_wasteland(ia) || is_wasteland(ib) {
             continue;
         }
@@ -149,35 +213,77 @@ fn rebuild_borders(
             continue;
         }
 
-        // Get shared boundary segments in ring order, chain into polylines.
-        let segs = shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]);
-        for chain in chain_polylines(segs) {
-            polyline_to_quads(&chain, half_w, &mut positions, &mut colors, &mut indices, 0.8);
+        for chain in &border.chains {
+            polyline_to_quads(
+                chain,
+                BORDER_HALF_WIDTH,
+                positions,
+                colors,
+                indices,
+                0.8,
+            );
         }
     }
 
     if positions.is_empty() {
+        despawn_border_entities(&mut commands, &existing);
         return;
     }
 
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    mesh.insert_indices(Indices::U32(indices));
-    let handle = meshes.add(mesh);
-    let material = materials.add(ColorMaterial::default());
+    let mesh_handle = border_assets.mesh.get_or_insert_with(|| {
+        meshes.add(Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        ))
+    }).clone();
+    let material_handle = border_assets
+        .material
+        .get_or_insert_with(|| materials.add(ColorMaterial::default()))
+        .clone();
 
-    for &x_off in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
-        commands.spawn((
-            Mesh2d(handle.clone()),
-            MeshMaterial2d(material.clone()),
-            Transform::from_xyz(x_off, 0.0, 0.8),
-            BorderMesh,
-        ));
+    if let Some(mesh) = meshes.get_mut(&mesh_handle) {
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            std::mem::take(positions),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, std::mem::take(colors));
+        mesh.insert_indices(Indices::U32(std::mem::take(indices)));
     }
+
+    if existing.iter().next().is_none() {
+        for &x_off in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
+            commands.spawn((
+                Mesh2d(mesh_handle.clone()),
+                MeshMaterial2d(material_handle.clone()),
+                Transform::from_xyz(x_off, 0.0, 0.8),
+                BorderMesh,
+            ));
+        }
+    }
+}
+
+fn despawn_border_entities(commands: &mut Commands, existing: &Query<Entity, With<BorderMesh>>) {
+    for entity in existing.iter() {
+        commands.entity(entity).despawn();
+    }
+}
+
+fn recycle_mesh_buffers(mesh: &mut Mesh, scratch: &mut BorderScratch) {
+    scratch.positions = match mesh.remove_attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(VertexAttributeValues::Float32x3(values)) => values,
+        _ => Vec::new(),
+    };
+    scratch.colors = match mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR) {
+        Some(VertexAttributeValues::Float32x4(values)) => values,
+        _ => Vec::new(),
+    };
+    scratch.indices = match mesh.remove_indices() {
+        Some(Indices::U32(values)) => values,
+        _ => Vec::new(),
+    };
+    scratch.positions.clear();
+    scratch.colors.clear();
+    scratch.indices.clear();
 }
 
 /// Return segments from province `a`'s rings that are shared with province `b`.
@@ -317,4 +423,3 @@ fn polyline_to_quads(
         indices.extend_from_slice(&[l0, r0, r1, l0, r1, l1]);
     }
 }
-

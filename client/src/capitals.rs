@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::editor::{EditorCountries, MapColoring};
+use crate::editor::{Countries, CountryMap};
 use crate::map::{MapMode, MapResource};
 use crate::state::AppState;
 use crate::ui::CjkFont;
@@ -33,8 +33,8 @@ const NAME_BASE_SIZE: f32 = 0.6;
 
 fn spawn_capitals(
     mut commands: Commands,
-    countries: Res<EditorCountries>,
-    coloring: Res<MapColoring>,
+    countries: Res<Countries>,
+    country_map: Res<CountryMap>,
     map: Option<Res<MapResource>>,
     cjk_res: Option<Res<CjkFont>>,
     mut last_fingerprint: Local<Vec<(String, Option<u32>)>>,
@@ -61,7 +61,7 @@ fn spawn_capitals(
 
     // Count province assignments per country tag.
     let mut province_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    for tag in coloring.assignments.values() {
+    for tag in country_map.0.values() {
         *province_counts.entry(tag.as_str()).or_insert(0) += 1;
     }
 
