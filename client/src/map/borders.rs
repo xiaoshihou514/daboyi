@@ -110,8 +110,10 @@ pub fn compute_adjacency(
         if raw_chains.is_empty() {
             continue;
         }
+        // Merge chains that share endpoints to eliminate junction gaps.
+        let merged = merge_chains(raw_chains);
         // Apply 2 iterations of Chaikin smoothing to reduce GIS boundary jaggedness.
-        let chains: Vec<Vec<[f32; 2]>> = raw_chains
+        let chains: Vec<Vec<[f32; 2]>> = merged
             .iter()
             .map(|c| chaikin_smooth(&chaikin_smooth(c)))
             .collect();
@@ -360,7 +362,7 @@ fn shared_segments(
 /// Apply one iteration of Chaikin's curve subdivision algorithm to smooth a polyline.
 /// Preserves the endpoints; interior points are replaced by pairs at 1/4 and 3/4 of each segment.
 fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    if pts.len() < 3 {
+    if pts.len() < 2 {
         return pts.to_vec();
     }
     let n = pts.len();
@@ -374,6 +376,70 @@ fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
     }
     result.push(pts[n - 1]);
     result
+}
+
+/// Greedily join chains that share an endpoint (using the same quantization as the rest of
+/// the border code) so that disconnected sub-chains of the same border pair become one
+/// continuous polyline. Without this, Chaikin smoothing widens each sub-chain independently
+/// and leaves visible gaps at junction points.
+fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
+    let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
+    let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
+
+    'restart: loop {
+        let n = chains.len();
+        for i in 0..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                let qi_first = qpt(chains[i][0]);
+                let qi_last = qpt(*chains[i].last().unwrap());
+                let qj_first = qpt(chains[j][0]);
+                let qj_last = qpt(*chains[j].last().unwrap());
+
+                // i-end → j-start: append j[1..] to i
+                if qi_last == qj_first {
+                    let tail = chains[j][1..].to_vec();
+                    chains[i].extend(tail);
+                    chains.remove(j);
+                    continue 'restart;
+                }
+                // i-end → j-end: append reverse(j)[1..] to i
+                if qi_last == qj_last {
+                    let mut j_rev = chains[j].clone();
+                    j_rev.reverse();
+                    chains[i].extend_from_slice(&j_rev[1..]);
+                    chains.remove(j);
+                    continue 'restart;
+                }
+                // j-end → i-start: prepend j[..j.len()-1] before i
+                if qi_first == qj_last {
+                    let prefix_len = chains[j].len() - 1;
+                    let prefix = chains[j][..prefix_len].to_vec();
+                    let tail = std::mem::take(&mut chains[i]);
+                    let mut new_chain = prefix;
+                    new_chain.extend(tail);
+                    chains[i] = new_chain;
+                    chains.remove(j);
+                    continue 'restart;
+                }
+                // j-start → i-start (reversed j ends at j-first = i-first):
+                // prepend reverse(j) before i[1..]
+                if qi_first == qj_first {
+                    let mut j_rev = chains[j].clone();
+                    j_rev.reverse();
+                    let tail = std::mem::take(&mut chains[i]);
+                    j_rev.extend_from_slice(&tail[1..]);
+                    chains[i] = j_rev;
+                    chains.remove(j);
+                    continue 'restart;
+                }
+            }
+        }
+        break;
+    }
+    chains
 }
 
 /// Group ring-ordered segments into connected polyline chains.

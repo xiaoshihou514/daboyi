@@ -150,19 +150,21 @@ pub fn egui_ui_system(
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .show(ui, |ui| {
-                        let top_level: Vec<&AdminArea> = editor.admin_areas.0
+                        let top_level_ids: Vec<u32> = editor.admin_areas.0
                             .iter()
                             .filter(|a| &a.country_tag == country_tag && a.parent_id.is_none())
+                            .map(|a| a.id)
                             .collect();
 
-                        for area in &top_level {
+                        for area_id in top_level_ids {
                             show_admin_area_tree(
                                 ui,
-                                area,
-                                &editor.admin_areas.0,
+                                area_id,
+                                &mut editor.admin_areas.0,
                                 &mut editor.active_admin.0,
                                 &mut ui_state,
                                 0,
+                                &mut runtime.coloring_version.0,
                             );
                         }
                     });
@@ -439,16 +441,25 @@ pub fn egui_ui_system(
                         if let Some(ref country_tag) = editor.active_country.0 {
                             let id = editor.next_admin_id.0;
                             editor.next_admin_id.0 += 1;
-                            
+
+                            // Auto-assign a visually distinct color using golden angle hue.
+                            let existing_count = editor.admin_areas.0
+                                .iter()
+                                .filter(|a| &a.country_tag == country_tag)
+                                .count();
+                            let hue = (usize_to_f32(existing_count) * 137.508) % 360.0;
+                            let auto_color = hsl_to_rgba(hue, 0.6, 0.55);
+
                             editor.admin_areas.0.push(AdminArea {
                                 id,
                                 name: ui_state.new_admin_name.clone(),
                                 country_tag: country_tag.clone(),
                                 parent_id: editor.active_admin.0,
-                                color: None,
+                                color: Some(auto_color),
                             });
                             editor.active_admin.0 = Some(id);
-                            
+                            runtime.coloring_version.0 += 1;
+
                             ui_state.show_new_admin_dialog = false;
                             ui_state.new_admin_name = String::new();
                         }
@@ -536,51 +547,84 @@ pub fn egui_ui_system(
         ui_blocks_pointer || ctx.is_using_pointer() || ctx.wants_keyboard_input();
 }
 
-/// Show admin area tree recursively
+/// Show admin area tree recursively.
+/// Takes `area_id` + `&mut Vec<AdminArea>` so it can edit colors in-place.
 fn show_admin_area_tree(
     ui: &mut egui::Ui,
-    area: &AdminArea,
-    all_areas: &[AdminArea],
+    area_id: u32,
+    all_areas: &mut Vec<AdminArea>,
     active_admin: &mut Option<u32>,
     ui_state: &mut UiState,
     depth: usize,
+    coloring_version: &mut u64,
 ) {
-    let is_selected = *active_admin == Some(area.id);
+    // Extract data we need before any mutable borrow.
+    let Some(area_idx) = all_areas.iter().position(|a| a.id == area_id) else {
+        return;
+    };
+    let area_name = all_areas[area_idx].name.clone();
+    let area_color = all_areas[area_idx].color;
+    let is_selected = *active_admin == Some(area_id);
     let indent = 16.0 * (depth + 1) as f32;
-    
+
+    // Collect children before any mutable borrow below.
+    let child_ids: Vec<u32> = all_areas
+        .iter()
+        .filter(|a| a.parent_id == Some(area_id))
+        .map(|a| a.id)
+        .collect();
+
+    let mut color_changed = false;
+    let mut new_color = egui::Color32::default();
+
     ui.horizontal(|ui| {
         ui.add_space(indent);
-        
-        let response = ui.selectable_label(
-            is_selected,
-            area.name.as_str()
-        );
 
+        let response = ui.selectable_label(is_selected, area_name.as_str());
         if response.clicked() {
-            *active_admin = Some(area.id);
+            *active_admin = Some(area_id);
         }
 
         response.context_menu(|ui| {
             if ui.button("重命名").clicked() {
                 ui_state.show_rename_dialog = true;
-                ui_state.rename_target = RenameTarget::Admin(area.id);
-                ui_state.rename_buffer = area.name.clone();
+                ui_state.rename_target = RenameTarget::Admin(area_id);
+                ui_state.rename_buffer = area_name.clone();
                 ui.close_menu();
             }
             if ui.button("删除").clicked() {
-                ui_state.show_delete_confirm = Some(DeleteTarget::Admin(area.id));
+                ui_state.show_delete_confirm = Some(DeleteTarget::Admin(area_id));
                 ui.close_menu();
             }
         });
+
+        // Inline color swatch: grey when inheriting, actual color when set.
+        let mut current_color =
+            color32_from_rgba(area_color.unwrap_or([0.55, 0.55, 0.55, 1.0]));
+        let color_response = ui.color_edit_button_srgba(&mut current_color);
+        if color_response.changed() {
+            color_changed = true;
+            new_color = current_color;
+        }
     });
 
-    let children: Vec<&AdminArea> = all_areas
-        .iter()
-        .filter(|a| a.parent_id == Some(area.id))
-        .collect();
+    if color_changed {
+        if let Some(area) = all_areas.iter_mut().find(|a| a.id == area_id) {
+            area.color = Some(rgba_from_color32(new_color));
+        }
+        *coloring_version += 1;
+    }
 
-    for child in &children {
-        show_admin_area_tree(ui, child, all_areas, active_admin, ui_state, depth + 1);
+    for child_id in child_ids {
+        show_admin_area_tree(
+            ui,
+            child_id,
+            all_areas,
+            active_admin,
+            ui_state,
+            depth + 1,
+            coloring_version,
+        );
     }
 }
 
