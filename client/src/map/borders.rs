@@ -248,11 +248,12 @@ fn rebuild_borders(
         for chain in &border.chains {
             let hw = BORDER_HALF_PIXELS * proj_scale;
             polyline_to_quads(chain, hw, positions, colors, indices, 0.8);
-            // Disc caps at both endpoints fill the triangular gap at junction vertices
-            // where 3+ province borders converge. Each chain's butt-cap leaves a small
-            // void; the discs from all meeting chains overlap and seal it.
-            add_endpoint_disc(chain[0], hw, positions, colors, indices, 0.8);
-            add_endpoint_disc(*chain.last().unwrap(), hw, positions, colors, indices, 0.8);
+            // Disc caps seal junction voids where 3+ borders converge.
+            // Radius = 2 * hw covers the uncovered corner at 90° junctions
+            // (corner is at hw * √2 ≈ 1.414 * hw from center; 2 * hw gives margin).
+            let disc_r = hw * 2.0;
+            add_endpoint_disc(chain[0], disc_r, positions, colors, indices, 0.8);
+            add_endpoint_disc(*chain.last().unwrap(), disc_r, positions, colors, indices, 0.8);
         }
     }
 
@@ -453,11 +454,13 @@ fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
     chains
 }
 
-/// Snap all chain endpoints within 0.05° of each other to their centroid.
+/// Snap all chain endpoints within 0.1° of each other to their centroid.
 /// Called on pre-Chaikin chains so Chaikin starts from the exact welded positions.
 fn weld_endpoints_global(pair_data: &mut Vec<([u32; 2], Vec<Vec<[f32; 2]>>)>) {
-    // 0.05° buckets: any two endpoints within ~0.025° of each other share a bucket.
-    let quantize = |v: f32| -> i32 { f32_to_i32((v * 20.0).round()) };
+    // 0.1° buckets: any two endpoints within ~0.05° of each other share a bucket.
+    // Using the same resolution as merge_chains so GIS precision mismatches are
+    // reliably merged across province-pair boundaries.
+    let quantize = |v: f32| -> i32 { f32_to_i32((v * 10.0).round()) };
     let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
     let mut bucket_sum: HashMap<(i32, i32), ([f32; 2], u32)> = HashMap::new();

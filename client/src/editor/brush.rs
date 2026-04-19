@@ -245,13 +245,6 @@ pub fn brush_cursor_system(
         world_radius,
         outer_color,
     );
-
-    // 绘制中心点
-    gizmos.circle_2d(
-        Vec2::new(world_pos[0], world_pos[1]),
-        0.2,
-        Color::srgba(1.0, 0.0, 0.0, 0.8),
-    );
 }
 
 /// 获取鼠标世界坐标
