@@ -380,7 +380,8 @@ fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 /// continuous polyline. Without this, Chaikin smoothing widens each sub-chain independently
 /// and leaves visible gaps at junction points.
 fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
-    let quantize = |v: f32| -> i32 { f32_to_i32((v * 100.0).round()) };
+    // Use 0.1° (≈11 km) precision so small GIS axis-aligned endpoint gaps are bridged.
+    let quantize = |v: f32| -> i32 { f32_to_i32((v * 10.0).round()) };
     let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
     'restart: loop {
