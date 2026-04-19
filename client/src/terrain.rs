@@ -79,6 +79,25 @@ fn load_terrain(
     );
 }
 
+/// Apply one iteration of Chaikin's curve subdivision to smooth a polyline.
+/// Preserves the endpoints; interior points are replaced by 1/4 and 3/4 pairs.
+fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let n = pts.len();
+    let mut result = Vec::with_capacity(n * 2);
+    result.push(pts[0]);
+    for i in 0..n - 1 {
+        let [ax, ay] = pts[i];
+        let [bx, by] = pts[i + 1];
+        result.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by]);
+        result.push([0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
+    }
+    result.push(pts[n - 1]);
+    result
+}
+
 /// Build a continuous quad-strip mesh for a river polyline with miter joins.
 /// Interior vertices share miter-bisected offsets — no gaps between segments.
 fn polyline_to_quads(
@@ -190,7 +209,8 @@ fn spawn_rivers(
 
     for river in &river_data.rivers {
         let half_w = RIVER_WIDTHS[river.width_class as usize] / 2.0;
-        let pts: Vec<[f32; 2]> = river.points.iter().map(|&p| p).collect();
+        let raw: Vec<[f32; 2]> = river.points.iter().map(|&p| p).collect();
+        let pts = chaikin_smooth(&chaikin_smooth(&raw));
         polyline_to_quads(&pts, half_w, &mut positions, &mut colors, &mut indices, 0.5);
     }
 

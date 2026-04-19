@@ -99,27 +99,40 @@ pub fn compute_adjacency(
 
     pairs.sort_unstable();
     pairs.dedup();
-    let mut cached_borders = Vec::with_capacity(pairs.len());
+
+    // Pass 1: compute merged chains for every adjacent pair.
+    let mut pair_data: Vec<([u32; 2], Vec<Vec<[f32; 2]>>)> = Vec::with_capacity(pairs.len());
     for pair in pairs {
         let ia = u32_to_usize(pair[0]);
         let ib = u32_to_usize(pair[1]);
         if ia >= map.0.provinces.len() || ib >= map.0.provinces.len() {
             continue;
         }
-        let raw_chains = chain_polylines(shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]));
+        let raw_chains =
+            chain_polylines(shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]));
         if raw_chains.is_empty() {
             continue;
         }
-        // Merge chains that share endpoints to eliminate junction gaps.
         let merged = merge_chains(raw_chains);
-        // Apply 2 iterations of Chaikin smoothing to reduce GIS boundary jaggedness.
-        let chains: Vec<Vec<[f32; 2]>> = merged
+        pair_data.push((pair, merged));
+    }
+
+    // Pass 2: globally weld chain endpoints within 0.05° to their centroid.
+    // This fixes junction gaps at T/X intersections where GIS data stores
+    // slightly different float values for the same geographic junction vertex
+    // depending on which neighbor is on the other side.
+    weld_endpoints_global(&mut pair_data);
+
+    // Pass 3: apply Chaikin smoothing and build CachedBorder entries.
+    let mut cached_borders = Vec::with_capacity(pair_data.len());
+    for (pair, chains) in pair_data {
+        let smoothed: Vec<Vec<[f32; 2]>> = chains
             .iter()
             .map(|c| chaikin_smooth(&chaikin_smooth(c)))
             .collect();
         cached_borders.push(CachedBorder {
             provinces: pair,
-            chains,
+            chains: smoothed,
         });
     }
 
@@ -438,6 +451,50 @@ fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
         break;
     }
     chains
+}
+
+/// Snap all chain endpoints within 0.05° of each other to their centroid.
+/// Called on pre-Chaikin chains so Chaikin starts from the exact welded positions.
+fn weld_endpoints_global(pair_data: &mut Vec<([u32; 2], Vec<Vec<[f32; 2]>>)>) {
+    // 0.05° buckets: any two endpoints within ~0.025° of each other share a bucket.
+    let quantize = |v: f32| -> i32 { f32_to_i32((v * 20.0).round()) };
+    let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
+
+    let mut bucket_sum: HashMap<(i32, i32), ([f32; 2], u32)> = HashMap::new();
+    for (_, chains) in pair_data.iter() {
+        for chain in chains {
+            let n = chain.len();
+            if n < 2 {
+                continue;
+            }
+            for &pt in &[chain[0], chain[n - 1]] {
+                let q = qpt(pt);
+                let e = bucket_sum.entry(q).or_insert(([0.0, 0.0], 0));
+                e.0[0] += pt[0];
+                e.0[1] += pt[1];
+                e.1 += 1;
+            }
+        }
+    }
+    let centroids: HashMap<(i32, i32), [f32; 2]> = bucket_sum
+        .into_iter()
+        .map(|(k, (sum, n))| (k, [sum[0] / u32_to_f32(n), sum[1] / u32_to_f32(n)]))
+        .collect();
+
+    for (_, chains) in pair_data.iter_mut() {
+        for chain in chains.iter_mut() {
+            let n = chain.len();
+            if n < 2 {
+                continue;
+            }
+            if let Some(&c) = centroids.get(&qpt(chain[0])) {
+                chain[0] = c;
+            }
+            if let Some(&c) = centroids.get(&qpt(chain[n - 1])) {
+                chain[n - 1] = c;
+            }
+        }
+    }
 }
 
 /// Group ring-ordered segments into connected polyline chains.
