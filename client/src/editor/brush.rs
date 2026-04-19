@@ -61,6 +61,12 @@ pub fn brush_input_system(
         return;
     }
 
+    // 切换橡皮擦模式：E 键（仅当刷子已启用）
+    if keys.just_pressed(KeyCode::KeyE) && brush.enabled {
+        brush.eraser_mode = !brush.eraser_mode;
+        eprintln!("橡皮擦：{}", if brush.eraser_mode { "开启" } else { "关闭" });
+    }
+
     // 调整刷子大小：Shift + 滚轮（普通滚轮仍用于缩放视角）
     for ev in mouse_wheel.read() {
         let adjusting_brush =
@@ -123,52 +129,68 @@ pub fn brush_input_system(
     let mut processed_provinces = Vec::new();
     let mut changed_any = false;
 
-    // 分配省份到目标
-    for &prov_id in &provinces_in_brush {
-        if drag.painted_provinces.contains(&prov_id) {
-            continue; // 跳过已处理的省份
+    if brush.eraser_mode {
+        // 橡皮擦：从所有归属中移除省份
+        for &prov_id in &provinces_in_brush {
+            if drag.painted_provinces.contains(&prov_id) {
+                continue;
+            }
+            let was_in_admin = assignments.admin_map.0.remove(&prov_id).is_some();
+            let was_in_country = assignments.country_map.0.remove(&prov_id).is_some();
+            if was_in_admin || was_in_country {
+                assignments.pending_province_recolor.0.insert(prov_id);
+                changed_any = true;
+            }
+            processed_provinces.push(prov_id);
         }
+    } else {
+        // 分配省份到目标
+        for &prov_id in &provinces_in_brush {
+            if drag.painted_provinces.contains(&prov_id) {
+                continue; // 跳过已处理的省份
+            }
 
-        let old_country = assignments.country_map.0.get(&prov_id).cloned();
-        let old_admin = assignments.admin_map.0.get(&prov_id).copied();
+            let old_country = assignments.country_map.0.get(&prov_id).cloned();
+            let old_admin = assignments.admin_map.0.get(&prov_id).copied();
 
-        if let Some(admin_id) = target_admin {
-            let Some(relation) = classify_province_for_active_admin(
-                admin_id,
-                &assignments.admin_areas.0,
-                &assignments.admin_map,
-                &assignments.country_map,
-                prov_id,
-            ) else {
-                continue;
-            };
-            if !matches!(
-                relation,
-                AdminBrushRelation::Selected
-                    | AdminBrushRelation::Sibling
-                    | AdminBrushRelation::Unclaimed
-            ) {
-                continue;
+            if let Some(admin_id) = target_admin {
+                let Some(relation) = classify_province_for_active_admin(
+                    admin_id,
+                    &assignments.admin_areas.0,
+                    &assignments.admin_map,
+                    &assignments.country_map,
+                    prov_id,
+                ) else {
+                    continue;
+                };
+                if !matches!(
+                    relation,
+                    AdminBrushRelation::Selected
+                        | AdminBrushRelation::Sibling
+                        | AdminBrushRelation::Unclaimed
+                ) {
+                    continue;
+                }
+                let admin_changed = old_admin != Some(admin_id);
+                let country_cleared = old_country.is_some();
+                if admin_changed || country_cleared {
+                    assignments.admin_map.0.insert(prov_id, admin_id);
+                    assignments.country_map.0.remove(&prov_id);
+                    assignments.pending_province_recolor.0.insert(prov_id);
+                    changed_any = true;
+                }
+                processed_provinces.push(prov_id);
+            } else if let Some(country_tag) = &target_country {
+                let country_changed = old_country.as_ref() != Some(country_tag);
+                let admin_cleared = old_admin.is_some();
+                if country_changed || admin_cleared {
+                    assignments.admin_map.0.remove(&prov_id);
+                    assignments.country_map.0.insert(prov_id, country_tag.clone());
+                    assignments.pending_province_recolor.0.insert(prov_id);
+                    changed_any = true;
+                }
+                processed_provinces.push(prov_id);
             }
-            let admin_changed = old_admin != Some(admin_id);
-            let country_cleared = old_country.is_some();
-            if admin_changed || country_cleared {
-                assignments.admin_map.0.insert(prov_id, admin_id);
-                assignments.country_map.0.remove(&prov_id);
-                assignments.pending_province_recolor.0.insert(prov_id);
-                changed_any = true;
-            }
-            processed_provinces.push(prov_id);
-        } else if let Some(country_tag) = &target_country {
-            let country_changed = old_country.as_ref() != Some(country_tag);
-            let admin_cleared = old_admin.is_some();
-            if country_changed || admin_cleared {
-                assignments.admin_map.0.remove(&prov_id);
-                assignments.country_map.0.insert(prov_id, country_tag.clone());
-                assignments.pending_province_recolor.0.insert(prov_id);
-                changed_any = true;
-            }
-            processed_provinces.push(prov_id);
         }
     }
 
@@ -212,11 +234,16 @@ pub fn brush_cursor_system(
         return;
     };
 
-    // 绘制刷子范围圆圈
+    // 绘制刷子范围圆圈（橡皮擦模式为红色，分配模式为白色）
+    let outer_color = if brush.eraser_mode {
+        Color::srgba(1.0, 0.2, 0.2, 0.7)
+    } else {
+        Color::srgba(1.0, 1.0, 1.0, 0.5)
+    };
     gizmos.circle_2d(
         Vec2::new(world_pos[0], world_pos[1]),
         world_radius,
-        Color::srgba(1.0, 1.0, 1.0, 0.5),
+        outer_color,
     );
 
     // 绘制中心点

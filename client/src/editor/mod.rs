@@ -62,13 +62,16 @@ pub struct BrushTool {
     pub enabled: bool,
     /// 刷子半径（世界坐标度数）
     pub radius: f32,
+    /// 橡皮擦模式（移除归属，而非分配）
+    pub eraser_mode: bool,
 }
 
 impl Default for BrushTool {
     fn default() -> Self {
         Self {
             enabled: false,
-            radius: 2.0, // 默认 2 度半径
+            radius: 2.0,
+            eraser_mode: false,
         }
     }
 }

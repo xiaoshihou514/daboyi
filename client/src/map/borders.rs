@@ -9,7 +9,8 @@ use crate::map::{BorderVersion, MapMode, MapResource, MAP_WIDTH};
 use crate::state::AppState;
 
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
-const BORDER_HALF_WIDTH: f32 = 0.05;
+/// Target border half-width in screen pixels (constant visual size regardless of zoom).
+const BORDER_HALF_PIXELS: f32 = 1.5;
 
 #[derive(Clone)]
 pub(crate) struct CachedBorder {
@@ -105,13 +106,19 @@ pub fn compute_adjacency(
         if ia >= map.0.provinces.len() || ib >= map.0.provinces.len() {
             continue;
         }
-        let chains = chain_polylines(shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]));
-        if !chains.is_empty() {
-            cached_borders.push(CachedBorder {
-                provinces: pair,
-                chains,
-            });
+        let raw_chains = chain_polylines(shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]));
+        if raw_chains.is_empty() {
+            continue;
         }
+        // Apply 2 iterations of Chaikin smoothing to reduce GIS boundary jaggedness.
+        let chains: Vec<Vec<[f32; 2]>> = raw_chains
+            .iter()
+            .map(|c| chaikin_smooth(&chaikin_smooth(c)))
+            .collect();
+        cached_borders.push(CachedBorder {
+            provinces: pair,
+            chains,
+        });
     }
 
     println!("Province adjacency: {} pairs", cached_borders.len());
@@ -129,11 +136,13 @@ fn rebuild_borders(
     map: Option<Res<MapResource>>,
     adjacency: Res<ProvinceAdjacency>,
     mode: Res<MapMode>,
+    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     existing: Query<Entity, With<BorderMesh>>,
     mut border_assets: ResMut<BorderAssets>,
     mut scratch: ResMut<BorderScratch>,
     mut last_mode: Local<Option<MapMode>>,
     mut last_border_version: Local<u64>,
+    mut last_scale: Local<f32>,
 ) {
     let Some(map) = map else { return };
 
@@ -141,13 +150,19 @@ fn rebuild_borders(
         return;
     }
 
+    // Camera projection scale (world units per pixel).
+    let proj_scale = camera_q.get_single().map(|p| p.scale).unwrap_or(0.05);
+    let scale_changed = *last_scale == 0.0
+        || ((*last_scale - proj_scale).abs() / *last_scale > 0.05);
+
     let mode_changed = Some(*mode) != *last_mode;
     let border_changed = *last_border_version != border_version.0;
-    if !mode_changed && !border_changed {
+    if !mode_changed && !border_changed && !scale_changed {
         return;
     }
     *last_mode = Some(*mode);
     *last_border_version = border_version.0;
+    *last_scale = proj_scale;
 
     if let Some(mesh_handle) = border_assets.mesh.clone() {
         if let Some(mesh) = meshes.get_mut(&mesh_handle) {
@@ -216,7 +231,7 @@ fn rebuild_borders(
         for chain in &border.chains {
             polyline_to_quads(
                 chain,
-                BORDER_HALF_WIDTH,
+                BORDER_HALF_PIXELS * proj_scale,
                 positions,
                 colors,
                 indices,
@@ -321,6 +336,25 @@ fn shared_segments(
             }
         }
     }
+    result
+}
+
+/// Apply one iteration of Chaikin's curve subdivision algorithm to smooth a polyline.
+/// Preserves the endpoints; interior points are replaced by pairs at 1/4 and 3/4 of each segment.
+fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let n = pts.len();
+    let mut result = Vec::with_capacity(n * 2);
+    result.push(pts[0]);
+    for i in 0..n - 1 {
+        let [ax, ay] = pts[i];
+        let [bx, by] = pts[i + 1];
+        result.push([0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by]);
+        result.push([0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by]);
+    }
+    result.push(pts[n - 1]);
     result
 }
 

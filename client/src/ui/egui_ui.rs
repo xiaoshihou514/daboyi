@@ -162,6 +162,7 @@ pub fn egui_ui_system(
                                 &editor.admin_areas.0,
                                 &mut editor.active_admin.0,
                                 &mut ui_state,
+                                0,
                             );
                         }
                     });
@@ -178,7 +179,12 @@ pub fn egui_ui_system(
                     ui_state.new_country_name = String::new();
                 }
 
-                if ui.button("新建行政区").clicked() && editor.active_country.0.is_some() {
+                let adm_btn_label = if editor.active_admin.0.is_some() {
+                    "新建子区域"
+                } else {
+                    "新建行政区"
+                };
+                if ui.button(adm_btn_label).clicked() && editor.active_country.0.is_some() {
                     ui_state.show_new_admin_dialog = true;
                     ui_state.new_admin_name = String::new();
                 }
@@ -209,6 +215,10 @@ pub fn egui_ui_system(
                 );
                 ui.label(format!("当前半径：{:.0}px", brush.radius));
                 ui.label("按住 Shift + 滚轮调整刷子大小");
+                ui.checkbox(&mut brush.eraser_mode, "橡皮擦模式 (E)");
+                if brush.eraser_mode {
+                    ui.colored_label(egui::Color32::RED, "⚠ 橡皮擦：点击移除归属");
+                }
             }
 
             ui.separator();
@@ -413,6 +423,14 @@ pub fn egui_ui_system(
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                // Parent context hint
+                if let Some(parent_id) = editor.active_admin.0 {
+                    if let Some(parent) = editor.admin_areas.0.iter().find(|a| a.id == parent_id) {
+                        ui.label(format!("将创建为「{}」的子区域", parent.name));
+                    }
+                } else {
+                    ui.label("将创建为顶级行政区");
+                }
                 ui.label("行政区名称:");
                 ui.text_edit_singleline(&mut ui_state.new_admin_name);
                 
@@ -525,9 +543,10 @@ fn show_admin_area_tree(
     all_areas: &[AdminArea],
     active_admin: &mut Option<u32>,
     ui_state: &mut UiState,
+    depth: usize,
 ) {
     let is_selected = *active_admin == Some(area.id);
-    let indent = 16.0;
+    let indent = 16.0 * (depth + 1) as f32;
     
     ui.horizontal(|ui| {
         ui.add_space(indent);
@@ -561,7 +580,7 @@ fn show_admin_area_tree(
         .collect();
 
     for child in &children {
-        show_admin_area_tree(ui, child, all_areas, active_admin, ui_state);
+        show_admin_area_tree(ui, child, all_areas, active_admin, ui_state, depth + 1);
     }
 }
 
