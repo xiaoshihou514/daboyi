@@ -6,9 +6,13 @@ mod material;
 use bevy::ecs::system::SystemParam;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
+use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::mesh::{Indices, PrimitiveTopology};
-use bevy::render::render_asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_asset::{RenderAssetUsages, RenderAssets};
+use bevy::render::render_resource::{Extent3d, ImageDataLayout, TextureDimension, TextureFormat};
+use bevy::render::renderer::RenderQueue;
+use bevy::render::texture::GpuImage;
+use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
 use material::ProvinceMapMaterial;
 use shared::conv::{u32_to_usize, unit_f32_to_u8, usize_to_f32, usize_to_u32};
@@ -67,14 +71,30 @@ impl std::fmt::Display for MapMode {
 /// gives a height of ceil(21111/256) = 83 for the expected province count.
 const TEX_WIDTH: usize = 256;
 
-/// Colour lookup texture for the province map.
+/// Province colour pixel data shared between main world and render world.
 ///
-/// One texel per province at pixel index `pid` (= province array index):
-///   col = pid % TEX_WIDTH
-///   row = pid / TEX_WIDTH
-#[derive(Resource)]
-pub struct ProvinceColorTexture {
-    pub handle: Handle<Image>,
+/// Instead of going through `Assets<Image>::get_mut` (which creates a NEW `GpuImage`
+/// and breaks the material bind group), the render world writes this buffer directly
+/// to the EXISTING GPU texture via `RenderQueue::write_texture`.  The bind group is
+/// never stale.
+#[derive(Resource, Clone)]
+pub struct ProvinceColorBuffer {
+    /// Raw RGBA8 pixels: length = tex_width * tex_height * 4.
+    pub data: Vec<u8>,
+    /// Monotonic version incremented on every color update.  The render world
+    /// system skips the write when this equals its `last_version` local.
+    pub version: u64,
+    /// Used by the render world to look up the `GpuImage` in `RenderAssets<GpuImage>`.
+    pub image_handle: Handle<Image>,
+    pub tex_width: u32,
+    pub tex_height: u32,
+}
+
+impl ExtractResource for ProvinceColorBuffer {
+    type Source = ProvinceColorBuffer;
+    fn extract_resource(source: &Self::Source) -> Self {
+        source.clone()
+    }
 }
 
 /// Tracks the last coloring state to avoid redundant recoloring.
@@ -129,6 +149,7 @@ impl PaintDebounce {
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Material2dPlugin::<ProvinceMapMaterial>::default())
+            .add_plugins(ExtractResourcePlugin::<ProvinceColorBuffer>::default())
             .insert_resource(SelectedProvince::default())
             .insert_resource(MapMode::default())
             .insert_resource(LastColorState::default())
@@ -161,6 +182,14 @@ impl Plugin for MapPlugin {
                     .run_if(in_state(AppState::Editing))
                     .after(crate::ui::UiPass),
             );
+
+        // Register the render-world system that writes the province colour buffer
+        // directly onto the existing GPU texture via `write_texture`.
+        let render_app = app.sub_app_mut(RenderApp);
+        render_app.add_systems(
+            Render,
+            update_province_texture_gpu.in_set(RenderSet::PrepareResources),
+        );
     }
 }
 
@@ -241,6 +270,11 @@ fn load_map(
     let mesh_handle = meshes.add(mesh);
 
     // Province colour lookup texture: 256 × ceil(N/256), Rgba8Unorm.
+    // We keep a separate clone of pixel_data in ProvinceColorBuffer — the Image
+    // copy is used only to bootstrap the GpuImage at startup.  All subsequent
+    // colour updates go through `write_texture` in update_province_texture_gpu
+    // so that the GpuImage (and its TextureView) is never recreated.
+    let color_buf_data = pixel_data.clone();
     let mut color_image = Image::new(
         Extent3d {
             width: usize_to_u32(TEX_WIDTH),
@@ -267,8 +301,12 @@ fn load_map(
         ));
     }
 
-    commands.insert_resource(ProvinceColorTexture {
-        handle: color_tex_handle,
+    commands.insert_resource(ProvinceColorBuffer {
+        data: color_buf_data,
+        version: 1,
+        image_handle: color_tex_handle,
+        tex_width: usize_to_u32(TEX_WIDTH),
+        tex_height: usize_to_u32(tex_height),
     });
 
     let mut stripped_map = map_data;
@@ -335,9 +373,14 @@ fn write_color(data: &mut [u8], pid: usize, color: [f32; 4]) {
 ///
 /// Colour updates are cheap (~84 KB texture write) so they happen immediately —
 /// no deferral needed.  Only `pending_border` / border rebuilds remain debounced.
+///
+/// Writes to `ProvinceColorBuffer.data` (main world only) and bumps `version`.
+/// The render-world system `update_province_texture_gpu` picks up the new version
+/// and calls `queue.write_texture` on the EXISTING `GpuImage`, so the material
+/// bind group is never invalidated.
 fn color_provinces(
     map: Option<Res<MapResource>>,
-    color_tex: Option<Res<ProvinceColorTexture>>,
+    color_buf: Option<ResMut<ProvinceColorBuffer>>,
     mode: Res<MapMode>,
     selected: Res<SelectedProvince>,
     active_admin: Res<ActiveAdmin>,
@@ -347,9 +390,8 @@ fn color_provinces(
     admin_assignments: Res<AdminMap>,
     mut guard: ColoringGuard,
     mut pending_province_recolor: ResMut<PendingProvinceRecolor>,
-    mut images: ResMut<Assets<Image>>,
 ) {
-    let (Some(map), Some(ct)) = (map, color_tex) else {
+    let (Some(map), Some(mut color_buf)) = (map, color_buf) else {
         return;
     };
 
@@ -445,15 +487,13 @@ fn color_provinces(
 
     if needs_full_recolor {
         // Full texture rewrite (~84 KB): recompute every province's colour.
-        let Some(image) = images.get_mut(&ct.handle) else {
-            return;
-        };
         for pid in 0..map.0.provinces.len() {
             let is_selected = selected.0 == Some(usize_to_u32(pid));
             let base = scoped_color(pid);
             let color = if is_selected { brighten(base) } else { base };
-            write_color(&mut image.data, pid, color);
+            write_color(&mut color_buf.data, pid, color);
         }
+        color_buf.version += 1;
         guard.last.mode = Some(*mode);
         guard.last.selected = selected.0;
         guard.last.active_admin = active_admin.0;
@@ -465,11 +505,6 @@ fn color_provinces(
     // Targeted province update (during/after brush drag): only update
     // the provinces that actually changed this frame.
     if has_pending_province {
-        let Some(image) = images.get_mut(&ct.handle) else {
-            return;
-        };
-        // Drain pending set; also re-apply selection highlight if the
-        // selected province is among the changed ones.
         let ids: Vec<u32> = pending_province_recolor.0.drain().collect();
         for prov_id in ids {
             let pid = u32_to_usize(prov_id);
@@ -479,34 +514,69 @@ fn color_provinces(
             let is_selected = selected.0 == Some(prov_id);
             let base = scoped_color(pid);
             let color = if is_selected { brighten(base) } else { base };
-            write_color(&mut image.data, pid, color);
+            write_color(&mut color_buf.data, pid, color);
         }
+        color_buf.version += 1;
         // Selection state hasn't changed — keep last.selected current.
         return;
     }
 
     // Selection-only update: restore old selected province, highlight new one.
     if selection_changed {
-        let Some(image) = images.get_mut(&ct.handle) else {
-            return;
-        };
         if let Some(old_u32) = guard.last.selected {
             let old_pid = u32_to_usize(old_u32);
             if old_pid < map.0.provinces.len() {
-                write_color(&mut image.data, old_pid, scoped_color(old_pid));
+                write_color(&mut color_buf.data, old_pid, scoped_color(old_pid));
             }
         }
         if let Some(new_u32) = selected.0 {
             let new_pid = u32_to_usize(new_u32);
             if new_pid < map.0.provinces.len() {
-                write_color(&mut image.data, new_pid, brighten(scoped_color(new_pid)));
+                write_color(&mut color_buf.data, new_pid, brighten(scoped_color(new_pid)));
             }
         }
+        color_buf.version += 1;
         guard.last.selected = selected.0;
     }
 }
 
-/// Walk the area parent chain to find the first explicit color, falling back to country color.
+/// Render-world system: write province colour data directly onto the existing
+/// GPU texture via `RenderQueue::write_texture`.
+///
+/// This avoids re-creating the `GpuImage` (and breaking the material bind
+/// group) that `images.get_mut` would trigger through `prepare_assets::<GpuImage>`.
+/// The wgpu `Texture` object stays the same; only its texel data is updated.
+fn update_province_texture_gpu(
+    color_buf: Option<Res<ProvinceColorBuffer>>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
+    queue: Res<RenderQueue>,
+    mut last_version: Local<u64>,
+) {
+    let Some(color_buf) = color_buf else {
+        return;
+    };
+    if color_buf.version == *last_version {
+        return;
+    }
+    let Some(gpu_image) = gpu_images.get(color_buf.image_handle.id()) else {
+        return;
+    };
+    queue.write_texture(
+        gpu_image.texture.as_image_copy(),
+        &color_buf.data,
+        ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(color_buf.tex_width * 4),
+            rows_per_image: None,
+        },
+        Extent3d {
+            width: color_buf.tex_width,
+            height: color_buf.tex_height,
+            depth_or_array_layers: 1,
+        },
+    );
+    *last_version = color_buf.version;
+}
 fn resolve_area_color(
     area_id: u32,
     admin_areas: &[shared::AdminArea],
