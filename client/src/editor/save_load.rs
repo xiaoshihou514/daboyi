@@ -1,7 +1,7 @@
 //! 着色文件保存/加载
 
-use std::fs;
 use bevy::prelude::*;
+use std::fs;
 
 use crate::editor::{AdminAreas, AdminMap, Countries, CountryMap, NextAdminId};
 use shared::ColoringFile;
@@ -9,9 +9,7 @@ use shared::ColoringFile;
 const COLORING_FILE: &str = "assets/coloring.json";
 
 /// 从 JSON 文件加载着色数据
-pub fn load_coloring(
-    commands: &mut Commands,
-) {
+pub fn load_coloring(commands: &mut Commands) {
     let Ok(json) = fs::read_to_string(COLORING_FILE) else {
         eprintln!("未找到着色文件，使用空数据");
         return;

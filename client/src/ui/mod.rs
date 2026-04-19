@@ -26,7 +26,12 @@ impl Plugin for UiPlugin {
         app.init_resource::<UiInputBlock>()
             .add_systems(
                 Startup,
-                (load_font, setup_camera, enable_ime_input, configure_egui_fonts),
+                (
+                    load_font,
+                    setup_camera,
+                    enable_ime_input,
+                    configure_egui_fonts,
+                ),
             )
             .add_systems(
                 Update,

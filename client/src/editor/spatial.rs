@@ -50,7 +50,7 @@ impl SpatialHash {
     /// 查找半径内的所有省份 ID
     pub fn find_in_radius(&self, pos: [f32; 2], radius: f32) -> Vec<u32> {
         use std::collections::HashSet;
-        
+
         let mut seen: HashSet<u32> = HashSet::new();
         let mut result = Vec::new();
 

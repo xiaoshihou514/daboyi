@@ -6,7 +6,6 @@
 /// - Ring normalization (antimeridian unwrapping)
 /// - Polygon simplification and triangulation
 /// - Centroid computation
-
 use geo::algorithm::centroid::Centroid;
 use geo::algorithm::simplify::Simplify;
 use geo::{Coord, LineString, Polygon};
@@ -57,11 +56,7 @@ fn coords_to_linestring(coords: &[[f64; 2]]) -> LineString<f64> {
 pub fn simplify_ring(ring: &[[f64; 2]], epsilon: f64) -> Vec<[f64; 2]> {
     let ls = coords_to_linestring(ring);
     let simplified = ls.simplify(&epsilon);
-    simplified
-        .into_inner()
-        .iter()
-        .map(|c| [c.x, c.y])
-        .collect()
+    simplified.into_inner().iter().map(|c| [c.x, c.y]).collect()
 }
 
 pub fn triangulate_polygon(

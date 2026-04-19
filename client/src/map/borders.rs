@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
+use serde::{Deserialize, Serialize};
 use shared::conv::{f32_to_i32, u32_to_f32, u32_to_usize, usize_to_u32};
 use std::collections::HashMap;
+use std::fs;
+use std::io;
 
 use crate::editor::{AdminMap, CountryMap};
 use crate::map::{BorderVersion, MapMode, MapResource, MAP_WIDTH};
@@ -11,11 +14,20 @@ use crate::state::AppState;
 const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 /// Target border half-width in screen pixels (constant visual size regardless of zoom).
 const BORDER_HALF_PIXELS: f32 = 1.5;
+const ADJACENCY_BIN_PATH: &str = "assets/province_adjacency.bin";
+const ADJACENCY_CACHE_VERSION: u32 = 1;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CachedBorder {
     provinces: [u32; 2],
     chains: Vec<Vec<[f32; 2]>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProvinceAdjacencyCache {
+    version: u32,
+    province_count: u32,
+    borders: Vec<CachedBorder>,
 }
 
 /// Precomputed border chains keyed by adjacent province pairs.
@@ -62,21 +74,37 @@ impl Plugin for BordersPlugin {
 }
 
 /// Compute province adjacency and shared border chains once from province boundaries.
-pub fn compute_adjacency(
-    map: Option<Res<MapResource>>,
-    mut adjacency: ResMut<ProvinceAdjacency>,
-) {
+pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<ProvinceAdjacency>) {
     if !adjacency.0.is_empty() {
         return;
     }
     let Some(map) = map else { return };
+    let province_count = usize_to_u32(map.0.provinces.len());
 
+    if let Ok(Some(cached_borders)) = load_cached_adjacency(province_count) {
+        println!(
+            "Loaded province adjacency cache: {} pairs",
+            cached_borders.len()
+        );
+        adjacency.0 = cached_borders;
+        return;
+    }
+
+    let cached_borders = build_adjacency(&map.0);
+    println!("Province adjacency: {} pairs", cached_borders.len());
+    if let Err(error) = save_cached_adjacency(province_count, &cached_borders) {
+        eprintln!("Failed to save {ADJACENCY_BIN_PATH}: {error}");
+    }
+    adjacency.0 = cached_borders;
+}
+
+fn build_adjacency(map: &shared::map::MapData) -> Vec<CachedBorder> {
     let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
     let mut edge_map: std::collections::HashMap<[(i32, i32); 2], u32> =
         std::collections::HashMap::new();
     let mut pairs: Vec<[u32; 2]> = Vec::new();
 
-    for province in &map.0.provinces {
+    for province in &map.provinces {
         let pid = province.id;
         for ring in &province.boundary {
             let n = ring.len();
@@ -105,11 +133,10 @@ pub fn compute_adjacency(
     for pair in pairs {
         let ia = u32_to_usize(pair[0]);
         let ib = u32_to_usize(pair[1]);
-        if ia >= map.0.provinces.len() || ib >= map.0.provinces.len() {
+        if ia >= map.provinces.len() || ib >= map.provinces.len() {
             continue;
         }
-        let raw_chains =
-            chain_polylines(shared_segments(&map.0.provinces[ia], &map.0.provinces[ib]));
+        let raw_chains = chain_polylines(shared_segments(&map.provinces[ia], &map.provinces[ib]));
         if raw_chains.is_empty() {
             continue;
         }
@@ -135,9 +162,31 @@ pub fn compute_adjacency(
             chains: smoothed,
         });
     }
+    cached_borders
+}
 
-    println!("Province adjacency: {} pairs", cached_borders.len());
-    adjacency.0 = cached_borders;
+fn load_cached_adjacency(province_count: u32) -> io::Result<Option<Vec<CachedBorder>>> {
+    let bytes = match fs::read(ADJACENCY_BIN_PATH) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let cache: ProvinceAdjacencyCache = bincode::deserialize(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if cache.version != ADJACENCY_CACHE_VERSION || cache.province_count != province_count {
+        return Ok(None);
+    }
+    Ok(Some(cache.borders))
+}
+
+fn save_cached_adjacency(province_count: u32, borders: &[CachedBorder]) -> io::Result<()> {
+    let bytes = bincode::serialize(&ProvinceAdjacencyCache {
+        version: ADJACENCY_CACHE_VERSION,
+        province_count,
+        borders: borders.to_vec(),
+    })
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    fs::write(ADJACENCY_BIN_PATH, bytes)
 }
 
 /// Rebuild the border mesh whenever political ownership semantics change.
@@ -167,8 +216,8 @@ fn rebuild_borders(
 
     // Camera projection scale (world units per pixel).
     let proj_scale = camera_q.get_single().map(|p| p.scale).unwrap_or(0.05);
-    let scale_changed = *last_scale == 0.0
-        || ((*last_scale - proj_scale).abs() / *last_scale > 0.05);
+    let scale_changed =
+        *last_scale == 0.0 || ((*last_scale - proj_scale).abs() / *last_scale > 0.05);
 
     let mode_changed = Some(*mode) != *last_mode;
     let border_changed = *last_border_version != border_version.0;
@@ -235,6 +284,8 @@ fn rebuild_borders(
         indices,
     } = &mut *scratch;
 
+    let mut junction_rims: HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
+
     for border in &adjacency.0 {
         let ia = u32_to_usize(border.provinces[0]);
         let ib = u32_to_usize(border.provinces[1]);
@@ -246,14 +297,30 @@ fn rebuild_borders(
         }
 
         for chain in &border.chains {
+            if chain.len() < 2 {
+                continue;
+            }
             let hw = BORDER_HALF_PIXELS * proj_scale;
             polyline_to_quads(chain, hw, positions, colors, indices, 0.8);
-            // Disc caps seal junction voids where 3+ borders converge.
-            // Radius = 2 * hw covers the uncovered corner at 90° junctions
-            // (corner is at hw * √2 ≈ 1.414 * hw from center; 2 * hw gives margin).
-            let disc_r = hw * 2.0;
-            add_endpoint_disc(chain[0], disc_r, positions, colors, indices, 0.8);
-            add_endpoint_disc(*chain.last().unwrap(), disc_r, positions, colors, indices, 0.8);
+            if let Some(span) = endpoint_cap_span(chain, hw, true) {
+                let entry = junction_rims
+                    .entry(border_qpt(chain[0]))
+                    .or_insert((chain[0], Vec::new()));
+                entry.1.extend_from_slice(&span);
+            }
+            let last = *chain.last().unwrap();
+            if let Some(span) = endpoint_cap_span(chain, hw, false) {
+                let entry = junction_rims
+                    .entry(border_qpt(last))
+                    .or_insert((last, Vec::new()));
+                entry.1.extend_from_slice(&span);
+            }
+        }
+    }
+
+    for (_, (center, rim_points)) in junction_rims {
+        if rim_points.len() >= 6 {
+            add_junction_fill(center, &rim_points, positions, colors, indices, 0.8);
         }
     }
 
@@ -264,34 +331,29 @@ fn rebuild_borders(
         // until deferred despawns are flushed).
         if let Some(mesh_handle) = border_assets.mesh.clone() {
             if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-                mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_POSITION,
-                    vec![[0.0f32, 0.0, 0.0]; 3],
-                );
-                mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_COLOR,
-                    vec![[0.0f32, 0.0, 0.0, 0.0]; 3],
-                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32, 0.0, 0.0, 0.0]; 3]);
                 mesh.insert_indices(Indices::U32(vec![0, 1, 2]));
             }
         }
         return;
-    }    let mesh_handle = border_assets.mesh.get_or_insert_with(|| {
-        meshes.add(Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-        ))
-    }).clone();
+    }
+    let mesh_handle = border_assets
+        .mesh
+        .get_or_insert_with(|| {
+            meshes.add(Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+            ))
+        })
+        .clone();
     let material_handle = border_assets
         .material
         .get_or_insert_with(|| materials.add(ColorMaterial::default()))
         .clone();
 
     if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            std::mem::take(positions),
-        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, std::mem::take(positions));
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, std::mem::take(colors));
         mesh.insert_indices(Indices::U32(std::mem::take(indices)));
     }
@@ -332,24 +394,66 @@ fn recycle_mesh_buffers(mesh: &mut Mesh, scratch: &mut BorderScratch) {
     scratch.indices.clear();
 }
 
+fn border_quantize(v: f32) -> i32 {
+    f32_to_i32((v * 100.0).round())
+}
+
+fn border_qpt(p: [f32; 2]) -> (i32, i32) {
+    (border_quantize(p[0]), border_quantize(p[1]))
+}
+
+fn point_on_segment_t(point: [f32; 2], a: [f32; 2], b: [f32; 2], eps: f32) -> Option<f32> {
+    let abx = b[0] - a[0];
+    let aby = b[1] - a[1];
+    let len2 = abx * abx + aby * aby;
+    if len2 < 1e-12 {
+        let dx = point[0] - a[0];
+        let dy = point[1] - a[1];
+        if (dx * dx + dy * dy).sqrt() <= eps {
+            return Some(0.0);
+        }
+        return None;
+    }
+
+    let len = len2.sqrt();
+    let apx = point[0] - a[0];
+    let apy = point[1] - a[1];
+    let cross = abx * apy - aby * apx;
+    let dist = cross.abs() / len;
+    if dist > eps {
+        return None;
+    }
+
+    let dot = apx * abx + apy * aby;
+    let t = dot / len2;
+    let tol_t = eps / len;
+    if t < -tol_t || t > 1.0 + tol_t {
+        return None;
+    }
+    Some(t)
+}
+
+fn segment_midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
 /// Return segments from province `a`'s rings that are shared with province `b`.
 /// Returned in ring-traversal order so consecutive entries form connected chains.
 fn shared_segments(
     a: &shared::map::MapProvince,
     b: &shared::map::MapProvince,
 ) -> Vec<[[f32; 2]; 2]> {
-    let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
-    let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
+    const SPLIT_EPS: f32 = 0.01;
 
-    let mut b_edges: std::collections::HashSet<[(i32, i32); 2]> =
-        std::collections::HashSet::new();
+    let mut b_points: Vec<[f32; 2]> = Vec::new();
+    let mut b_segments: Vec<[[f32; 2]; 2]> = Vec::new();
     for ring in &b.boundary {
         let n = ring.len();
         for i in 0..n {
-            let qa = qpt(ring[i]);
-            let qb = qpt(ring[(i + 1) % n]);
-            let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
-            b_edges.insert(key);
+            let p0 = ring[i];
+            let p1 = ring[(i + 1) % n];
+            b_points.push(p0);
+            b_segments.push([p0, p1]);
         }
     }
 
@@ -359,11 +463,45 @@ fn shared_segments(
         for i in 0..n {
             let p0 = ring[i];
             let p1 = ring[(i + 1) % n];
-            let qa = qpt(p0);
-            let qb = qpt(p1);
-            let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
-            if b_edges.contains(&key) {
-                result.push([p0, p1]);
+
+            let mut split_points = vec![(0.0_f32, p0), (1.0_f32, p1)];
+            for &bp in &b_points {
+                if let Some(t) = point_on_segment_t(bp, p0, p1, SPLIT_EPS) {
+                    if t > 1e-4 && t < 1.0 - 1e-4 {
+                        split_points.push((t, bp));
+                    }
+                }
+            }
+            split_points.sort_by(|lhs, rhs| {
+                lhs.0
+                    .partial_cmp(&rhs.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            let mut deduped: Vec<[f32; 2]> = Vec::with_capacity(split_points.len());
+            for (_, point) in split_points {
+                if deduped
+                    .last()
+                    .map(|last| border_qpt(*last) == border_qpt(point))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                deduped.push(point);
+            }
+
+            for window in deduped.windows(2) {
+                let s0 = window[0];
+                let s1 = window[1];
+                if border_qpt(s0) == border_qpt(s1) {
+                    continue;
+                }
+                let midpoint = segment_midpoint(s0, s1);
+                if b_segments.iter().any(|segment| {
+                    point_on_segment_t(midpoint, segment[0], segment[1], SPLIT_EPS).is_some()
+                }) {
+                    result.push([s0, s1]);
+                }
             }
         }
     }
@@ -506,9 +644,8 @@ fn chain_polylines(segments: Vec<[[f32; 2]; 2]>) -> Vec<Vec<[f32; 2]>> {
     if segments.is_empty() {
         return vec![];
     }
-    let pts_eq = |a: [f32; 2], b: [f32; 2]| {
-        (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5
-    };
+    let pts_eq =
+        |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
     let mut chains: Vec<Vec<[f32; 2]>> = Vec::new();
     let mut current: Vec<[f32; 2]> = vec![segments[0][0], segments[0][1]];
 
@@ -542,7 +679,11 @@ fn polyline_to_quads(
 
     let perp = |dx: f32, dy: f32| -> (f32, f32) {
         let len = (dx * dx + dy * dy).sqrt();
-        if len < 1e-9 { (0.0, 0.0) } else { (-dy / len, dx / len) }
+        if len < 1e-9 {
+            (0.0, 0.0)
+        } else {
+            (-dy / len, dx / len)
+        }
     };
 
     let mut left: Vec<[f32; 2]> = Vec::with_capacity(n);
@@ -600,35 +741,74 @@ fn polyline_to_quads(
     }
 }
 
-/// Add a filled 8-segment disc at `center` with radius `r`. Used as endpoint caps so that
-/// junction vertices between different province-pair chains are visually sealed.
-fn add_endpoint_disc(
+fn endpoint_cap_span(points: &[[f32; 2]], half_w: f32, at_start: bool) -> Option<[[f32; 2]; 2]> {
+    if points.len() < 2 {
+        return None;
+    }
+    let (center, other) = if at_start {
+        (points[0], points[1])
+    } else {
+        (points[points.len() - 1], points[points.len() - 2])
+    };
+    let dx = other[0] - center[0];
+    let dy = other[1] - center[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        return None;
+    }
+    let px = -dy / len * half_w;
+    let py = dx / len * half_w;
+    Some([
+        [center[0] - px, center[1] - py],
+        [center[0] + px, center[1] + py],
+    ])
+}
+
+fn add_junction_fill(
     center: [f32; 2],
-    r: f32,
+    rim_points: &[[f32; 2]],
     positions: &mut Vec<[f32; 3]>,
     colors: &mut Vec<[f32; 4]>,
     indices: &mut Vec<u32>,
     z: f32,
 ) {
-    const SEGS: u32 = 8;
-    let cx = center[0];
-    let cy = center[1];
-    let base = usize_to_u32(positions.len());
-
-    // Centre vertex
-    positions.push([cx, cy, z]);
-    colors.push(BORDER_COLOR);
-
-    for k in 0..SEGS {
-        let angle = std::f32::consts::TAU * u32_to_f32(k) / u32_to_f32(SEGS);
-        positions.push([cx + r * angle.cos(), cy + r * angle.sin(), z]);
-        colors.push(BORDER_COLOR);
+    if rim_points.len() < 3 {
+        return;
     }
 
-    // Fan triangles: centre + rim[k] + rim[(k+1) % SEGS]
-    for k in 0..SEGS {
-        indices.push(base); // centre
+    let mut sorted = rim_points.to_vec();
+    sorted.sort_by(|lhs, rhs| {
+        let angle_l = (lhs[1] - center[1]).atan2(lhs[0] - center[0]);
+        let angle_r = (rhs[1] - center[1]).atan2(rhs[0] - center[0]);
+        angle_l
+            .partial_cmp(&angle_r)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut polygon: Vec<[f32; 2]> = Vec::with_capacity(sorted.len());
+    for point in sorted {
+        let is_duplicate = polygon.iter().any(|existing| {
+            (existing[0] - point[0]).abs() < 1e-5 && (existing[1] - point[1]).abs() < 1e-5
+        });
+        if !is_duplicate {
+            polygon.push(point);
+        }
+    }
+    if polygon.len() < 3 {
+        return;
+    }
+
+    let base = usize_to_u32(positions.len());
+    positions.push([center[0], center[1], z]);
+    colors.push(BORDER_COLOR);
+    for point in &polygon {
+        positions.push([point[0], point[1], z]);
+        colors.push(BORDER_COLOR);
+    }
+    let poly_len = usize_to_u32(polygon.len());
+    for k in 0..poly_len {
+        indices.push(base);
         indices.push(base + 1 + k);
-        indices.push(base + 1 + (k + 1) % SEGS);
+        indices.push(base + 1 + ((k + 1) % poly_len));
     }
 }

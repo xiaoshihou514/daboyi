@@ -28,26 +28,21 @@ pub fn brighten(c: [f32; 4]) -> [f32; 4] {
 }
 
 pub fn dim(c: [f32; 4], factor: f32) -> [f32; 4] {
-    [
-        c[0] * factor,
-        c[1] * factor,
-        c[2] * factor,
-        c[3],
-    ]
+    [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
 }
 
 /// Terrain mode: color by province topography.
 pub fn terrain_province_color(topography: &str) -> [f32; 4] {
     match topography {
-        "mountains" => [0.420, 0.357, 0.306, 1.0],  // dark muted brown
-        "hills" => [0.608, 0.545, 0.447, 1.0],        // tan
-        "plateau" => [0.690, 0.627, 0.502, 1.0],      // light tan
-        "wetlands" => [0.420, 0.545, 0.420, 1.0],     // muted teal-green
+        "mountains" => [0.420, 0.357, 0.306, 1.0], // dark muted brown
+        "hills" => [0.608, 0.545, 0.447, 1.0],     // tan
+        "plateau" => [0.690, 0.627, 0.502, 1.0],   // light tan
+        "wetlands" => [0.420, 0.545, 0.420, 1.0],  // muted teal-green
         "desert" | "sparse_desert" | "dunes" => [0.784, 0.659, 0.431, 1.0], // sandy
-        "flatland" | "farmland" => [0.545, 0.667, 0.482, 1.0],              // green
+        "flatland" | "farmland" => [0.545, 0.667, 0.482, 1.0], // green
         "ocean_wasteland" => [0.039, 0.165, 0.416, 1.0], // ocean color
-        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0],  // lighter sand
-        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0],  // reddish
+        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0], // lighter sand
+        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0], // reddish
         "mountain_wasteland" => [0.369, 0.286, 0.224, 1.0], // dark brown
         _ if topography.contains("wasteland") => [0.545, 0.482, 0.420, 1.0], // grayish brown
         _ => [0.604, 0.604, 0.545, 1.0],

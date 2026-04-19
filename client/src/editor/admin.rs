@@ -60,7 +60,9 @@ pub fn classify_province_for_active_admin(
     country_map: &CountryMap,
     province_id: ProvinceId,
 ) -> Option<AdminBrushRelation> {
-    let selected = admin_areas.iter().find(|area| area.id == selected_admin_id)?;
+    let selected = admin_areas
+        .iter()
+        .find(|area| area.id == selected_admin_id)?;
 
     match selected.parent_id {
         Some(parent_id) => classify_in_parent_scope(
@@ -70,7 +72,14 @@ pub fn classify_province_for_active_admin(
             admin_map,
             province_id,
         ),
-        None => classify_in_country_scope(selected, selected_admin_id, admin_areas, admin_map, country_map, province_id),
+        None => classify_in_country_scope(
+            selected,
+            selected_admin_id,
+            admin_areas,
+            admin_map,
+            country_map,
+            province_id,
+        ),
     }
 }
 

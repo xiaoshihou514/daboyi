@@ -1,10 +1,10 @@
 /// Camera controls and province click detection.
 use bevy::prelude::*;
 
-use crate::editor::BrushTool;
-use crate::ui::UiInputBlock;
 use super::{MapResource, SelectedProvince, MAP_WIDTH};
+use crate::editor::BrushTool;
 use crate::map::color::point_in_province;
+use crate::ui::UiInputBlock;
 
 /// Camera pan (right-click drag) and zoom (scroll wheel).
 pub fn camera_controls(

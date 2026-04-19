@@ -1,17 +1,15 @@
 //! egui-based UI implementation for the map editor
 
-use bevy::prelude::*;
 use bevy::ecs::system::SystemParam;
+use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use shared::conv::{u32_to_usize, unit_f32_to_u8, u8_to_unit_f32, usize_to_f32};
+use shared::conv::{u32_to_usize, u8_to_unit_f32, unit_f32_to_u8, usize_to_f32};
 
 use crate::editor::{
-    ActiveAdmin, ActiveCountry, AdminAreas, BrushTool, Countries, CountryMap, AdminMap,
-    NextAdminId,
+    ActiveAdmin, ActiveCountry, AdminAreas, AdminMap, BrushTool, Countries, CountryMap, NextAdminId,
 };
 use crate::map::{
-    BorderVersion, ColoringVersion, MapMode, MapResource, ProvinceNames,
-    SelectedProvince,
+    BorderVersion, ColoringVersion, MapMode, MapResource, ProvinceNames, SelectedProvince,
 };
 use crate::ui::UiInputBlock;
 use shared::{AdminArea, EditorCountry};
@@ -145,12 +143,14 @@ pub fn egui_ui_system(
 
             // Admin area list
             ui.heading("行政区列表");
-            
+
             if let Some(ref country_tag) = editor.active_country.0 {
                 egui::ScrollArea::vertical()
                     .max_height(300.0)
                     .show(ui, |ui| {
-                        let top_level_ids: Vec<u32> = editor.admin_areas.0
+                        let top_level_ids: Vec<u32> = editor
+                            .admin_areas
+                            .0
                             .iter()
                             .filter(|a| &a.country_tag == country_tag && a.parent_id.is_none())
                             .map(|a| a.id)
@@ -208,12 +208,12 @@ pub fn egui_ui_system(
             // Brush
             ui.heading("刷子工具");
             ui.checkbox(&mut brush.enabled, "启用刷子");
-            
+
             if brush.enabled {
                 ui.add(
                     egui::Slider::new(&mut brush.radius, 8.0..=240.0)
                         .text("半径")
-                        .suffix(" px")
+                        .suffix(" px"),
                 );
                 ui.label(format!("当前半径：{:.0}px", brush.radius));
                 ui.label("按住 Shift + 滚轮调整刷子大小");
@@ -228,10 +228,16 @@ pub fn egui_ui_system(
             // Map mode
             ui.heading("地图模式");
             ui.horizontal(|ui| {
-                if ui.button("省份").clicked() { *runtime.map_mode = MapMode::Province; }
-                if ui.button("地形").clicked() { *runtime.map_mode = MapMode::Terrain; }
-                if ui.button("政治").clicked() { *runtime.map_mode = MapMode::Political; }
-                
+                if ui.button("省份").clicked() {
+                    *runtime.map_mode = MapMode::Province;
+                }
+                if ui.button("地形").clicked() {
+                    *runtime.map_mode = MapMode::Terrain;
+                }
+                if ui.button("政治").clicked() {
+                    *runtime.map_mode = MapMode::Political;
+                }
+
                 let mode_str = match *runtime.map_mode {
                     MapMode::Province => "省份",
                     MapMode::Terrain => "地形",
@@ -284,7 +290,7 @@ pub fn egui_ui_system(
             ui.horizontal(|ui| {
                 if let Some(prov_id) = selected.0 {
                     ui.label(format!("选中省份 ID: {}", prov_id));
-                    
+
                     if let Some(ref map) = map {
                         let prov_index = u32_to_usize(prov_id);
                         if prov_index < map.0.provinces.len() {
@@ -295,7 +301,7 @@ pub fn egui_ui_system(
                                 .cloned()
                                 .unwrap_or_else(|| prov.name.clone());
                             ui.label(format!("名称：{}", display_name));
-                            
+
                             if let Some(tag) = editor.country_map.0.get(&prov_id) {
                                 if let Some(country) =
                                     editor.countries.0.iter().find(|c| &c.tag == tag)
@@ -303,7 +309,7 @@ pub fn egui_ui_system(
                                     ui.label(format!("国家：{}", country.name));
                                 }
                             }
-                            
+
                             if let Some(area_id) = editor.admin_map.0.get(&prov_id) {
                                 if let Some(area) =
                                     editor.admin_areas.0.iter().find(|a| a.id == *area_id)
@@ -318,7 +324,10 @@ pub fn egui_ui_system(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("刷子：{}", if brush.enabled { "开启" } else { "关闭" }));
+                    ui.label(format!(
+                        "刷子：{}",
+                        if brush.enabled { "开启" } else { "关闭" }
+                    ));
                 });
             });
         });
@@ -334,7 +343,7 @@ pub fn egui_ui_system(
         });
 
     // === Dialogs ===
-    
+
     // Rename dialog
     if ui_state.show_rename_dialog {
         let rename_window = egui::Window::new("重命名")
@@ -344,7 +353,7 @@ pub fn egui_ui_system(
             .show(ctx, |ui| {
                 ui.label("请输入新名称:");
                 ui.text_edit_singleline(&mut ui_state.rename_buffer);
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("确定").clicked() {
                         match &ui_state.rename_target {
@@ -387,14 +396,14 @@ pub fn egui_ui_system(
             .show(ctx, |ui| {
                 ui.label("国家名称:");
                 ui.text_edit_singleline(&mut ui_state.new_country_name);
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("创建").clicked() && !ui_state.new_country_name.is_empty() {
                         let idx = editor.countries.0.len();
                         let tag = format!("C{:03}", idx);
                         let hue = (usize_to_f32(idx) * 137.5) % 360.0;
                         let color = hsl_to_rgba(hue, 0.65, 0.50);
-                        
+
                         editor.countries.0.push(EditorCountry {
                             tag: tag.clone(),
                             name: ui_state.new_country_name.clone(),
@@ -403,7 +412,7 @@ pub fn egui_ui_system(
                         });
                         editor.active_country.0 = Some(tag);
                         editor.active_admin.0 = None;
-                        
+
                         ui_state.show_new_country_dialog = false;
                         ui_state.new_country_name = String::new();
                     }
@@ -435,7 +444,7 @@ pub fn egui_ui_system(
                 }
                 ui.label("行政区名称:");
                 ui.text_edit_singleline(&mut ui_state.new_admin_name);
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("创建").clicked() && !ui_state.new_admin_name.is_empty() {
                         if let Some(ref country_tag) = editor.active_country.0 {
@@ -443,7 +452,9 @@ pub fn egui_ui_system(
                             editor.next_admin_id.0 += 1;
 
                             // Auto-assign a visually distinct color using golden angle hue.
-                            let existing_count = editor.admin_areas.0
+                            let existing_count = editor
+                                .admin_areas
+                                .0
                                 .iter()
                                 .filter(|a| &a.country_tag == country_tag)
                                 .count();
@@ -480,14 +491,26 @@ pub fn egui_ui_system(
     if let Some(ref target) = delete_target {
         let (title, message) = match target {
             DeleteTarget::Country(tag) => {
-                let name = editor.countries.0.iter()
+                let name = editor
+                    .countries
+                    .0
+                    .iter()
                     .find(|c| &c.tag == tag)
                     .map(|c| c.name.as_str())
                     .unwrap_or("未知");
-                ("删除国家", format!("确定要删除国家 '{}' 吗？\n这将同时删除所有相关行政区。", name))
+                (
+                    "删除国家",
+                    format!(
+                        "确定要删除国家 '{}' 吗？\n这将同时删除所有相关行政区。",
+                        name
+                    ),
+                )
             }
             DeleteTarget::Admin(id) => {
-                let name = editor.admin_areas.0.iter()
+                let name = editor
+                    .admin_areas
+                    .0
+                    .iter()
                     .find(|a| a.id == *id)
                     .map(|a| a.name.as_str())
                     .unwrap_or("未知");
@@ -501,17 +524,14 @@ pub fn egui_ui_system(
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label(message);
-                
+
                 ui.horizontal(|ui| {
                     if ui.button("删除").clicked() {
                         match target {
                             DeleteTarget::Country(tag) => {
                                 let tag_clone = tag.clone();
                                 editor.countries.0.retain(|c| c.tag != tag_clone);
-                                editor
-                                    .admin_areas
-                                    .0
-                                    .retain(|a| a.country_tag != tag_clone);
+                                editor.admin_areas.0.retain(|a| a.country_tag != tag_clone);
                                 editor.country_map.0.retain(|_, v| v != &tag_clone);
                                 if editor.active_country.0.as_ref() == Some(&tag_clone) {
                                     editor.active_country.0 = None;
@@ -599,8 +619,7 @@ fn show_admin_area_tree(
         });
 
         // Inline color swatch: grey when inheriting, actual color when set.
-        let mut current_color =
-            color32_from_rgba(area_color.unwrap_or([0.55, 0.55, 0.55, 1.0]));
+        let mut current_color = color32_from_rgba(area_color.unwrap_or([0.55, 0.55, 0.55, 1.0]));
         let color_response = ui.color_edit_button_srgba(&mut current_color);
         if color_response.changed() {
             color_changed = true;

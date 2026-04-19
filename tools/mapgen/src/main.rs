@@ -35,18 +35,18 @@ fn is_non_playable(topography: &str) -> bool {
 /// Pre-defined RGBA color for each non-playable topography type.
 fn terrain_color(topography: &str) -> [f32; 4] {
     match topography {
-        "deep_ocean" => [0.027, 0.106, 0.314, 1.0],  // #071B50
-        "ocean" => [0.039, 0.165, 0.416, 1.0],         // #0A2A6A
+        "deep_ocean" => [0.027, 0.106, 0.314, 1.0], // #071B50
+        "ocean" => [0.039, 0.165, 0.416, 1.0],      // #0A2A6A
         "ocean_wasteland" => [0.039, 0.165, 0.416, 1.0], // ocean color
         "coastal_ocean" => [0.051, 0.227, 0.604, 1.0], // #0D3A9A
-        "inland_sea" => [0.102, 0.333, 0.722, 1.0],    // #1A55B8
-        "narrows" => [0.071, 0.282, 0.659, 1.0],        // #1248A8
+        "inland_sea" => [0.102, 0.333, 0.722, 1.0], // #1A55B8
+        "narrows" => [0.071, 0.282, 0.659, 1.0],    // #1248A8
         "lakes" | "high_lakes" => [0.157, 0.439, 0.816, 1.0], // #2870D0
-        "atoll" => [0.102, 0.384, 0.753, 1.0],          // #1A62C0
-        "salt_pans" => [0.847, 0.800, 0.667, 1.0],      // #D8CCAA
+        "atoll" => [0.102, 0.384, 0.753, 1.0],      // #1A62C0
+        "salt_pans" => [0.847, 0.800, 0.667, 1.0],  // #D8CCAA
         "mountain_wasteland" => [0.369, 0.286, 0.224, 1.0], // #5E4939
-        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0],      // #C9A86E
-        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0],      // #9B6B47
+        "dune_wasteland" => [0.788, 0.659, 0.431, 1.0], // #C9A86E
+        "mesa_wasteland" => [0.608, 0.420, 0.278, 1.0], // #9B6B47
         _ if topography.contains("wasteland") => [0.545, 0.482, 0.420, 1.0], // #8B7B6B
         _ => [0.500, 0.500, 0.500, 1.0],
     }
@@ -207,8 +207,12 @@ fn main() {
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).ok();
     }
-    let map_data = MapData { provinces: all_provinces };
-    map_data.save(&output_path).expect("Failed to write map.bin");
+    let map_data = MapData {
+        provinces: all_provinces,
+    };
+    map_data
+        .save(&output_path)
+        .expect("Failed to write map.bin");
     let file_size = fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
     println!(
         "Wrote {} ({:.1} MB)",
@@ -252,8 +256,12 @@ fn main() {
     }
 
     println!("{} terrain polygons", terrain_polygons.len());
-    let terrain_data = TerrainData { polygons: terrain_polygons };
-    terrain_data.save(&terrain_path).expect("Failed to write terrain.bin");
+    let terrain_data = TerrainData {
+        polygons: terrain_polygons,
+    };
+    terrain_data
+        .save(&terrain_path)
+        .expect("Failed to write terrain.bin");
     let terrain_size = fs::metadata(&terrain_path).map(|m| m.len()).unwrap_or(0);
     println!(
         "Wrote {} ({:.1} MB)",

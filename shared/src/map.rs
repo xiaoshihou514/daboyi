@@ -50,14 +50,13 @@ impl MapData {
     /// Load from a bincode file.
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let bytes = fs::read(path)?;
-        bincode::deserialize(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Save to a bincode file.
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let bytes = bincode::serialize(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bytes =
+            bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fs::write(path, bytes)
     }
 }
@@ -84,45 +83,54 @@ pub struct TerrainData {
 impl TerrainData {
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let bytes = fs::read(path)?;
-        bincode::deserialize(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let bytes = bincode::serialize(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bytes =
+            bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fs::write(path, bytes)
     }
 }
 
 // ── River geometry ────────────────────────────────────────────────────────────
 
-/// A single river as an ordered sequence of [lon, lat] control points.
+/// A river graph node shared by one or more river edges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RiverPolyline {
+pub struct RiverNode {
+    /// Node position in WGS84 degrees.
+    pub position: [f32; 2],
+}
+
+/// A single river edge as an ordered sequence of [lon, lat] control points.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiverEdge {
     /// Ordered [lon, lat] points in WGS84 degrees.
     pub points: Vec<[f32; 2]>,
     /// Approximate width class (0 = small tributary, 1 = medium, 2 = large river).
     pub width_class: u8,
+    /// Start node id in `RiverData.nodes`.
+    pub start_node: u32,
+    /// End node id in `RiverData.nodes`.
+    pub end_node: u32,
 }
 
 /// All river geometry, loaded from assets/rivers.bin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiverData {
-    pub rivers: Vec<RiverPolyline>,
+    pub nodes: Vec<RiverNode>,
+    pub edges: Vec<RiverEdge>,
 }
 
 impl RiverData {
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         let bytes = fs::read(path)?;
-        bincode::deserialize(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let bytes = bincode::serialize(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let bytes =
+            bincode::serialize(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         fs::write(path, bytes)
     }
 }
-

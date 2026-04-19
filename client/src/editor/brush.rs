@@ -9,8 +9,7 @@ use crate::editor::{
     BrushTool, CountryMap, DragState, SpatialHash,
 };
 use crate::map::{
-    BorderDirty, BorderVersion, MapResource, PaintDebounce, PendingProvinceRecolor,
-    MAP_WIDTH,
+    BorderDirty, BorderVersion, MapResource, PaintDebounce, PendingProvinceRecolor, MAP_WIDTH,
 };
 use crate::ui::UiInputBlock;
 
@@ -64,13 +63,19 @@ pub fn brush_input_system(
     // 切换橡皮擦模式：E 键（仅当刷子已启用）
     if keys.just_pressed(KeyCode::KeyE) && brush.enabled {
         brush.eraser_mode = !brush.eraser_mode;
-        eprintln!("橡皮擦：{}", if brush.eraser_mode { "开启" } else { "关闭" });
+        eprintln!(
+            "橡皮擦：{}",
+            if brush.eraser_mode {
+                "开启"
+            } else {
+                "关闭"
+            }
+        );
     }
 
     // 调整刷子大小：Shift + 滚轮（普通滚轮仍用于缩放视角）
     for ev in mouse_wheel.read() {
-        let adjusting_brush =
-            keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        let adjusting_brush = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         if brush.enabled && adjusting_brush {
             brush.radius = (brush.radius + ev.y * 8.0).clamp(8.0, 240.0);
         }
@@ -84,8 +89,12 @@ pub fn brush_input_system(
     }
 
     // 获取鼠标世界坐标
-    let Ok(window) = windows.get_single() else { return };
-    let Some(cursor_pos) = window.cursor_position() else { return };
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
     let Some((world_pos, world_radius)) = get_mouse_world_pos(cursor_pos, &camera_q, brush.radius)
     else {
         return;
@@ -116,7 +125,8 @@ pub fn brush_input_system(
     }
 
     // 使用空间哈希查找半径内的所有省份（快速）
-    let provinces_in_brush = find_provinces_in_radius_fast(world_pos, world_radius, &map, &spatial_hash);
+    let provinces_in_brush =
+        find_provinces_in_radius_fast(world_pos, world_radius, &map, &spatial_hash);
 
     if provinces_in_brush.is_empty() {
         return;
@@ -185,7 +195,10 @@ pub fn brush_input_system(
                 let admin_cleared = old_admin.is_some();
                 if country_changed || admin_cleared {
                     assignments.admin_map.0.remove(&prov_id);
-                    assignments.country_map.0.insert(prov_id, country_tag.clone());
+                    assignments
+                        .country_map
+                        .0
+                        .insert(prov_id, country_tag.clone());
                     assignments.pending_province_recolor.0.insert(prov_id);
                     changed_any = true;
                 }
@@ -227,8 +240,12 @@ pub fn brush_cursor_system(
         return;
     }
 
-    let Ok(window) = windows.get_single() else { return };
-    let Some(cursor_pos) = window.cursor_position() else { return };
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
     let Some((world_pos, world_radius)) = get_mouse_world_pos(cursor_pos, &camera_q, brush.radius)
     else {
         return;
@@ -253,19 +270,19 @@ fn get_mouse_world_pos(
     camera_q: &Query<(&Camera, &GlobalTransform, &OrthographicProjection), With<Camera2d>>,
     screen_radius: f32,
 ) -> Option<([f32; 2], f32)> {
-    let Ok((camera, cam_transform, projection)) = camera_q.get_single() else { return None };
-    let world_pos = camera.viewport_to_world_2d(cam_transform, cursor_pos).ok()?;
+    let Ok((camera, cam_transform, projection)) = camera_q.get_single() else {
+        return None;
+    };
+    let world_pos = camera
+        .viewport_to_world_2d(cam_transform, cursor_pos)
+        .ok()?;
     let world_radius = screen_radius * projection.scale;
     Some(([world_pos.x, world_pos.y], world_radius))
 }
 
 /// 查找半径内的所有省份（旧版本，保留备用）
 #[allow(dead_code)]
-fn find_provinces_in_radius(
-    pos: [f32; 2],
-    radius: f32,
-    map: &MapResource,
-) -> Vec<u32> {
+fn find_provinces_in_radius(pos: [f32; 2], radius: f32, map: &MapResource) -> Vec<u32> {
     let mut result = Vec::new();
     let radius_sq = radius * radius;
 

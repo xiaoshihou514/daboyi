@@ -7,7 +7,7 @@ Data source: EU5toGIS/localization/simp_chinese/ (copied from the EU5 Steam
 installation; see doc/数据提取.md for the full pipeline).
 
 Run from repo root:
-    python3 tools/extract_translations.py
+    uv run --project tools python tools/extract_translations.py
 
 Dependencies: standard library only (no third-party packages required).
 """

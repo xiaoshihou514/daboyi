@@ -60,13 +60,16 @@ fn spawn_capitals(
     }
 
     // Count province assignments per country tag.
-    let mut province_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut province_counts: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
     for tag in country_map.0.values() {
         *province_counts.entry(tag.as_str()).or_insert(0) += 1;
     }
 
     for country in &countries.0 {
-        let Some(cap_id) = country.capital_province else { continue };
+        let Some(cap_id) = country.capital_province else {
+            continue;
+        };
         let cap_idx = cap_id as usize;
         if cap_idx >= map.0.provinces.len() {
             continue;
@@ -83,7 +86,11 @@ fn spawn_capitals(
 
         commands.spawn((
             Text2d::new("★"),
-            TextFont { font: cjk.clone(), font_size: 48.0, ..default() },
+            TextFont {
+                font: cjk.clone(),
+                font_size: 48.0,
+                ..default()
+            },
             TextColor(Color::srgba(1.0, 0.9, 0.0, 0.95)),
             Transform::from_xyz(x, y, 1.5),
             Visibility::Hidden,
@@ -94,7 +101,11 @@ fn spawn_capitals(
 
         commands.spawn((
             Text2d::new(country.name.clone()),
-            TextFont { font: cjk.clone(), font_size: 36.0, ..default() },
+            TextFont {
+                font: cjk.clone(),
+                font_size: 36.0,
+                ..default()
+            },
             TextColor(Color::srgba(1.0, 1.0, 1.0, 0.9)),
             Transform::from_xyz(x, name_y, 1.5).with_scale(Vec3::splat(name_scale)),
             Visibility::Hidden,
@@ -110,11 +121,18 @@ fn update_capitals_scale(
     mode: Res<MapMode>,
     camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     mut markers: Query<
-        (&mut Transform, &mut Visibility, &CapitalTerritoryFactor, &CapitalIsStar),
+        (
+            &mut Transform,
+            &mut Visibility,
+            &CapitalTerritoryFactor,
+            &CapitalIsStar,
+        ),
         With<CapitalMarker>,
     >,
 ) {
-    let Ok(proj) = camera_q.get_single() else { return };
+    let Ok(proj) = camera_q.get_single() else {
+        return;
+    };
     let cam_scale = proj.scale;
     let political = *mode == MapMode::Political;
 

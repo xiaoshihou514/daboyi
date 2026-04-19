@@ -8,12 +8,12 @@ EU5 rivers.png is a 16384×8192 palettized image where:
   - The map uses Gall Stereographic projection (same as rivers.tif)
   - equator_y = 3340 (from default.map), consistent with Gall Stereo bounds
 
-Output: assets/rivers.bin (bincode-encoded RiverData with RiverPolyline list)
+Output: assets/rivers.bin (bincode-encoded RiverData with explicit nodes + edges)
 
-Dependencies: pip install Pillow numpy scikit-image scipy
+Managed by: uv (see tools/pyproject.toml)
 
 Run from repo root:
-    python3 tools/extract_rivers_vector.py
+    uv run --project tools python tools/extract_rivers_vector.py
 """
 
 import math
@@ -105,7 +105,7 @@ def build_adjacency(skeleton: np.ndarray) -> dict:
     return adj, pixel_set
 
 
-def extract_graph_edges(adj: dict) -> list[list[tuple]]:
+def extract_graph_edges(adj: dict) -> list[dict]:
     """
     Extract river paths by tracing graph edges between junction/endpoint nodes.
 
@@ -113,17 +113,18 @@ def extract_graph_edges(adj: dict) -> list[list[tuple]]:
     Endpoint  = pixel with ≤ 1 neighbour (river source/outlet)
     Interior  = pixel with exactly 2 neighbours (straight run)
 
-    Each edge between two non-interior nodes becomes one polyline.
-    Interior pixels are strung together into the path between them.
+    Each edge between two non-interior nodes becomes one polyline with explicit
+    start/end node identity. Interior pixels are strung together into the path
+    between them.
     """
     special = {p for p, nbrs in adj.items() if len(nbrs) != 2}
 
     visited_edges: set[frozenset] = set()
-    paths: list[list[tuple]] = []
+    edges: list[dict] = []
 
     # Trace from each special node outward along each of its edges.
-    for start in special:
-        for nb in adj[start]:
+    for start in sorted(special):
+        for nb in sorted(adj[start]):
             edge_key = frozenset({start, nb})
             if edge_key in visited_edges:
                 continue
@@ -142,15 +143,15 @@ def extract_graph_edges(adj: dict) -> list[list[tuple]]:
                 prev, curr = curr, nxt
                 path.append(curr)
 
-            paths.append(path)
+            edges.append({"path": path, "start": start, "end": curr})
 
     # Handle isolated loops (all interior: e.g. a perfectly circular lake outline).
     # Find any unvisited pixel and trace the loop once.
     visited_px = set()
-    for p in paths:
-        visited_px.update(p)
+    for edge in edges:
+        visited_px.update(edge["path"])
 
-    for start in adj:
+    for start in sorted(adj):
         if start in visited_px:
             continue
         if not adj[start]:
@@ -158,18 +159,18 @@ def extract_graph_edges(adj: dict) -> list[list[tuple]]:
         # Start a loop trace
         path = [start]
         visited_px.add(start)
-        curr = adj[start][0]
+        curr = sorted(adj[start])[0]
         while curr != start and curr not in visited_px:
             visited_px.add(curr)
             path.append(curr)
-            nexts = [n for n in adj[curr] if n not in visited_px]
+            nexts = sorted(n for n in adj[curr] if n not in visited_px)
             if not nexts:
                 break
             curr = nexts[0]
         if len(path) >= MIN_PATH_PX:
-            paths.append(path)
+            edges.append({"path": path, "start": start, "end": start})
 
-    return paths
+    return edges
 
 
 def douglas_peucker(points: list[tuple], epsilon: float) -> list[tuple]:
@@ -202,12 +203,13 @@ def douglas_peucker(points: list[tuple], epsilon: float) -> list[tuple]:
     return [points[0], points[-1]]
 
 
-def write_rivers_bin(polylines: list[dict], output_path: Path) -> None:
+def write_rivers_bin(nodes: list[dict], edges: list[dict], output_path: Path) -> None:
     """
     Write bincode-compatible rivers.bin matching RiverData in shared/src/map.rs.
 
-      RiverData  { rivers: Vec<RiverPolyline> }
-      RiverPolyline { points: Vec<[f32;2]>, width_class: u8 }
+      RiverData  { nodes: Vec<RiverNode>, edges: Vec<RiverEdge> }
+      RiverNode { position: [f32;2] }
+      RiverEdge { points: Vec<[f32;2]>, width_class: u8, start_node: u32, end_node: u32 }
 
     bincode (v1 default): little-endian, Vec length as u64, array as raw bytes.
     """
@@ -218,14 +220,22 @@ def write_rivers_bin(polylines: list[dict], output_path: Path) -> None:
     def wu8(v):  buf.write(struct.pack('B',  int(v)))
     def wf32(v): buf.write(struct.pack('<f', float(v)))
 
-    wu64(len(polylines))
-    for pl in polylines:
-        pts = pl["points"]
+    wu64(len(nodes))
+    for node in nodes:
+        lon, lat = node["position"]
+        wf32(lon)
+        wf32(lat)
+
+    wu64(len(edges))
+    for edge in edges:
+        pts = edge["points"]
         wu64(len(pts))
         for lon, lat in pts:
             wf32(lon)
             wf32(lat)
-        wu8(pl["width_class"])
+        wu8(edge["width_class"])
+        buf.write(struct.pack('<I', int(edge["start_node"])))
+        buf.write(struct.pack('<I', int(edge["end_node"])))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(buf.getvalue())
@@ -276,14 +286,31 @@ def main() -> None:
     print(f"Graph nodes: {len(adj):,}")
 
     print("Extracting graph edges as polylines...")
-    raw_paths = extract_graph_edges(adj)
-    print(f"Raw paths: {len(raw_paths):,}")
+    raw_edges = extract_graph_edges(adj)
+    print(f"Raw edges: {len(raw_edges):,}")
 
     # ── Simplify + convert to lon/lat (Bug A fix) ─────────────────────────────
     # Epsilon = 0.5 px (≈ 2.4 km) — keeps river curves, removes collinear pts.
     # Previously epsilon=2.0 px was collapsing entire rivers to 2 endpoints.
-    lonlat_polylines: list[dict] = []
-    for path in raw_paths:
+    node_pixels = sorted(
+        {
+            edge["start"]
+            for edge in raw_edges
+        }
+        | {
+            edge["end"]
+            for edge in raw_edges
+        }
+    )
+    node_ids = {pixel: idx for idx, pixel in enumerate(node_pixels)}
+    lonlat_nodes = [
+        {"position": pixel_to_lonlat(col, row)}
+        for (col, row) in node_pixels
+    ]
+
+    lonlat_edges: list[dict] = []
+    for edge in raw_edges:
+        path = edge["path"]
         if len(path) < MIN_PATH_PX:
             continue
         simplified = douglas_peucker(path, SIMPLIFY_EPSILON)
@@ -298,16 +325,25 @@ def main() -> None:
         wc = int(wc_counts.index(max(wc_counts)))
 
         pts = [pixel_to_lonlat(col, row) for (col, row) in simplified]
-        lonlat_polylines.append({"points": pts, "width_class": wc})
+        lonlat_edges.append(
+            {
+                "points": pts,
+                "width_class": wc,
+                "start_node": node_ids[edge["start"]],
+                "end_node": node_ids[edge["end"]],
+            }
+        )
 
-    total_pts = sum(len(pl["points"]) for pl in lonlat_polylines)
-    print(f"Final polylines: {len(lonlat_polylines):,}  |  total points: {total_pts:,}")
-    if lonlat_polylines:
-        avg = total_pts / len(lonlat_polylines)
-        print(f"Avg points/polyline: {avg:.1f}")
+    total_pts = sum(len(edge["points"]) for edge in lonlat_edges)
+    print(
+        f"Final graph: {len(lonlat_nodes):,} nodes, {len(lonlat_edges):,} edges  |  total points: {total_pts:,}"
+    )
+    if lonlat_edges:
+        avg = total_pts / len(lonlat_edges)
+        print(f"Avg points/edge: {avg:.1f}")
 
     # ── Write ─────────────────────────────────────────────────────────────────
-    write_rivers_bin(lonlat_polylines, OUTPUT)
+    write_rivers_bin(lonlat_nodes, lonlat_edges, OUTPUT)
     print("Done.")
 
 

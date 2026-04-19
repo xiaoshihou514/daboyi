@@ -6,9 +6,9 @@ River pixels (blue channel dominant) are extracted at source resolution first,
 then the binary mask is reprojected with nearest-neighbor to preserve thin lines.
 
 Run once to produce assets/rivers.png:
-    python3 tools/convert_rivers.py
+    uv run --project tools --group gdal python tools/convert_rivers.py
 
-Requires: gdal Python bindings (osgeo.gdal) and Pillow.
+Managed by: uv (see tools/pyproject.toml). Requires the optional `gdal` group.
 """
 
 import os
@@ -125,4 +125,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

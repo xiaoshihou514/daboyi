@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
-use shared::conv::usize_to_u32;
+use shared::conv::{u32_to_usize, usize_to_u32};
 use shared::map::{RiverData, TerrainData};
+use std::collections::HashMap;
 
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
 const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
@@ -56,7 +57,10 @@ fn load_terrain(
         }
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
@@ -188,6 +192,78 @@ fn polyline_to_quads(
     }
 }
 
+fn endpoint_cap_span(points: &[[f32; 2]], half_w: f32, at_start: bool) -> Option<[[f32; 2]; 2]> {
+    if points.len() < 2 {
+        return None;
+    }
+    let (center, other) = if at_start {
+        (points[0], points[1])
+    } else {
+        (points[points.len() - 1], points[points.len() - 2])
+    };
+    let dx = other[0] - center[0];
+    let dy = other[1] - center[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        return None;
+    }
+    let px = -dy / len * half_w;
+    let py = dx / len * half_w;
+    Some([
+        [center[0] - px, center[1] - py],
+        [center[0] + px, center[1] + py],
+    ])
+}
+
+fn add_junction_fill(
+    center: [f32; 2],
+    rim_points: &[[f32; 2]],
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    z: f32,
+) {
+    if rim_points.len() < 3 {
+        return;
+    }
+
+    let mut sorted = rim_points.to_vec();
+    sorted.sort_by(|lhs, rhs| {
+        let angle_l = (lhs[1] - center[1]).atan2(lhs[0] - center[0]);
+        let angle_r = (rhs[1] - center[1]).atan2(rhs[0] - center[0]);
+        angle_l
+            .partial_cmp(&angle_r)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut polygon: Vec<[f32; 2]> = Vec::with_capacity(sorted.len());
+    for point in sorted {
+        let is_duplicate = polygon.iter().any(|existing| {
+            (existing[0] - point[0]).abs() < 1e-5 && (existing[1] - point[1]).abs() < 1e-5
+        });
+        if !is_duplicate {
+            polygon.push(point);
+        }
+    }
+    if polygon.len() < 3 {
+        return;
+    }
+
+    let base = usize_to_u32(positions.len());
+    positions.push([center[0], center[1], z]);
+    colors.push(RIVER_COLOR);
+    for point in &polygon {
+        positions.push([point[0], point[1], z]);
+        colors.push(RIVER_COLOR);
+    }
+    let poly_len = usize_to_u32(polygon.len());
+    for k in 0..poly_len {
+        indices.push(base);
+        indices.push(base + 1 + k);
+        indices.push(base + 1 + ((k + 1) % poly_len));
+    }
+}
+
 /// Load rivers.bin and build a single triangle mesh for all river segments.
 fn spawn_rivers(
     mut commands: Commands,
@@ -206,12 +282,43 @@ fn spawn_rivers(
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    let mut junction_rims: HashMap<u32, ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
 
-    for river in &river_data.rivers {
-        let half_w = RIVER_WIDTHS[river.width_class as usize] / 2.0;
-        let raw: Vec<[f32; 2]> = river.points.iter().map(|&p| p).collect();
+    for edge in &river_data.edges {
+        let half_w = RIVER_WIDTHS[u32_to_usize(u32::from(edge.width_class))] / 2.0;
+        let raw: Vec<[f32; 2]> = edge.points.iter().map(|&p| p).collect();
         let pts = chaikin_smooth(&chaikin_smooth(&raw));
+        if pts.len() < 2 {
+            continue;
+        }
         polyline_to_quads(&pts, half_w, &mut positions, &mut colors, &mut indices, 0.5);
+        if let Some(span) = endpoint_cap_span(&pts, half_w, true) {
+            let entry = junction_rims.entry(edge.start_node).or_insert((
+                river_data.nodes[u32_to_usize(edge.start_node)].position,
+                Vec::new(),
+            ));
+            entry.1.extend_from_slice(&span);
+        }
+        if let Some(span) = endpoint_cap_span(&pts, half_w, false) {
+            let entry = junction_rims.entry(edge.end_node).or_insert((
+                river_data.nodes[u32_to_usize(edge.end_node)].position,
+                Vec::new(),
+            ));
+            entry.1.extend_from_slice(&span);
+        }
+    }
+
+    for (_, (center, rim_points)) in junction_rims {
+        if rim_points.len() >= 6 {
+            add_junction_fill(
+                center,
+                &rim_points,
+                &mut positions,
+                &mut colors,
+                &mut indices,
+                0.5,
+            );
+        }
     }
 
     if positions.is_empty() {
@@ -219,7 +326,10 @@ fn spawn_rivers(
         return;
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD);
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.clone());
     mesh.insert_indices(Indices::U32(indices.clone()));
@@ -235,8 +345,8 @@ fn spawn_rivers(
     }
 
     eprintln!(
-        "Rivers: {} polylines, {} quads",
-        river_data.rivers.len(),
+        "Rivers: {} edges, {} quads",
+        river_data.edges.len(),
         indices.len() / 6,
     );
 }

@@ -1,4 +1,6 @@
 /target
 daboyi.db
-assets/map.bin
+assets/*.bin
+assets/province_adjacency.bin
 assets/world_1400.geojson
+tools/.venv

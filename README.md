@@ -25,6 +25,12 @@ A standalone **alternative-history map editor** built with Bevy and Rust. Paint 
 
 Assets are generated offline and are not committed to the repository.
 
+Python helper scripts under `tools/` are managed with **uv**:
+
+```bash
+uv sync --project tools
+```
+
 ### 1. Generate map geometry
 
 ```bash
@@ -62,6 +68,13 @@ cp /path/to/EU5toGIS/06_pops_totals.txt assets/pops.tsv
 ```
 
 Population data is loaded but not actively used in the current editor version.
+
+### 4. Generate Python-managed helper assets
+
+```bash
+uv run --project tools python tools/extract_translations.py
+uv run --project tools python tools/extract_rivers_vector.py
+```
 
 ## Running the Editor
 

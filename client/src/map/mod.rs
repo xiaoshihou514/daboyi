@@ -1,5 +1,5 @@
-mod color;
 pub mod borders;
+mod color;
 mod interact;
 mod material;
 
@@ -24,9 +24,9 @@ use crate::editor::{
     Countries, CountryMap,
 };
 use crate::state::AppState;
+pub use borders::BordersPlugin;
 use color::{brighten, dim, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, province_click};
-pub use borders::BordersPlugin;
 
 pub const MAP_BIN_PATH: &str = "assets/map.bin";
 /// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
@@ -423,7 +423,8 @@ fn color_provinces(
                 let prov_id = map.0.provinces[pid].id;
 
                 if let Some(&area_id) = admin_assignments.0.get(&prov_id) {
-                    let area_color = resolve_area_color(area_id, &admin_areas.0, &country_color_lookup);
+                    let area_color =
+                        resolve_area_color(area_id, &admin_areas.0, &country_color_lookup);
                     if topo.contains("wasteland") {
                         let wc = terrain_province_color(topo);
                         return [
@@ -532,7 +533,11 @@ fn color_provinces(
         if let Some(new_u32) = selected.0 {
             let new_pid = u32_to_usize(new_u32);
             if new_pid < map.0.provinces.len() {
-                write_color(&mut color_buf.data, new_pid, brighten(scoped_color(new_pid)));
+                write_color(
+                    &mut color_buf.data,
+                    new_pid,
+                    brighten(scoped_color(new_pid)),
+                );
             }
         }
         color_buf.version += 1;

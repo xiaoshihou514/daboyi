@@ -7,14 +7,14 @@ use std::collections::{HashMap, HashSet};
 use crate::map::MapResource;
 use crate::state::AppState;
 
-mod save_load;
-mod brush;
 mod admin;
+mod brush;
+mod save_load;
 mod spatial;
 
-pub use save_load::*;
-pub use brush::*;
 pub use admin::*;
+pub use brush::*;
+pub use save_load::*;
 pub use spatial::*;
 // 类型别名
 pub type AdminId = u32;
@@ -127,9 +127,7 @@ impl Plugin for EditorPlugin {
 }
 
 /// 启动时加载着色文件
-fn load_coloring_on_startup(
-    mut commands: Commands,
-) {
+fn load_coloring_on_startup(mut commands: Commands) {
     load_coloring(&mut commands);
 }
 
