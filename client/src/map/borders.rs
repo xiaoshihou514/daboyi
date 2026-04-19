@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
-use shared::conv::{u32_to_usize, usize_to_u32};
+use shared::conv::{f32_to_i32, u32_to_f32, u32_to_usize, usize_to_u32};
 use std::collections::HashMap;
 
 use crate::editor::{AdminMap, CountryMap};
@@ -233,14 +233,13 @@ fn rebuild_borders(
         }
 
         for chain in &border.chains {
-            polyline_to_quads(
-                chain,
-                BORDER_HALF_PIXELS * proj_scale,
-                positions,
-                colors,
-                indices,
-                0.8,
-            );
+            let hw = BORDER_HALF_PIXELS * proj_scale;
+            polyline_to_quads(chain, hw, positions, colors, indices, 0.8);
+            // Disc caps at both endpoints fill the triangular gap at junction vertices
+            // where 3+ province borders converge. Each chain's butt-cap leaves a small
+            // void; the discs from all meeting chains overlap and seal it.
+            add_endpoint_disc(chain[0], hw, positions, colors, indices, 0.8);
+            add_endpoint_disc(*chain.last().unwrap(), hw, positions, colors, indices, 0.8);
         }
     }
 
@@ -263,9 +262,7 @@ fn rebuild_borders(
             }
         }
         return;
-    }
-
-    let mesh_handle = border_assets.mesh.get_or_insert_with(|| {
+    }    let mesh_handle = border_assets.mesh.get_or_insert_with(|| {
         meshes.add(Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
@@ -383,7 +380,7 @@ fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 /// continuous polyline. Without this, Chaikin smoothing widens each sub-chain independently
 /// and leaves visible gaps at junction points.
 fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
-    let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
+    let quantize = |v: f32| -> i32 { f32_to_i32((v * 100.0).round()) };
     let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
     'restart: loop {
@@ -539,5 +536,38 @@ fn polyline_to_quads(
         let l1 = l0 + 2;
         let r1 = l0 + 3;
         indices.extend_from_slice(&[l0, r0, r1, l0, r1, l1]);
+    }
+}
+
+/// Add a filled 8-segment disc at `center` with radius `r`. Used as endpoint caps so that
+/// junction vertices between different province-pair chains are visually sealed.
+fn add_endpoint_disc(
+    center: [f32; 2],
+    r: f32,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    z: f32,
+) {
+    const SEGS: u32 = 8;
+    let cx = center[0];
+    let cy = center[1];
+    let base = usize_to_u32(positions.len());
+
+    // Centre vertex
+    positions.push([cx, cy, z]);
+    colors.push(BORDER_COLOR);
+
+    for k in 0..SEGS {
+        let angle = std::f32::consts::TAU * u32_to_f32(k) / u32_to_f32(SEGS);
+        positions.push([cx + r * angle.cos(), cy + r * angle.sin(), z]);
+        colors.push(BORDER_COLOR);
+    }
+
+    // Fan triangles: centre + rim[k] + rim[(k+1) % SEGS]
+    for k in 0..SEGS {
+        indices.push(base); // centre
+        indices.push(base + 1 + k);
+        indices.push(base + 1 + (k + 1) % SEGS);
     }
 }

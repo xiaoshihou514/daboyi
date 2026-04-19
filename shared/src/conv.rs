@@ -38,6 +38,12 @@ pub fn f32_to_i64(v: f32) -> i64 {
     v as i64
 }
 
+/// `f32 → i32`, truncating toward zero.
+#[inline]
+pub fn f32_to_i32(v: f32) -> i32 {
+    v as i32
+}
+
 /// `u32 → f32` (may lose precision for values > 2^24).
 #[inline]
 pub fn u32_to_f32(v: u32) -> f32 {
