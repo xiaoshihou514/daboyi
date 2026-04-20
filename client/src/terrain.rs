@@ -102,18 +102,9 @@ fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
     result
 }
 
-/// Build a continuous quad-strip mesh for a river polyline with miter joins.
-/// Interior vertices share miter-bisected offsets — no gaps between segments.
-fn polyline_to_quads(
-    points: &[[f32; 2]],
-    half_w: f32,
-    positions: &mut Vec<[f32; 3]>,
-    colors: &mut Vec<[f32; 4]>,
-    indices: &mut Vec<u32>,
-    z: f32,
-) {
+fn compute_strip_sides(points: &[[f32; 2]], half_w: f32) -> Option<(Vec<[f32; 2]>, Vec<[f32; 2]>)> {
     if points.len() < 2 {
-        return;
+        return None;
     }
     let n = points.len();
 
@@ -173,18 +164,36 @@ fn polyline_to_quads(
         left.push([x - offset.0, y - offset.1]);
         right.push([x + offset.0, y + offset.1]);
     }
+    Some((left, right))
+}
 
-    // Emit the shared quad-strip.
+/// Emit a continuous subset of a precomputed quad strip.
+fn emit_quad_strip_range(
+    left: &[[f32; 2]],
+    right: &[[f32; 2]],
+    point_start: usize,
+    point_end: usize,
+    positions: &mut Vec<[f32; 3]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+    z: f32,
+) {
+    if point_end <= point_start || point_end >= left.len() || left.len() != right.len() {
+        return;
+    }
+
     let base = usize_to_u32(positions.len());
-    for i in 0..n {
+    for i in point_start..=point_end {
         positions.push([left[i][0], left[i][1], z]);
         positions.push([right[i][0], right[i][1], z]);
         colors.push(RIVER_COLOR);
         colors.push(RIVER_COLOR);
     }
-    // 2 vertices per point. Segment i→i+1 uses verts (2i, 2i+1, 2i+2, 2i+3).
-    for i in 0..(n as u32 - 1) {
-        let l0 = base + i * 2;
+
+    let point_count = point_end - point_start + 1;
+    for i in 0..(point_count - 1) {
+        let local = usize_to_u32(i);
+        let l0 = base + local * 2;
         let r0 = l0 + 1;
         let l1 = l0 + 2;
         let r1 = l0 + 3;
@@ -192,31 +201,81 @@ fn polyline_to_quads(
     }
 }
 
-fn endpoint_cap_span(points: &[[f32; 2]], half_w: f32, at_start: bool) -> Option<[[f32; 2]; 2]> {
-    if points.len() < 2 {
+fn endpoint_merge_points(
+    left: &[[f32; 2]],
+    right: &[[f32; 2]],
+    at_start: bool,
+) -> Option<[[f32; 2]; 4]> {
+    if left.len() < 2 || left.len() != right.len() {
         return None;
     }
-    let (center, other) = if at_start {
-        (points[0], points[1])
-    } else {
-        (points[points.len() - 1], points[points.len() - 2])
-    };
-    let dx = other[0] - center[0];
-    let dy = other[1] - center[1];
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 1e-9 {
-        return None;
+    if !at_start {
+        let n = left.len();
+        return Some([left[n - 1], right[n - 1], right[n - 2], left[n - 2]]);
     }
-    let px = -dy / len * half_w;
-    let py = dx / len * half_w;
-    Some([
-        [center[0] - px, center[1] - py],
-        [center[0] + px, center[1] + py],
-    ])
+    Some([left[0], right[0], right[1], left[1]])
+}
+
+fn cross(o: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+}
+
+fn dedup_points(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut deduped: Vec<[f32; 2]> = Vec::with_capacity(points.len());
+    for &point in points {
+        let is_duplicate = deduped.iter().any(|existing| {
+            (existing[0] - point[0]).abs() < 1e-5 && (existing[1] - point[1]).abs() < 1e-5
+        });
+        if !is_duplicate {
+            deduped.push(point);
+        }
+    }
+    deduped
+}
+
+fn convex_hull(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut sorted = dedup_points(points);
+    sorted.sort_by(|lhs, rhs| {
+        lhs[0]
+            .partial_cmp(&rhs[0])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                lhs[1]
+                    .partial_cmp(&rhs[1])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    if sorted.len() < 3 {
+        return sorted;
+    }
+
+    let mut lower: Vec<[f32; 2]> = Vec::with_capacity(sorted.len());
+    for &point in &sorted {
+        while lower.len() >= 2
+            && cross(lower[lower.len() - 2], lower[lower.len() - 1], point) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(point);
+    }
+
+    let mut upper: Vec<[f32; 2]> = Vec::with_capacity(sorted.len());
+    for &point in sorted.iter().rev() {
+        while upper.len() >= 2
+            && cross(upper[upper.len() - 2], upper[upper.len() - 1], point) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
 }
 
 fn add_junction_fill(
-    center: [f32; 2],
     rim_points: &[[f32; 2]],
     positions: &mut Vec<[f32; 3]>,
     colors: &mut Vec<[f32; 4]>,
@@ -227,27 +286,21 @@ fn add_junction_fill(
         return;
     }
 
-    let mut sorted = rim_points.to_vec();
-    sorted.sort_by(|lhs, rhs| {
-        let angle_l = (lhs[1] - center[1]).atan2(lhs[0] - center[0]);
-        let angle_r = (rhs[1] - center[1]).atan2(rhs[0] - center[0]);
-        angle_l
-            .partial_cmp(&angle_r)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut polygon: Vec<[f32; 2]> = Vec::with_capacity(sorted.len());
-    for point in sorted {
-        let is_duplicate = polygon.iter().any(|existing| {
-            (existing[0] - point[0]).abs() < 1e-5 && (existing[1] - point[1]).abs() < 1e-5
-        });
-        if !is_duplicate {
-            polygon.push(point);
-        }
-    }
+    let polygon = convex_hull(rim_points);
     if polygon.len() < 3 {
         return;
     }
+
+    let center = {
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        for point in &polygon {
+            sum_x += point[0];
+            sum_y += point[1];
+        }
+        let inv_len = 1.0 / polygon.len() as f32;
+        [sum_x * inv_len, sum_y * inv_len]
+    };
 
     let base = usize_to_u32(positions.len());
     positions.push([center[0], center[1], z]);
@@ -282,7 +335,7 @@ fn spawn_rivers(
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    let mut junction_rims: HashMap<u32, ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
+    let mut junction_rims: HashMap<u32, Vec<[f32; 2]>> = HashMap::new();
 
     for edge in &river_data.edges {
         let half_w = RIVER_WIDTHS[u32_to_usize(u32::from(edge.width_class))] / 2.0;
@@ -291,33 +344,37 @@ fn spawn_rivers(
         if pts.len() < 2 {
             continue;
         }
-        polyline_to_quads(&pts, half_w, &mut positions, &mut colors, &mut indices, 0.5);
-        if let Some(span) = endpoint_cap_span(&pts, half_w, true) {
-            let entry = junction_rims.entry(edge.start_node).or_insert((
-                river_data.nodes[u32_to_usize(edge.start_node)].position,
-                Vec::new(),
-            ));
-            entry.1.extend_from_slice(&span);
-        }
-        if let Some(span) = endpoint_cap_span(&pts, half_w, false) {
-            let entry = junction_rims.entry(edge.end_node).or_insert((
-                river_data.nodes[u32_to_usize(edge.end_node)].position,
-                Vec::new(),
-            ));
-            entry.1.extend_from_slice(&span);
-        }
-    }
+        let Some((left, right)) = compute_strip_sides(&pts, half_w) else {
+            continue;
+        };
 
-    for (_, (center, rim_points)) in junction_rims {
-        if rim_points.len() >= 6 {
-            add_junction_fill(
-                center,
-                &rim_points,
+        if left.len() >= 4 {
+            emit_quad_strip_range(
+                &left,
+                &right,
+                1,
+                left.len() - 2,
                 &mut positions,
                 &mut colors,
                 &mut indices,
                 0.5,
             );
+        }
+
+        if let Some(merge_points) = endpoint_merge_points(&left, &right, true) {
+            let entry = junction_rims.entry(edge.start_node).or_default();
+            entry.extend_from_slice(&merge_points);
+        }
+        if let Some(merge_points) = endpoint_merge_points(&left, &right, false) {
+            let entry = junction_rims.entry(edge.end_node).or_default();
+            entry.extend_from_slice(&merge_points);
+        }
+    }
+
+    for (node_id, mut rim_points) in junction_rims {
+        rim_points.push(river_data.nodes[u32_to_usize(node_id)].position);
+        if rim_points.len() >= 4 {
+            add_junction_fill(&rim_points, &mut positions, &mut colors, &mut indices, 0.5);
         }
     }
 

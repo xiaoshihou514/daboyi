@@ -105,7 +105,51 @@ def build_adjacency(skeleton: np.ndarray) -> dict:
     return adj, pixel_set
 
 
-def extract_graph_edges(adj: dict) -> list[dict]:
+def collapse_special_nodes(adj: dict) -> tuple[list[dict], dict]:
+    """
+    Collapse each connected component of special pixels (degree != 2) into one
+    logical river node. This prevents a single visual fork/merge blob from
+    becoming several nearby nodes that render as disjoint pieces.
+    """
+    special = {p for p, nbrs in adj.items() if len(nbrs) != 2}
+    remaining = set(special)
+    components: list[list[tuple[int, int]]] = []
+
+    while remaining:
+        start = min(remaining)
+        stack = [start]
+        component: list[tuple[int, int]] = []
+        remaining.remove(start)
+        while stack:
+            curr = stack.pop()
+            component.append(curr)
+            for nb in adj[curr]:
+                if nb in remaining:
+                    remaining.remove(nb)
+                    stack.append(nb)
+        component.sort()
+        components.append(component)
+
+    node_components: list[dict] = []
+    pixel_to_node: dict[tuple[int, int], tuple[int, int]] = {}
+    for component in sorted(components, key=lambda c: c[0]):
+        rep = component[0]
+        avg_col = sum(col for col, _ in component) / len(component)
+        avg_row = sum(row for _, row in component) / len(component)
+        node_components.append(
+            {
+                "rep": rep,
+                "pixels": set(component),
+                "center_pixel": (avg_col, avg_row),
+            }
+        )
+        for pixel in component:
+            pixel_to_node[pixel] = rep
+
+    return node_components, pixel_to_node
+
+
+def extract_graph_edges(adj: dict) -> tuple[list[dict], list[dict]]:
     """
     Extract river paths by tracing graph edges between junction/endpoint nodes.
 
@@ -117,23 +161,31 @@ def extract_graph_edges(adj: dict) -> list[dict]:
     start/end node identity. Interior pixels are strung together into the path
     between them.
     """
-    special = {p for p, nbrs in adj.items() if len(nbrs) != 2}
+    node_components, pixel_to_node = collapse_special_nodes(adj)
 
     visited_edges: set[frozenset] = set()
     edges: list[dict] = []
 
-    # Trace from each special node outward along each of its edges.
-    for start in sorted(special):
-        for nb in sorted(adj[start]):
-            edge_key = frozenset({start, nb})
+    # Trace from each logical node outward along edges leaving its special-pixel blob.
+    for node in node_components:
+        start_rep = node["rep"]
+        outgoing: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        for pixel in sorted(node["pixels"]):
+            for nb in sorted(adj[pixel]):
+                if nb not in node["pixels"]:
+                    outgoing.append((pixel, nb))
+
+        for start_pixel, nb in outgoing:
+            edge_key = frozenset({start_pixel, nb})
             if edge_key in visited_edges:
                 continue
             visited_edges.add(edge_key)
 
-            # Walk: start → nb → ... until we hit another special node
-            path = [start, nb]
-            prev, curr = start, nb
-            while curr not in special:
+            # Walk: start-node boundary pixel → nb → ... until we hit another
+            # special-pixel component.
+            path = [start_pixel, nb]
+            prev, curr = start_pixel, nb
+            while curr not in pixel_to_node:
                 nexts = [n for n in adj[curr] if n != prev]
                 if not nexts:
                     break
@@ -143,7 +195,8 @@ def extract_graph_edges(adj: dict) -> list[dict]:
                 prev, curr = curr, nxt
                 path.append(curr)
 
-            edges.append({"path": path, "start": start, "end": curr})
+            end_rep = pixel_to_node.get(curr, start_rep)
+            edges.append({"path": path, "start": start_rep, "end": end_rep})
 
     # Handle isolated loops (all interior: e.g. a perfectly circular lake outline).
     # Find any unvisited pixel and trace the loop once.
@@ -170,7 +223,22 @@ def extract_graph_edges(adj: dict) -> list[dict]:
         if len(path) >= MIN_PATH_PX:
             edges.append({"path": path, "start": start, "end": start})
 
-    return edges
+    for edge in edges:
+        for endpoint_key in ("start", "end"):
+            endpoint = edge[endpoint_key]
+            if endpoint not in pixel_to_node:
+                pixel_to_node[endpoint] = endpoint
+                node_components.append(
+                    {
+                        "rep": endpoint,
+                        "pixels": {endpoint},
+                        "center_pixel": (float(endpoint[0]), float(endpoint[1])),
+                    }
+                )
+            edge[endpoint_key] = pixel_to_node[endpoint]
+
+    node_components.sort(key=lambda node: node["rep"])
+    return node_components, edges
 
 
 def douglas_peucker(points: list[tuple], epsilon: float) -> list[tuple]:
@@ -286,26 +354,17 @@ def main() -> None:
     print(f"Graph nodes: {len(adj):,}")
 
     print("Extracting graph edges as polylines...")
-    raw_edges = extract_graph_edges(adj)
+    node_components, raw_edges = extract_graph_edges(adj)
     print(f"Raw edges: {len(raw_edges):,}")
 
     # ── Simplify + convert to lon/lat (Bug A fix) ─────────────────────────────
     # Epsilon = 0.5 px (≈ 2.4 km) — keeps river curves, removes collinear pts.
     # Previously epsilon=2.0 px was collapsing entire rivers to 2 endpoints.
-    node_pixels = sorted(
-        {
-            edge["start"]
-            for edge in raw_edges
-        }
-        | {
-            edge["end"]
-            for edge in raw_edges
-        }
-    )
-    node_ids = {pixel: idx for idx, pixel in enumerate(node_pixels)}
+    node_ids = {node["rep"]: idx for idx, node in enumerate(node_components)}
     lonlat_nodes = [
         {"position": pixel_to_lonlat(col, row)}
-        for (col, row) in node_pixels
+        for node in node_components
+        for (col, row) in [node["center_pixel"]]
     ]
 
     lonlat_edges: list[dict] = []
