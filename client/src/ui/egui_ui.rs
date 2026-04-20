@@ -6,7 +6,8 @@ use bevy_egui::{egui, EguiContexts};
 use shared::conv::{u32_to_usize, u8_to_unit_f32, unit_f32_to_u8, usize_to_f32};
 
 use crate::editor::{
-    ActiveAdmin, ActiveCountry, AdminAreas, AdminMap, BrushTool, Countries, CountryMap, NextAdminId,
+    child_admin_ids_in_tree, should_show_admin_children, ActiveAdmin, ActiveCountry, AdminAreas,
+    AdminMap, BrushTool, Countries, CountryMap, NextAdminId,
 };
 use crate::map::{
     BorderVersion, ColoringVersion, MapMode, MapResource, ProvinceNames, SelectedProvince,
@@ -588,11 +589,7 @@ fn show_admin_area_tree(
     let indent = 16.0 * (depth + 1) as f32;
 
     // Collect children before any mutable borrow below.
-    let child_ids: Vec<u32> = all_areas
-        .iter()
-        .filter(|a| a.parent_id == Some(area_id))
-        .map(|a| a.id)
-        .collect();
+    let child_ids = child_admin_ids_in_tree(area_id, all_areas);
 
     let mut color_changed = false;
     let mut new_color = egui::Color32::default();
@@ -634,16 +631,18 @@ fn show_admin_area_tree(
         *coloring_version += 1;
     }
 
-    for child_id in child_ids {
-        show_admin_area_tree(
-            ui,
-            child_id,
-            all_areas,
-            active_admin,
-            ui_state,
-            depth + 1,
-            coloring_version,
-        );
+    if should_show_admin_children(area_id, all_areas, *active_admin) {
+        for child_id in child_ids {
+            show_admin_area_tree(
+                ui,
+                child_id,
+                all_areas,
+                active_admin,
+                ui_state,
+                depth + 1,
+                coloring_version,
+            );
+        }
     }
 }
 

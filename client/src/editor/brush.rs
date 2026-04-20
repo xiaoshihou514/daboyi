@@ -5,8 +5,9 @@ use bevy::prelude::*;
 use shared::conv::u32_to_usize;
 
 use crate::editor::{
-    classify_province_for_active_admin, ActiveAdmin, ActiveCountry, AdminBrushRelation, AdminMap,
-    BrushTool, CountryMap, DragState, SpatialHash,
+    admin_area_by_id, can_assign_province_to_active_admin, can_assign_province_to_active_country,
+    can_erase_province_from_active_selection, ActiveAdmin, ActiveCountry, AdminMap, BrushTool,
+    CountryMap, DragState, SpatialHash,
 };
 use crate::map::{
     BorderDirty, BorderVersion, MapResource, PaintDebounce, PendingProvinceRecolor, MAP_WIDTH,
@@ -140,14 +141,42 @@ pub fn brush_input_system(
     let mut changed_any = false;
 
     if brush.eraser_mode {
-        // 橡皮擦：从所有归属中移除省份
+        // 橡皮擦：仅移除当前选中节点作用域内的归属
         for &prov_id in &provinces_in_brush {
             if drag.painted_provinces.contains(&prov_id) {
                 continue;
             }
-            let was_in_admin = assignments.admin_map.0.remove(&prov_id).is_some();
-            let was_in_country = assignments.country_map.0.remove(&prov_id).is_some();
-            if was_in_admin || was_in_country {
+            if !can_erase_province_from_active_selection(
+                target_country.as_deref(),
+                target_admin,
+                &assignments.admin_areas.0,
+                &assignments.admin_map,
+                &assignments.country_map,
+                prov_id,
+            ) {
+                continue;
+            }
+
+            let mut erased_any = false;
+            if let Some(admin_id) = target_admin {
+                erased_any = assignments.admin_map.0.remove(&prov_id) == Some(admin_id);
+            } else if let Some(country_tag) = target_country.as_deref() {
+                if assignments.country_map.0.remove(&prov_id).is_some() {
+                    erased_any = true;
+                } else if assignments
+                    .admin_map
+                    .0
+                    .get(&prov_id)
+                    .copied()
+                    .and_then(|admin_id| admin_area_by_id(&assignments.admin_areas.0, admin_id))
+                    .map(|area| area.country_tag.as_str() == country_tag)
+                    .unwrap_or(false)
+                {
+                    erased_any = assignments.admin_map.0.remove(&prov_id).is_some();
+                }
+            }
+
+            if erased_any {
                 assignments.pending_province_recolor.0.insert(prov_id);
                 changed_any = true;
             }
@@ -164,26 +193,18 @@ pub fn brush_input_system(
             let old_admin = assignments.admin_map.0.get(&prov_id).copied();
 
             if let Some(admin_id) = target_admin {
-                let Some(relation) = classify_province_for_active_admin(
+                if !can_assign_province_to_active_admin(
                     admin_id,
                     &assignments.admin_areas.0,
                     &assignments.admin_map,
                     &assignments.country_map,
                     prov_id,
-                ) else {
-                    continue;
-                };
-                if !matches!(
-                    relation,
-                    AdminBrushRelation::Selected
-                        | AdminBrushRelation::Sibling
-                        | AdminBrushRelation::Unclaimed
                 ) {
                     continue;
                 }
                 let admin_changed = old_admin != Some(admin_id);
-                let country_cleared = old_country.is_some();
-                if admin_changed || country_cleared {
+                let owner_replaced = old_country.is_some() || old_admin.is_some();
+                if admin_changed || owner_replaced {
                     assignments.admin_map.0.insert(prov_id, admin_id);
                     assignments.country_map.0.remove(&prov_id);
                     assignments.pending_province_recolor.0.insert(prov_id);
@@ -191,10 +212,17 @@ pub fn brush_input_system(
                 }
                 processed_provinces.push(prov_id);
             } else if let Some(country_tag) = &target_country {
+                if !can_assign_province_to_active_country(
+                    country_tag,
+                    &assignments.admin_areas.0,
+                    &assignments.admin_map,
+                    &assignments.country_map,
+                    prov_id,
+                ) {
+                    continue;
+                }
                 let country_changed = old_country.as_ref() != Some(country_tag);
-                let admin_cleared = old_admin.is_some();
-                if country_changed || admin_cleared {
-                    assignments.admin_map.0.remove(&prov_id);
+                if country_changed {
                     assignments
                         .country_map
                         .0

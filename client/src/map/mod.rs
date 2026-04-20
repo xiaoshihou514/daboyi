@@ -20,12 +20,12 @@ use shared::map::MapData;
 use std::collections::{HashMap, HashSet};
 
 use crate::editor::{
-    classify_province_for_active_admin, ActiveAdmin, AdminAreas, AdminBrushRelation, AdminMap,
-    Countries, CountryMap,
+    province_country_tag, visible_admin_id_for_province, ActiveAdmin, ActiveCountry, AdminAreas,
+    AdminMap, Countries, CountryMap,
 };
 use crate::state::AppState;
 pub use borders::BordersPlugin;
-use color::{brighten, dim, owner_color_rgba, terrain_province_color};
+use color::{brighten, owner_color_rgba, terrain_province_color};
 use interact::{camera_controls, province_click};
 
 pub const MAP_BIN_PATH: &str = "assets/map.bin";
@@ -103,6 +103,7 @@ struct LastColorState {
     mode: Option<MapMode>,
     selected: Option<u32>,
     active_admin: Option<u32>,
+    active_country: Option<String>,
     coloring_version: u64,
 }
 
@@ -369,6 +370,13 @@ fn write_color(data: &mut [u8], pid: usize, color: [f32; 4]) {
     data[offset + 3] = unit_f32_to_u8(color[3]);
 }
 
+fn country_color_for_tag(tag: &str, lookup: &HashMap<&str, [f32; 4]>) -> [f32; 4] {
+    lookup
+        .get(tag)
+        .copied()
+        .unwrap_or_else(|| owner_color_rgba(tag))
+}
+
 /// Recolor the province colour texture based on current mode and coloring assignments.
 ///
 /// Colour updates are cheap (~84 KB texture write) so they happen immediately —
@@ -384,6 +392,7 @@ fn color_provinces(
     mode: Res<MapMode>,
     selected: Res<SelectedProvince>,
     active_admin: Res<ActiveAdmin>,
+    active_country: Res<ActiveCountry>,
     country_map: Res<CountryMap>,
     countries: Res<Countries>,
     admin_areas: Res<AdminAreas>,
@@ -398,10 +407,12 @@ fn color_provinces(
     let mode_changed = guard.last.mode != Some(*mode);
     let selection_changed = guard.last.selected != selected.0;
     let active_admin_changed = guard.last.active_admin != active_admin.0;
+    let active_country_changed = guard.last.active_country != active_country.0;
     let coloring_changed = guard.last.coloring_version != guard.coloring_version.0;
     let has_pending_province = !pending_province_recolor.0.is_empty();
 
-    let needs_full_recolor = mode_changed || coloring_changed || active_admin_changed;
+    let needs_full_recolor =
+        mode_changed || coloring_changed || active_admin_changed || active_country_changed;
 
     if !needs_full_recolor && !selection_changed && !has_pending_province {
         return;
@@ -422,26 +433,32 @@ fn color_provinces(
                 let topo = &map.0.provinces[pid].topography;
                 let prov_id = map.0.provinces[pid].id;
 
-                if let Some(&area_id) = admin_assignments.0.get(&prov_id) {
-                    let area_color =
+                if let Some(area_id) = visible_admin_id_for_province(
+                    active_country.0.as_deref(),
+                    active_admin.0,
+                    &admin_areas.0,
+                    &admin_assignments,
+                    &country_map,
+                    prov_id,
+                ) {
+                    let resolved_color =
                         resolve_area_color(area_id, &admin_areas.0, &country_color_lookup);
                     if topo.contains("wasteland") {
                         let wc = terrain_province_color(topo);
                         return [
-                            (wc[0] + area_color[0]) * 0.5,
-                            (wc[1] + area_color[1]) * 0.5,
-                            (wc[2] + area_color[2]) * 0.5,
+                            (wc[0] + resolved_color[0]) * 0.5,
+                            (wc[1] + resolved_color[1]) * 0.5,
+                            (wc[2] + resolved_color[2]) * 0.5,
                             1.0,
                         ];
                     }
-                    return area_color;
+                    return resolved_color;
                 }
 
-                if let Some(tag) = country_map.0.get(&prov_id) {
-                    let country_color = country_color_lookup
-                        .get(tag.as_str())
-                        .copied()
-                        .unwrap_or_else(|| owner_color_rgba(tag));
+                if let Some(tag) =
+                    province_country_tag(&admin_areas.0, &admin_assignments, &country_map, prov_id)
+                {
+                    let country_color = country_color_for_tag(tag, &country_color_lookup);
 
                     if topo.contains("wasteland") {
                         let wc = terrain_province_color(topo);
@@ -464,33 +481,11 @@ fn color_provinces(
         }
     };
 
-    let scoped_color = |pid: usize| -> [f32; 4] {
-        let base = base_color(pid);
-        let Some(selected_admin_id) = active_admin.0 else {
-            return base;
-        };
-        if *mode != MapMode::Political {
-            return base;
-        }
-        let prov_id = map.0.provinces[pid].id;
-        match classify_province_for_active_admin(
-            selected_admin_id,
-            &admin_areas.0,
-            &admin_assignments,
-            &country_map,
-            prov_id,
-        ) {
-            Some(AdminBrushRelation::Selected) | Some(AdminBrushRelation::Sibling) => base,
-            Some(AdminBrushRelation::Unclaimed) => [0.70, 0.70, 0.70, 1.0],
-            None => dim(base, 0.25),
-        }
-    };
-
     if needs_full_recolor {
         // Full texture rewrite (~84 KB): recompute every province's colour.
         for pid in 0..map.0.provinces.len() {
             let is_selected = selected.0 == Some(usize_to_u32(pid));
-            let base = scoped_color(pid);
+            let base = base_color(pid);
             let color = if is_selected { brighten(base) } else { base };
             write_color(&mut color_buf.data, pid, color);
         }
@@ -498,6 +493,7 @@ fn color_provinces(
         guard.last.mode = Some(*mode);
         guard.last.selected = selected.0;
         guard.last.active_admin = active_admin.0;
+        guard.last.active_country = active_country.0.clone();
         guard.last.coloring_version = guard.coloring_version.0;
         pending_province_recolor.0.clear();
         return;
@@ -513,12 +509,13 @@ fn color_provinces(
                 continue;
             }
             let is_selected = selected.0 == Some(prov_id);
-            let base = scoped_color(pid);
+            let base = base_color(pid);
             let color = if is_selected { brighten(base) } else { base };
             write_color(&mut color_buf.data, pid, color);
         }
         color_buf.version += 1;
         // Selection state hasn't changed — keep last.selected current.
+        guard.last.active_country = active_country.0.clone();
         return;
     }
 
@@ -527,21 +524,30 @@ fn color_provinces(
         if let Some(old_u32) = guard.last.selected {
             let old_pid = u32_to_usize(old_u32);
             if old_pid < map.0.provinces.len() {
-                write_color(&mut color_buf.data, old_pid, scoped_color(old_pid));
+                write_color(&mut color_buf.data, old_pid, base_color(old_pid));
             }
         }
         if let Some(new_u32) = selected.0 {
             let new_pid = u32_to_usize(new_u32);
             if new_pid < map.0.provinces.len() {
-                write_color(
-                    &mut color_buf.data,
-                    new_pid,
-                    brighten(scoped_color(new_pid)),
-                );
+                write_color(&mut color_buf.data, new_pid, brighten(base_color(new_pid)));
             }
         }
         color_buf.version += 1;
         guard.last.selected = selected.0;
+        guard.last.active_country = active_country.0.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_country_hides_foreign_admin_colors() {
+        let lookup = HashMap::from([("C001", [0.1, 0.2, 0.3, 1.0])]);
+        assert_eq!(country_color_for_tag("C001", &lookup), [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(country_color_for_tag("C009", &lookup)[3], 1.0);
     }
 }
 

@@ -27,10 +27,6 @@ pub fn brighten(c: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-pub fn dim(c: [f32; 4], factor: f32) -> [f32; 4] {
-    [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
-}
-
 /// Terrain mode: color by province topography.
 pub fn terrain_province_color(topography: &str) -> [f32; 4] {
     match topography {

@@ -1,3 +1,4 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::render::render_asset::RenderAssetUsages;
@@ -7,7 +8,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 
-use crate::editor::{AdminMap, CountryMap};
+use crate::editor::{
+    province_country_tag, visible_admin_id_for_province, ActiveAdmin, ActiveCountry, AdminAreas,
+    AdminMap, CountryMap,
+};
 use crate::map::{BorderVersion, MapMode, MapResource, MAP_WIDTH};
 use crate::state::AppState;
 
@@ -71,6 +75,31 @@ impl Plugin for BordersPlugin {
                     .run_if(in_state(AppState::Editing)),
             );
     }
+}
+
+#[derive(SystemParam)]
+struct BorderInputs<'w, 's> {
+    border_version: Res<'w, BorderVersion>,
+    active_admin: Res<'w, ActiveAdmin>,
+    active_country: Res<'w, ActiveCountry>,
+    admin_areas: Res<'w, AdminAreas>,
+    country_map: Res<'w, CountryMap>,
+    admin_assignments: Res<'w, AdminMap>,
+    adjacency: Res<'w, ProvinceAdjacency>,
+    mode: Res<'w, MapMode>,
+    border_assets: ResMut<'w, BorderAssets>,
+    scratch: ResMut<'w, BorderScratch>,
+    _marker: std::marker::PhantomData<&'s ()>,
+}
+
+#[derive(SystemParam)]
+struct BorderState<'w, 's> {
+    last_mode: Local<'s, Option<MapMode>>,
+    last_border_version: Local<'s, u64>,
+    last_scale: Local<'s, f32>,
+    last_active_admin: Local<'s, Option<u32>>,
+    last_active_country: Local<'s, Option<String>>,
+    _marker: std::marker::PhantomData<&'w ()>,
 }
 
 /// Compute province adjacency and shared border chains once from province boundaries.
@@ -194,99 +223,116 @@ fn rebuild_borders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    border_version: Res<BorderVersion>,
-    country_map: Res<CountryMap>,
-    admin_assignments: Res<AdminMap>,
+    mut border_inputs: BorderInputs,
     map: Option<Res<MapResource>>,
-    adjacency: Res<ProvinceAdjacency>,
-    mode: Res<MapMode>,
     camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     existing: Query<Entity, With<BorderMesh>>,
-    mut border_assets: ResMut<BorderAssets>,
-    mut scratch: ResMut<BorderScratch>,
-    mut last_mode: Local<Option<MapMode>>,
-    mut last_border_version: Local<u64>,
-    mut last_scale: Local<f32>,
+    mut border_state: BorderState,
 ) {
     let Some(map) = map else { return };
 
-    if adjacency.0.is_empty() {
+    if border_inputs.adjacency.0.is_empty() {
         return;
     }
 
     // Camera projection scale (world units per pixel).
     let proj_scale = camera_q.get_single().map(|p| p.scale).unwrap_or(0.05);
-    let scale_changed =
-        *last_scale == 0.0 || ((*last_scale - proj_scale).abs() / *last_scale > 0.05);
+    let scale_changed = *border_state.last_scale == 0.0
+        || ((*border_state.last_scale - proj_scale).abs() / *border_state.last_scale > 0.05);
 
-    let mode_changed = Some(*mode) != *last_mode;
-    let border_changed = *last_border_version != border_version.0;
-    if !mode_changed && !border_changed && !scale_changed {
+    let mode_changed = Some(*border_inputs.mode) != *border_state.last_mode;
+    let border_changed = *border_state.last_border_version != border_inputs.border_version.0;
+    let active_admin_changed = *border_state.last_active_admin != border_inputs.active_admin.0;
+    let active_country_changed =
+        *border_state.last_active_country != border_inputs.active_country.0;
+    if !mode_changed
+        && !border_changed
+        && !scale_changed
+        && !active_admin_changed
+        && !active_country_changed
+    {
         return;
     }
-    *last_mode = Some(*mode);
-    *last_border_version = border_version.0;
-    *last_scale = proj_scale;
+    *border_state.last_mode = Some(*border_inputs.mode);
+    *border_state.last_border_version = border_inputs.border_version.0;
+    *border_state.last_scale = proj_scale;
+    *border_state.last_active_admin = border_inputs.active_admin.0;
+    *border_state.last_active_country = border_inputs.active_country.0.clone();
 
     // Early-return for non-political mode BEFORE touching the mesh, so
     // recycle_mesh_buffers never strips it and leaves zero vertices for the GPU allocator.
-    if *mode != MapMode::Political {
+    if *border_inputs.mode != MapMode::Political {
         despawn_border_entities(&mut commands, &existing);
         return;
     }
 
-    if let Some(mesh_handle) = border_assets.mesh.clone() {
+    if let Some(mesh_handle) = border_inputs.border_assets.mesh.clone() {
         if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-            recycle_mesh_buffers(mesh, &mut scratch);
+            recycle_mesh_buffers(mesh, &mut border_inputs.scratch);
         } else {
-            scratch.positions.clear();
-            scratch.colors.clear();
-            scratch.indices.clear();
+            border_inputs.scratch.positions.clear();
+            border_inputs.scratch.colors.clear();
+            border_inputs.scratch.indices.clear();
         }
     } else {
-        scratch.positions.clear();
-        scratch.colors.clear();
-        scratch.indices.clear();
+        border_inputs.scratch.positions.clear();
+        border_inputs.scratch.colors.clear();
+        border_inputs.scratch.indices.clear();
     }
 
-    let mut country_keys: HashMap<&str, u32> = HashMap::new();
+    let mut country_keys: HashMap<String, u32> = HashMap::new();
     let mut next_country_key = 0_u32;
-    for tag in country_map.0.values() {
-        country_keys.entry(tag.as_str()).or_insert_with(|| {
+    let mut intern_country_key = |tag: &str| {
+        country_keys.entry(tag.to_owned()).or_insert_with(|| {
             let key = next_country_key;
             next_country_key = next_country_key.saturating_add(1);
             key
         });
+    };
+    for tag in border_inputs.country_map.0.values() {
+        intern_country_key(tag);
+    }
+    for area in &border_inputs.admin_areas.0 {
+        intern_country_key(area.country_tag.as_str());
     }
 
     let is_wasteland = |idx: usize| -> bool {
         idx < map.0.provinces.len() && map.0.provinces[idx].topography.contains("wasteland")
     };
     let province_owner = |idx: usize| -> Option<OwnerKey> {
-        if idx < map.0.provinces.len() {
-            let prov_id = map.0.provinces[idx].id;
-            if let Some(&area_id) = admin_assignments.0.get(&prov_id) {
-                return Some(OwnerKey::Admin(area_id));
-            }
-            return country_map
-                .0
-                .get(&prov_id)
-                .and_then(|tag| country_keys.get(tag.as_str()).copied())
-                .map(OwnerKey::Country);
-        } else {
-            None
+        if idx >= map.0.provinces.len() {
+            return None;
         }
+        let prov_id = map.0.provinces[idx].id;
+        if let Some(area_id) = visible_admin_id_for_province(
+            border_inputs.active_country.0.as_deref(),
+            border_inputs.active_admin.0,
+            &border_inputs.admin_areas.0,
+            &border_inputs.admin_assignments,
+            &border_inputs.country_map,
+            prov_id,
+        ) {
+            return Some(OwnerKey::Admin(area_id));
+        }
+        province_country_tag(
+            &border_inputs.admin_areas.0,
+            &border_inputs.admin_assignments,
+            &border_inputs.country_map,
+            prov_id,
+        )
+        .and_then(|tag| country_keys.get(tag).copied())
+        .map(OwnerKey::Country)
     };
 
     let BorderScratch {
         positions,
         colors,
         indices,
-    } = &mut *scratch;
+    } = &mut *border_inputs.scratch;
 
     let mut junction_rims: HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
 
-    for border in &adjacency.0 {
+    for border in &border_inputs.adjacency.0 {
         let ia = u32_to_usize(border.provinces[0]);
         let ib = u32_to_usize(border.provinces[1]);
         if is_wasteland(ia) || is_wasteland(ib) {
@@ -329,7 +375,7 @@ fn rebuild_borders(
         // Restore minimal valid geometry so the GPU allocator doesn't divide by zero
         // when it processes this mesh handle (entities are still alive this frame
         // until deferred despawns are flushed).
-        if let Some(mesh_handle) = border_assets.mesh.clone() {
+        if let Some(mesh_handle) = border_inputs.border_assets.mesh.clone() {
             if let Some(mesh) = meshes.get_mut(&mesh_handle) {
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32, 0.0, 0.0, 0.0]; 3]);
@@ -338,7 +384,8 @@ fn rebuild_borders(
         }
         return;
     }
-    let mesh_handle = border_assets
+    let mesh_handle = border_inputs
+        .border_assets
         .mesh
         .get_or_insert_with(|| {
             meshes.add(Mesh::new(
@@ -347,7 +394,8 @@ fn rebuild_borders(
             ))
         })
         .clone();
-    let material_handle = border_assets
+    let material_handle = border_inputs
+        .border_assets
         .material
         .get_or_insert_with(|| materials.add(ColorMaterial::default()))
         .clone();
@@ -635,6 +683,25 @@ fn weld_endpoints_global(pair_data: &mut Vec<([u32; 2], Vec<Vec<[f32; 2]>>)>) {
                 chain[n - 1] = c;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn country_keys_store_distinct_tags() {
+        let mut keys: HashMap<String, u32> = HashMap::new();
+        let mut next_key = 0_u32;
+        for tag in ["A", "A", "B"] {
+            keys.entry(tag.to_owned()).or_insert_with(|| {
+                let key = next_key;
+                next_key += 1;
+                key
+            });
+        }
+        assert_eq!(keys.len(), 2);
     }
 }
 
