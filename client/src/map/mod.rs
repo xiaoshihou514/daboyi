@@ -14,14 +14,14 @@ use bevy::render::renderer::RenderQueue;
 use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
-use material::ProvinceMapMaterial;
+use material::{ProvinceMapMaterial, ProvinceMapParams};
 use shared::conv::{u32_to_usize, unit_f32_to_u8, usize_to_f32, usize_to_u32};
 use shared::map::MapData;
 use std::collections::{HashMap, HashSet};
 
 use crate::editor::{
     province_country_tag, visible_admin_id_for_province, ActiveAdmin, ActiveCountry, AdminAreas,
-    AdminMap, Countries, CountryMap,
+    AdminMap, Countries, CountryMap, NonPlayableProvinces,
 };
 use crate::state::AppState;
 pub use borders::BordersPlugin;
@@ -46,21 +46,17 @@ pub struct MapResource(pub MapData);
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
 
-/// Map coloring mode.
+/// Map display mode.
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapMode {
-    Province,
-    Terrain,
     #[default]
-    Political,
+    Map,
 }
 
 impl std::fmt::Display for MapMode {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let s = match self {
-            MapMode::Province => "省份",
-            MapMode::Terrain => "地形",
-            MapMode::Political => "政治",
+            MapMode::Map => "地图",
         };
         write!(f, "{s}")
     }
@@ -106,6 +102,9 @@ struct LastColorState {
     active_country: Option<String>,
     coloring_version: u64,
 }
+
+#[derive(Resource, Clone)]
+struct ProvinceMaterialHandle(pub Handle<ProvinceMapMaterial>);
 
 /// Incremented when editor data changes require a full recolor.
 #[derive(Resource, Default)]
@@ -179,6 +178,12 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
+                update_zoom_visuals
+                    .run_if(in_state(AppState::Editing))
+                    .after(camera_controls),
+            )
+            .add_systems(
+                Update,
                 (province_click,)
                     .run_if(in_state(AppState::Editing))
                     .after(crate::ui::UiPass),
@@ -223,17 +228,22 @@ fn load_map(
     // do a direct textureLoad without normalised UV arithmetic.
     let mut all_uvs: Vec<[f32; 2]> = Vec::new();
     let mut all_indices: Vec<u32> = Vec::new();
-    // Province colour texture data: one RGBA8 pixel per province at offset pid*4.
-    let mut pixel_data = vec![0u8; tex_height * TEX_WIDTH * 4];
+    // Province display textures: one RGBA8 pixel per province at offset pid*4.
+    let mut political_pixel_data = vec![0u8; tex_height * TEX_WIDTH * 4];
+    let mut terrain_pixel_data = vec![0u8; tex_height * TEX_WIDTH * 4];
 
     for (pid, mp) in map_data.provinces.iter().enumerate() {
-        // Write province base colour into the texture.
-        let c = mp.hex_color;
+        let political_color = mp.hex_color;
+        let terrain_color = terrain_province_color(&mp.topography);
         let offset = pid * 4;
-        pixel_data[offset] = unit_f32_to_u8(c[0]);
-        pixel_data[offset + 1] = unit_f32_to_u8(c[1]);
-        pixel_data[offset + 2] = unit_f32_to_u8(c[2]);
-        pixel_data[offset + 3] = unit_f32_to_u8(c[3]);
+        political_pixel_data[offset] = unit_f32_to_u8(political_color[0]);
+        political_pixel_data[offset + 1] = unit_f32_to_u8(political_color[1]);
+        political_pixel_data[offset + 2] = unit_f32_to_u8(political_color[2]);
+        political_pixel_data[offset + 3] = unit_f32_to_u8(political_color[3]);
+        terrain_pixel_data[offset] = unit_f32_to_u8(terrain_color[0]);
+        terrain_pixel_data[offset + 1] = unit_f32_to_u8(terrain_color[1]);
+        terrain_pixel_data[offset + 2] = unit_f32_to_u8(terrain_color[2]);
+        terrain_pixel_data[offset + 3] = unit_f32_to_u8(terrain_color[3]);
 
         if mp.vertices.is_empty() || mp.indices.is_empty() {
             continue;
@@ -275,23 +285,38 @@ fn load_map(
     // copy is used only to bootstrap the GpuImage at startup.  All subsequent
     // colour updates go through `write_texture` in update_province_texture_gpu
     // so that the GpuImage (and its TextureView) is never recreated.
-    let color_buf_data = pixel_data.clone();
-    let mut color_image = Image::new(
+    let color_buf_data = political_pixel_data.clone();
+    let mut political_image = Image::new(
         Extent3d {
             width: usize_to_u32(TEX_WIDTH),
             height: usize_to_u32(tex_height),
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        pixel_data,
+        political_pixel_data,
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    color_image.sampler = ImageSampler::nearest();
-    let color_tex_handle = images.add(color_image);
+    political_image.sampler = ImageSampler::nearest();
+    let political_tex_handle = images.add(political_image);
+    let mut terrain_image = Image::new(
+        Extent3d {
+            width: usize_to_u32(TEX_WIDTH),
+            height: usize_to_u32(tex_height),
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        terrain_pixel_data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    terrain_image.sampler = ImageSampler::nearest();
+    let terrain_tex_handle = images.add(terrain_image);
 
     let material_handle = province_materials.add(ProvinceMapMaterial {
-        color_texture: color_tex_handle.clone(),
+        political_texture: political_tex_handle.clone(),
+        terrain_texture: terrain_tex_handle,
+        params: ProvinceMapParams::default(),
     });
 
     for &x_offset in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
@@ -305,10 +330,11 @@ fn load_map(
     commands.insert_resource(ProvinceColorBuffer {
         data: color_buf_data,
         version: 1,
-        image_handle: color_tex_handle,
+        image_handle: political_tex_handle,
         tex_width: usize_to_u32(TEX_WIDTH),
         tex_height: usize_to_u32(tex_height),
     });
+    commands.insert_resource(ProvinceMaterialHandle(material_handle.clone()));
 
     let mut stripped_map = map_data;
     for province in &mut stripped_map.provinces {
@@ -333,6 +359,41 @@ fn load_map(
     commands.insert_resource(ProvinceNames(province_name_map));
 
     next_state.set(AppState::Editing);
+}
+
+fn update_zoom_visuals(
+    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
+    material_handle: Option<Res<ProvinceMaterialHandle>>,
+    mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
+    mut last_focus: Local<Option<f32>>,
+) {
+    let Some(material_handle) = material_handle else {
+        return;
+    };
+    let proj_scale = camera_q
+        .get_single()
+        .map(|projection| projection.scale)
+        .unwrap_or(0.05);
+    let terrain_focus = terrain_focus_amount(proj_scale);
+    let focus_changed = last_focus
+        .map(|last_focus| (last_focus - terrain_focus).abs() > 0.02)
+        .unwrap_or(true);
+    if !focus_changed {
+        return;
+    }
+    let Some(material) = province_materials.get_mut(&material_handle.0) else {
+        return;
+    };
+    material.params.terrain_focus = terrain_focus;
+    *last_focus = Some(terrain_focus);
+}
+
+pub(crate) fn terrain_focus_amount(proj_scale: f32) -> f32 {
+    zoom_factor(proj_scale, 0.012, 0.002)
+}
+
+fn zoom_factor(proj_scale: f32, zoomed_out_scale: f32, zoomed_in_scale: f32) -> f32 {
+    ((zoomed_out_scale - proj_scale) / (zoomed_out_scale - zoomed_in_scale)).clamp(0.0, 1.0)
 }
 
 /// Ticks the paint debounce timer; bumps `BorderVersion` when it fires.
@@ -397,6 +458,7 @@ fn color_provinces(
     countries: Res<Countries>,
     admin_areas: Res<AdminAreas>,
     admin_assignments: Res<AdminMap>,
+    non_playable_provinces: Res<NonPlayableProvinces>,
     mut guard: ColoringGuard,
     mut pending_province_recolor: ResMut<PendingProvinceRecolor>,
 ) {
@@ -426,59 +488,29 @@ fn color_provinces(
         .collect();
 
     let base_color = |pid: usize| -> [f32; 4] {
-        match *mode {
-            MapMode::Province => map.0.provinces[pid].hex_color,
-            MapMode::Terrain => terrain_province_color(&map.0.provinces[pid].topography),
-            MapMode::Political => {
-                let topo = &map.0.provinces[pid].topography;
-                let prov_id = map.0.provinces[pid].id;
-
-                if let Some(area_id) = visible_admin_id_for_province(
-                    active_country.0.as_deref(),
-                    active_admin.0,
-                    &admin_areas.0,
-                    &admin_assignments,
-                    &country_map,
-                    prov_id,
-                ) {
-                    let resolved_color =
-                        resolve_area_color(area_id, &admin_areas.0, &country_color_lookup);
-                    if topo.contains("wasteland") {
-                        let wc = terrain_province_color(topo);
-                        return [
-                            (wc[0] + resolved_color[0]) * 0.5,
-                            (wc[1] + resolved_color[1]) * 0.5,
-                            (wc[2] + resolved_color[2]) * 0.5,
-                            1.0,
-                        ];
-                    }
-                    return resolved_color;
-                }
-
-                if let Some(tag) =
-                    province_country_tag(&admin_areas.0, &admin_assignments, &country_map, prov_id)
-                {
-                    let country_color = country_color_for_tag(tag, &country_color_lookup);
-
-                    if topo.contains("wasteland") {
-                        let wc = terrain_province_color(topo);
-                        return [
-                            (wc[0] + country_color[0]) * 0.5,
-                            (wc[1] + country_color[1]) * 0.5,
-                            (wc[2] + country_color[2]) * 0.5,
-                            1.0,
-                        ];
-                    }
-                    return country_color;
-                }
-
-                if topo.contains("wasteland") {
-                    terrain_province_color(topo)
-                } else {
-                    [0.55, 0.55, 0.55, 1.0]
-                }
-            }
+        let prov_id = map.0.provinces[pid].id;
+        if non_playable_provinces.0.contains(&prov_id) {
+            return [0.0, 0.0, 0.0, 0.0];
         }
+
+        if let Some(area_id) = visible_admin_id_for_province(
+            active_country.0.as_deref(),
+            active_admin.0,
+            &admin_areas.0,
+            &admin_assignments,
+            &country_map,
+            prov_id,
+        ) {
+            return resolve_area_color(area_id, &admin_areas.0, &country_color_lookup);
+        }
+
+        if let Some(tag) =
+            province_country_tag(&admin_areas.0, &admin_assignments, &country_map, prov_id)
+        {
+            return country_color_for_tag(tag, &country_color_lookup);
+        }
+
+        [0.55, 0.55, 0.55, 1.0]
     };
 
     if needs_full_recolor {

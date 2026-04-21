@@ -6,7 +6,7 @@ use crate::editor::BrushTool;
 use crate::map::color::point_in_province;
 use crate::ui::UiInputBlock;
 
-/// Camera pan (right-click drag) and zoom (scroll wheel).
+/// Camera pan (middle-click drag) and zoom (scroll wheel).
 pub fn camera_controls(
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut scroll_evts: EventReader<bevy::input::mouse::MouseWheel>,
@@ -27,7 +27,7 @@ pub fn camera_controls(
         return;
     };
 
-    if mouse_input.pressed(MouseButton::Right) {
+    if mouse_input.pressed(MouseButton::Middle) {
         for ev in motion_evts.read() {
             transform.translation.x -= ev.delta.x * projection.scale;
             transform.translation.y += ev.delta.y * projection.scale;

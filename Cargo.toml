@@ -1,5 +1,5 @@
 [workspace]
-members = ["client", "shared", "tools/mapgen"]
+members = ["client", "shared", "tools/mapgen", "tools/terrain_cache"]
 resolver = "2"
 
 [workspace.dependencies]

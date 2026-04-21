@@ -44,6 +44,14 @@ Reads `locations.gpkg` and `ports.gpkg` from the EU5toGIS `datasets/` directory,
 
 > Use `--release`; debug mode is very slow for geometry processing.
 
+### 1.5. Precompute terrain adjacency cache
+
+```bash
+cargo run --release -p terrain_cache
+```
+
+Builds `assets/terrain_adjacency.bin`, the deterministic terrain/province adjacency cache used by the editor for wasteland ownership tinting and terrain-border rendering.
+
 ### 2. Extract EU5 save data
 
 ```bash
@@ -86,24 +94,20 @@ The editor opens directly; no server is needed.
 
 ## Editor Usage
 
-**Map modes** (keyboard shortcuts):
+**Map display:**
 
-| Key | Mode | Description |
-|-----|------|-------------|
-| `1` | Province | EU5 province identification colors |
-| `2` | Terrain | Highlights wasteland and ocean |
-| `3` | Political | Country-colored map (default) |
+The editor now uses a single blended map view that combines terrain shading with political ownership. Province borders fade in smoothly as you zoom, while country borders remain visually stronger than sub-country borders.
 
 **Controls:**
 
 | Input | Action |
 |-------|--------|
-| Right-click drag | Pan camera |
+| Middle-click drag | Pan camera |
 | Scroll wheel | Zoom |
 | Left-click | Select province |
 | Left-click drag | Brush-paint provinces |
 
-**Painting workflow (Political mode):**
+**Painting workflow:**
 
 1. Select a country or administrative area in the left panel.
 2. Left-click or drag on the map to paint provinces.
@@ -165,6 +169,7 @@ daboyi/
 |------|--------|---------|
 | `map.bin` | `cargo run -p mapgen` | Province geometry (~80 MB, gitignored) |
 | `terrain.bin` | `cargo run -p mapgen` | Wasteland/ocean geometry (~40 MB, gitignored) |
+| `terrain_adjacency.bin` | `cargo run -p terrain_cache` | Terrain/province adjacency cache for editor rendering |
 | `ownership.tsv` | `cargo run -p parse_save` | Province tag → owner country tag |
 | `vassals.tsv` | `cargo run -p parse_save` | Vassal tag → overlord tag |
 | `merchandize.tsv` | `cargo run -p parse_save` | Country tag + goods output |

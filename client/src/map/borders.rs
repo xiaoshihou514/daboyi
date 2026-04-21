@@ -1,7 +1,16 @@
+#![allow(dead_code)]
+
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::render::mesh::{
+    Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology,
+    VertexAttributeValues,
+};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::{
+    AsBindGroup, RenderPipelineDescriptor, ShaderRef, ShaderType, SpecializedMeshPipelineError,
+    VertexFormat,
+};
 use serde::{Deserialize, Serialize};
 use shared::conv::{f32_to_i32, u32_to_f32, u32_to_usize, usize_to_u32};
 use std::collections::HashMap;
@@ -10,16 +19,22 @@ use std::io;
 
 use crate::editor::{
     province_country_tag, visible_admin_id_for_province, ActiveAdmin, ActiveCountry, AdminAreas,
-    AdminMap, CountryMap,
+    AdminMap, CountryMap, NonPlayableProvinces,
 };
 use crate::map::{BorderVersion, MapMode, MapResource, MAP_WIDTH};
 use crate::state::AppState;
+use crate::terrain::{
+    terrain_polygon_is_water, terrain_polygon_surrounding_tag, TerrainAdjacencyData,
+};
+use bevy::sprite::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin};
 
-const BORDER_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
-/// Target border half-width in screen pixels (constant visual size regardless of zoom).
-const BORDER_HALF_PIXELS: f32 = 1.5;
 const ADJACENCY_BIN_PATH: &str = "assets/province_adjacency.bin";
 const ADJACENCY_CACHE_VERSION: u32 = 1;
+
+const ATTRIBUTE_BORDER_OFFSET: MeshVertexAttribute =
+    MeshVertexAttribute::new("BorderOffset", 983_541_201, VertexFormat::Float32x2);
+const ATTRIBUTE_BORDER_TIER: MeshVertexAttribute =
+    MeshVertexAttribute::new("BorderTier", 983_541_202, VertexFormat::Float32);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CachedBorder {
@@ -42,16 +57,67 @@ pub struct ProvinceAdjacency(pub Vec<CachedBorder>);
 #[derive(Component)]
 pub struct BorderMesh;
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, ShaderType)]
+struct BorderMaterialParams {
+    proj_scale: f32,
+    _padding: Vec3,
+}
+
+impl Default for BorderMaterialParams {
+    fn default() -> Self {
+        Self {
+            proj_scale: 0.05,
+            _padding: Vec3::ZERO,
+        }
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
+struct BorderMaterial {
+    #[uniform(0)]
+    params: BorderMaterialParams,
+}
+
+impl Material2d for BorderMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/border_material.wgsl".into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        "shaders/border_material.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+
+    fn specialize(
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: Material2dKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        let vertex_layout = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+            ATTRIBUTE_BORDER_OFFSET.at_shader_location(1),
+            ATTRIBUTE_BORDER_TIER.at_shader_location(2),
+        ])?;
+        descriptor.vertex.buffers = vec![vertex_layout];
+        Ok(())
+    }
+}
+
 #[derive(Resource, Default)]
 struct BorderAssets {
     mesh: Option<Handle<Mesh>>,
-    material: Option<Handle<ColorMaterial>>,
+    material: Option<Handle<BorderMaterial>>,
 }
 
 #[derive(Resource, Default)]
 struct BorderScratch {
     positions: Vec<[f32; 3]>,
-    colors: Vec<[f32; 4]>,
+    offsets: Vec<[f32; 2]>,
+    tiers: Vec<f32>,
     indices: Vec<u32>,
 }
 
@@ -61,16 +127,28 @@ enum OwnerKey {
     Admin(u32),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BorderTier {
+    Country,
+    Admin,
+    Province,
+}
+
 pub struct BordersPlugin;
 
 impl Plugin for BordersPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ProvinceAdjacency::default())
+        app.add_plugins(Material2dPlugin::<BorderMaterial>::default())
+            .insert_resource(ProvinceAdjacency::default())
             .insert_resource(BorderAssets::default())
             .insert_resource(BorderScratch::default())
             .add_systems(
                 Update,
-                (compute_adjacency, rebuild_borders)
+                (
+                    compute_adjacency,
+                    rebuild_borders,
+                    update_border_material_params,
+                )
                     .chain()
                     .run_if(in_state(AppState::Editing)),
             );
@@ -85,7 +163,9 @@ struct BorderInputs<'w, 's> {
     admin_areas: Res<'w, AdminAreas>,
     country_map: Res<'w, CountryMap>,
     admin_assignments: Res<'w, AdminMap>,
+    non_playable_provinces: Res<'w, NonPlayableProvinces>,
     adjacency: Res<'w, ProvinceAdjacency>,
+    terrain_adjacency: Res<'w, TerrainAdjacencyData>,
     mode: Res<'w, MapMode>,
     border_assets: ResMut<'w, BorderAssets>,
     scratch: ResMut<'w, BorderScratch>,
@@ -96,7 +176,6 @@ struct BorderInputs<'w, 's> {
 struct BorderState<'w, 's> {
     last_mode: Local<'s, Option<MapMode>>,
     last_border_version: Local<'s, u64>,
-    last_scale: Local<'s, f32>,
     last_active_admin: Local<'s, Option<u32>>,
     last_active_country: Local<'s, Option<String>>,
     _marker: std::marker::PhantomData<&'w ()>,
@@ -222,10 +301,9 @@ fn save_cached_adjacency(province_count: u32, borders: &[CachedBorder]) -> io::R
 fn rebuild_borders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut materials: ResMut<Assets<BorderMaterial>>,
     mut border_inputs: BorderInputs,
     map: Option<Res<MapResource>>,
-    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
     existing: Query<Entity, With<BorderMesh>>,
     mut border_state: BorderState,
 ) {
@@ -235,33 +313,22 @@ fn rebuild_borders(
         return;
     }
 
-    // Camera projection scale (world units per pixel).
-    let proj_scale = camera_q.get_single().map(|p| p.scale).unwrap_or(0.05);
-    let scale_changed = *border_state.last_scale == 0.0
-        || ((*border_state.last_scale - proj_scale).abs() / *border_state.last_scale > 0.05);
-
     let mode_changed = Some(*border_inputs.mode) != *border_state.last_mode;
     let border_changed = *border_state.last_border_version != border_inputs.border_version.0;
     let active_admin_changed = *border_state.last_active_admin != border_inputs.active_admin.0;
     let active_country_changed =
         *border_state.last_active_country != border_inputs.active_country.0;
-    if !mode_changed
-        && !border_changed
-        && !scale_changed
-        && !active_admin_changed
-        && !active_country_changed
-    {
+    if !mode_changed && !border_changed && !active_admin_changed && !active_country_changed {
         return;
     }
     *border_state.last_mode = Some(*border_inputs.mode);
     *border_state.last_border_version = border_inputs.border_version.0;
-    *border_state.last_scale = proj_scale;
     *border_state.last_active_admin = border_inputs.active_admin.0;
     *border_state.last_active_country = border_inputs.active_country.0.clone();
 
     // Early-return for non-political mode BEFORE touching the mesh, so
     // recycle_mesh_buffers never strips it and leaves zero vertices for the GPU allocator.
-    if *border_inputs.mode != MapMode::Political {
+    if *border_inputs.mode != MapMode::Map {
         despawn_border_entities(&mut commands, &existing);
         return;
     }
@@ -271,12 +338,14 @@ fn rebuild_borders(
             recycle_mesh_buffers(mesh, &mut border_inputs.scratch);
         } else {
             border_inputs.scratch.positions.clear();
-            border_inputs.scratch.colors.clear();
+            border_inputs.scratch.offsets.clear();
+            border_inputs.scratch.tiers.clear();
             border_inputs.scratch.indices.clear();
         }
     } else {
         border_inputs.scratch.positions.clear();
-        border_inputs.scratch.colors.clear();
+        border_inputs.scratch.offsets.clear();
+        border_inputs.scratch.tiers.clear();
         border_inputs.scratch.indices.clear();
     }
 
@@ -324,9 +393,15 @@ fn rebuild_borders(
         .map(OwnerKey::Country)
     };
 
+    let admin_areas = &border_inputs.admin_areas.0;
+    let admin_assignments = &border_inputs.admin_assignments;
+    let country_map = &border_inputs.country_map;
+    let terrain_adjacency = &border_inputs.terrain_adjacency;
+
     let BorderScratch {
         positions,
-        colors,
+        offsets,
+        tiers,
         indices,
     } = &mut *border_inputs.scratch;
 
@@ -338,35 +413,83 @@ fn rebuild_borders(
         if is_wasteland(ia) || is_wasteland(ib) {
             continue;
         }
-        if province_owner(ia) == province_owner(ib) {
+        let Some(border_tier) = province_border_tier(
+            map.0.provinces[ia].id,
+            map.0.provinces[ib].id,
+            admin_areas,
+            admin_assignments,
+            country_map,
+            province_owner(ia),
+            province_owner(ib),
+        ) else {
             continue;
-        }
+        };
 
         for chain in &border.chains {
             if chain.len() < 2 {
                 continue;
             }
-            let hw = BORDER_HALF_PIXELS * proj_scale;
-            polyline_to_quads(chain, hw, positions, colors, indices, 0.8);
-            if let Some(span) = endpoint_cap_span(chain, hw, true) {
-                let entry = junction_rims
-                    .entry(border_qpt(chain[0]))
-                    .or_insert((chain[0], Vec::new()));
-                entry.1.extend_from_slice(&span);
+            polyline_to_border_strip(chain, positions, offsets, tiers, indices, border_tier);
+            if border_tier == BorderTier::Country {
+                collect_country_junction_rims(&mut junction_rims, chain);
             }
-            let last = *chain.last().unwrap();
-            if let Some(span) = endpoint_cap_span(chain, hw, false) {
-                let entry = junction_rims
-                    .entry(border_qpt(last))
-                    .or_insert((last, Vec::new()));
-                entry.1.extend_from_slice(&span);
+        }
+    }
+
+    let mut terrain_owner_cache: HashMap<u32, Option<String>> = HashMap::new();
+    for terrain_border in &terrain_adjacency.borders {
+        if terrain_polygon_is_water(terrain_border.terrain_index, terrain_adjacency) {
+            continue;
+        }
+        let Some(province_tag) = province_country_tag(
+            admin_areas,
+            admin_assignments,
+            country_map,
+            terrain_border.province_id,
+        ) else {
+            continue;
+        };
+        if border_inputs
+            .non_playable_provinces
+            .0
+            .contains(&terrain_border.province_id)
+        {
+            continue;
+        }
+        let terrain_owner = terrain_owner_cache
+            .entry(terrain_border.terrain_index)
+            .or_insert_with(|| {
+                terrain_polygon_surrounding_tag(
+                    terrain_border.terrain_index,
+                    terrain_adjacency,
+                    admin_areas,
+                    admin_assignments,
+                    country_map,
+                    &border_inputs.non_playable_provinces,
+                )
+            });
+        if !terrain_border_should_render(terrain_owner.as_deref(), province_tag) {
+            continue;
+        }
+        for chain in &terrain_border.chains {
+            if chain.len() < 2 {
+                continue;
             }
+            polyline_to_border_strip(
+                chain,
+                positions,
+                offsets,
+                tiers,
+                indices,
+                BorderTier::Country,
+            );
+            collect_country_junction_rims(&mut junction_rims, chain);
         }
     }
 
     for (_, (center, rim_points)) in junction_rims {
         if rim_points.len() >= 6 {
-            add_junction_fill(center, &rim_points, positions, colors, indices, 0.8);
+            add_junction_fill(center, &rim_points, positions, offsets, tiers, indices);
         }
     }
 
@@ -378,7 +501,8 @@ fn rebuild_borders(
         if let Some(mesh_handle) = border_inputs.border_assets.mesh.clone() {
             if let Some(mesh) = meshes.get_mut(&mesh_handle) {
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32, 0.0, 0.0, 0.0]; 3]);
+                mesh.insert_attribute(ATTRIBUTE_BORDER_OFFSET, vec![[0.0f32, 0.0]; 3]);
+                mesh.insert_attribute(ATTRIBUTE_BORDER_TIER, vec![0.0f32; 3]);
                 mesh.insert_indices(Indices::U32(vec![0, 1, 2]));
             }
         }
@@ -397,12 +521,18 @@ fn rebuild_borders(
     let material_handle = border_inputs
         .border_assets
         .material
-        .get_or_insert_with(|| materials.add(ColorMaterial::default()))
+        .get_or_insert_with(|| materials.add(BorderMaterial::default()))
         .clone();
+
+    positions.shrink_to_fit();
+    offsets.shrink_to_fit();
+    tiers.shrink_to_fit();
+    indices.shrink_to_fit();
 
     if let Some(mesh) = meshes.get_mut(&mesh_handle) {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, std::mem::take(positions));
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, std::mem::take(colors));
+        mesh.insert_attribute(ATTRIBUTE_BORDER_OFFSET, std::mem::take(offsets));
+        mesh.insert_attribute(ATTRIBUTE_BORDER_TIER, std::mem::take(tiers));
         mesh.insert_indices(Indices::U32(std::mem::take(indices)));
     }
 
@@ -418,6 +548,65 @@ fn rebuild_borders(
     }
 }
 
+fn province_border_tier(
+    province_a: u32,
+    province_b: u32,
+    admin_areas: &[shared::AdminArea],
+    admin_assignments: &AdminMap,
+    country_map: &CountryMap,
+    owner_a: Option<OwnerKey>,
+    owner_b: Option<OwnerKey>,
+) -> Option<BorderTier> {
+    let country_a = province_country_tag(admin_areas, admin_assignments, country_map, province_a);
+    let country_b = province_country_tag(admin_areas, admin_assignments, country_map, province_b);
+    if country_a != country_b {
+        return Some(BorderTier::Country);
+    }
+    if owner_a != owner_b {
+        return Some(BorderTier::Admin);
+    }
+    Some(BorderTier::Province)
+}
+
+fn collect_country_junction_rims(
+    junction_rims: &mut HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)>,
+    chain: &[[f32; 2]],
+) {
+    if let Some(span) = endpoint_cap_span(chain, 1.0, true) {
+        let entry = junction_rims
+            .entry(border_qpt(chain[0]))
+            .or_insert((chain[0], Vec::new()));
+        entry.1.extend_from_slice(&span);
+    }
+    let last = *chain.last().unwrap();
+    if let Some(span) = endpoint_cap_span(chain, 1.0, false) {
+        let entry = junction_rims
+            .entry(border_qpt(last))
+            .or_insert((last, Vec::new()));
+        entry.1.extend_from_slice(&span);
+    }
+}
+
+fn terrain_border_should_render(terrain_owner: Option<&str>, province_tag: &str) -> bool {
+    terrain_owner != Some(province_tag)
+}
+
+fn border_tier_id(border_tier: BorderTier) -> f32 {
+    match border_tier {
+        BorderTier::Country => 0.0,
+        BorderTier::Admin => 1.0,
+        BorderTier::Province => 2.0,
+    }
+}
+
+fn border_tier_z(border_tier: BorderTier) -> f32 {
+    match border_tier {
+        BorderTier::Country => 0.84,
+        BorderTier::Admin => 0.83,
+        BorderTier::Province => 0.82,
+    }
+}
+
 fn despawn_border_entities(commands: &mut Commands, existing: &Query<Entity, With<BorderMesh>>) {
     for entity in existing.iter() {
         commands.entity(entity).despawn();
@@ -429,8 +618,12 @@ fn recycle_mesh_buffers(mesh: &mut Mesh, scratch: &mut BorderScratch) {
         Some(VertexAttributeValues::Float32x3(values)) => values,
         _ => Vec::new(),
     };
-    scratch.colors = match mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR) {
-        Some(VertexAttributeValues::Float32x4(values)) => values,
+    scratch.offsets = match mesh.remove_attribute(ATTRIBUTE_BORDER_OFFSET) {
+        Some(VertexAttributeValues::Float32x2(values)) => values,
+        _ => Vec::new(),
+    };
+    scratch.tiers = match mesh.remove_attribute(ATTRIBUTE_BORDER_TIER) {
+        Some(VertexAttributeValues::Float32(values)) => values,
         _ => Vec::new(),
     };
     scratch.indices = match mesh.remove_indices() {
@@ -438,7 +631,8 @@ fn recycle_mesh_buffers(mesh: &mut Mesh, scratch: &mut BorderScratch) {
         _ => Vec::new(),
     };
     scratch.positions.clear();
-    scratch.colors.clear();
+    scratch.offsets.clear();
+    scratch.tiers.clear();
     scratch.indices.clear();
 }
 
@@ -703,6 +897,13 @@ mod tests {
         }
         assert_eq!(keys.len(), 2);
     }
+
+    #[test]
+    fn owned_terrain_skips_same_tag_borders() {
+        assert!(!terrain_border_should_render(Some("A"), "A"));
+        assert!(terrain_border_should_render(Some("A"), "B"));
+        assert!(terrain_border_should_render(None, "A"));
+    }
 }
 
 /// Group ring-ordered segments into connected polyline chains.
@@ -729,20 +930,22 @@ fn chain_polylines(segments: Vec<[[f32; 2]; 2]>) -> Vec<Vec<[f32; 2]>> {
     chains
 }
 
-/// Build a continuous quad-strip mesh for a polyline with miter joins at interior points.
-/// Ported from terrain.rs (same algorithm used for rivers).
-fn polyline_to_quads(
+/// Build a continuous quad-strip topology for a polyline, storing center positions plus
+/// canonical offset vectors so zoom-driven width changes can happen in the shader.
+fn polyline_to_border_strip(
     points: &[[f32; 2]],
-    half_w: f32,
     positions: &mut Vec<[f32; 3]>,
-    colors: &mut Vec<[f32; 4]>,
+    offsets: &mut Vec<[f32; 2]>,
+    tiers: &mut Vec<f32>,
     indices: &mut Vec<u32>,
-    z: f32,
+    border_tier: BorderTier,
 ) {
     if points.len() < 2 {
         return;
     }
     let n = points.len();
+    let z = border_tier_z(border_tier);
+    let tier_id = border_tier_id(border_tier);
 
     let perp = |dx: f32, dy: f32| -> (f32, f32) {
         let len = (dx * dx + dy * dy).sqrt();
@@ -761,11 +964,11 @@ fn polyline_to_quads(
         let offset = if i == 0 {
             let [x1, y1] = points[1];
             let (px, py) = perp(x1 - x, y1 - y);
-            (px * half_w, py * half_w)
+            (px, py)
         } else if i == n - 1 {
             let [xp, yp] = points[n - 2];
             let (px, py) = perp(x - xp, y - yp);
-            (px * half_w, py * half_w)
+            (px, py)
         } else {
             let [xp, yp] = points[i - 1];
             let [xn, yn] = points[i + 1];
@@ -775,29 +978,31 @@ fn polyline_to_quads(
             let my = p0y + p1y;
             let mlen = (mx * mx + my * my).sqrt();
             if mlen < 1e-9 {
-                (p0x * half_w, p0y * half_w)
+                (p0x, p0y)
             } else {
                 let mux = mx / mlen;
                 let muy = my / mlen;
                 let dot = mux * p0x + muy * p0y;
                 let scale = if dot.abs() < 1e-6 {
-                    half_w
+                    1.0
                 } else {
-                    (half_w / dot).min(4.0 * half_w)
+                    (1.0 / dot).min(4.0)
                 };
                 (mux * scale, muy * scale)
             }
         };
-        left.push([x - offset.0, y - offset.1]);
-        right.push([x + offset.0, y + offset.1]);
+        left.push([-offset.0, -offset.1]);
+        right.push([offset.0, offset.1]);
     }
 
     let base = usize_to_u32(positions.len());
     for i in 0..n {
-        positions.push([left[i][0], left[i][1], z]);
-        positions.push([right[i][0], right[i][1], z]);
-        colors.push(BORDER_COLOR);
-        colors.push(BORDER_COLOR);
+        positions.push([points[i][0], points[i][1], z]);
+        positions.push([points[i][0], points[i][1], z]);
+        offsets.push(left[i]);
+        offsets.push(right[i]);
+        tiers.push(tier_id);
+        tiers.push(tier_id);
     }
     for i in 0..(n as u32 - 1) {
         let l0 = base + i * 2;
@@ -835,9 +1040,9 @@ fn add_junction_fill(
     center: [f32; 2],
     rim_points: &[[f32; 2]],
     positions: &mut Vec<[f32; 3]>,
-    colors: &mut Vec<[f32; 4]>,
+    offsets: &mut Vec<[f32; 2]>,
+    tiers: &mut Vec<f32>,
     indices: &mut Vec<u32>,
-    z: f32,
 ) {
     if rim_points.len() < 3 {
         return;
@@ -866,11 +1071,13 @@ fn add_junction_fill(
     }
 
     let base = usize_to_u32(positions.len());
-    positions.push([center[0], center[1], z]);
-    colors.push(BORDER_COLOR);
+    positions.push([center[0], center[1], border_tier_z(BorderTier::Country)]);
+    offsets.push([0.0, 0.0]);
+    tiers.push(border_tier_id(BorderTier::Country));
     for point in &polygon {
-        positions.push([point[0], point[1], z]);
-        colors.push(BORDER_COLOR);
+        positions.push([center[0], center[1], border_tier_z(BorderTier::Country)]);
+        offsets.push([point[0] - center[0], point[1] - center[1]]);
+        tiers.push(border_tier_id(BorderTier::Country));
     }
     let poly_len = usize_to_u32(polygon.len());
     for k in 0..poly_len {
@@ -878,4 +1085,30 @@ fn add_junction_fill(
         indices.push(base + 1 + k);
         indices.push(base + 1 + ((k + 1) % poly_len));
     }
+}
+
+fn update_border_material_params(
+    camera_q: Query<&OrthographicProjection, With<Camera2d>>,
+    border_assets: Res<BorderAssets>,
+    mut materials: ResMut<Assets<BorderMaterial>>,
+    mut last_proj_scale: Local<Option<f32>>,
+) {
+    let Some(material_handle) = border_assets.material.as_ref() else {
+        return;
+    };
+    let proj_scale = camera_q
+        .get_single()
+        .map(|projection| projection.scale)
+        .unwrap_or(0.05);
+    let changed = last_proj_scale
+        .map(|last| (last - proj_scale).abs() > 0.0005)
+        .unwrap_or(true);
+    if !changed {
+        return;
+    }
+    let Some(material) = materials.get_mut(material_handle) else {
+        return;
+    };
+    material.params.proj_scale = proj_scale;
+    *last_proj_scale = Some(proj_scale);
 }

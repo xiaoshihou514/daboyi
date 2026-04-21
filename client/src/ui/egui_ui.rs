@@ -74,7 +74,11 @@ pub fn egui_ui_system(
     mut ui_state: Local<UiState>,
     mut runtime: UiRuntime,
 ) {
-    let ctx = contexts.ctx_mut();
+    *runtime.map_mode = MapMode::Map;
+    let Some(ctx) = contexts.try_ctx_mut() else {
+        runtime.ui_input_block.0 = false;
+        return;
+    };
     let pointer_pos = ctx.pointer_latest_pos();
     let mut ui_blocks_pointer = false;
 
@@ -223,29 +227,6 @@ pub fn egui_ui_system(
                     ui.colored_label(egui::Color32::RED, "⚠ 橡皮擦：点击移除归属");
                 }
             }
-
-            ui.separator();
-
-            // Map mode
-            ui.heading("地图模式");
-            ui.horizontal(|ui| {
-                if ui.button("省份").clicked() {
-                    *runtime.map_mode = MapMode::Province;
-                }
-                if ui.button("地形").clicked() {
-                    *runtime.map_mode = MapMode::Terrain;
-                }
-                if ui.button("政治").clicked() {
-                    *runtime.map_mode = MapMode::Political;
-                }
-
-                let mode_str = match *runtime.map_mode {
-                    MapMode::Province => "省份",
-                    MapMode::Terrain => "地形",
-                    MapMode::Political => "政治",
-                };
-                ui.label(format!("当前：{}", mode_str));
-            });
 
             if let Some(area_id) = editor.active_admin.0 {
                 ui.separator();

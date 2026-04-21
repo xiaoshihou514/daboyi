@@ -4,19 +4,44 @@
 //! holds the RGBA colour for one province.  The mesh's UV_0 attribute stores
 //! raw texel coordinates `[col, row]` so the fragment shader can do a direct
 //! `textureLoad` — no sampler, no normalisation.
+#![allow(dead_code)]
 
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderRef};
-use bevy::sprite::Material2d;
+use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
+use bevy::sprite::{AlphaMode2d, Material2d};
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, ShaderType)]
+pub struct ProvinceMapParams {
+    pub terrain_focus: f32,
+    pub _padding: Vec3,
+}
+
+impl Default for ProvinceMapParams {
+    fn default() -> Self {
+        Self {
+            terrain_focus: 0.0,
+            _padding: Vec3::ZERO,
+        }
+    }
+}
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub struct ProvinceMapMaterial {
     #[texture(0)]
-    pub color_texture: Handle<Image>,
+    pub political_texture: Handle<Image>,
+    #[texture(1)]
+    pub terrain_texture: Handle<Image>,
+    #[uniform(2)]
+    pub params: ProvinceMapParams,
 }
 
 impl Material2d for ProvinceMapMaterial {
     fn fragment_shader() -> ShaderRef {
         "shaders/province_map.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
     }
 }

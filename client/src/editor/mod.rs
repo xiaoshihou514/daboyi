@@ -1,10 +1,11 @@
 //! 编辑器资源和状态管理
 
 use bevy::prelude::*;
+use shared::map::MapData;
 use shared::AdminArea;
 use std::collections::{HashMap, HashSet};
 
-use crate::map::MapResource;
+use crate::map::{MapResource, MAP_BIN_PATH};
 use crate::state::AppState;
 
 mod admin;
@@ -83,6 +84,9 @@ pub struct DragState {
     pub painted_provinces: HashSet<ProvinceId>,
 }
 
+#[derive(Resource, Default)]
+pub struct NonPlayableProvinces(pub HashSet<ProvinceId>);
+
 /// 编辑器插件
 pub struct EditorPlugin;
 
@@ -97,8 +101,12 @@ impl Plugin for EditorPlugin {
             .init_resource::<NextAdminId>()
             .init_resource::<BrushTool>()
             .init_resource::<DragState>()
+            .init_resource::<NonPlayableProvinces>()
             .init_resource::<SpatialHash>()
-            .add_systems(Startup, load_coloring_on_startup)
+            .add_systems(
+                Startup,
+                (load_coloring_on_startup, load_non_playable_provinces),
+            )
             .add_systems(
                 Update,
                 (build_spatial_hash,)
@@ -129,6 +137,21 @@ impl Plugin for EditorPlugin {
 /// 启动时加载着色文件
 fn load_coloring_on_startup(mut commands: Commands) {
     load_coloring(&mut commands);
+}
+
+fn load_non_playable_provinces(mut commands: Commands) {
+    let Ok(map) = MapData::load(MAP_BIN_PATH) else {
+        return;
+    };
+
+    let province_ids = map
+        .provinces
+        .iter()
+        .filter(|province| province.topography.contains("wasteland"))
+        .map(|province| province.id)
+        .collect();
+
+    commands.insert_resource(NonPlayableProvinces(province_ids));
 }
 
 fn build_spatial_hash(map: Option<Res<MapResource>>, mut spatial_hash: ResMut<SpatialHash>) {

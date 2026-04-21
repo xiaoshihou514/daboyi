@@ -13,6 +13,9 @@ pub struct UiPass;
 
 const FONT_PATH: &str = "fonts/NotoSansCJKsc-Regular.otf";
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf");
+const INITIAL_CAMERA_SCALE: f32 = 0.15;
+const INITIAL_CAMERA_X: f32 = 105.0;
+const INITIAL_CAMERA_Y: f32 = 35.0;
 
 /// Holds the loaded CJK font handle (Simplified Chinese).
 #[derive(Resource)]
@@ -48,7 +51,14 @@ fn load_font(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn setup_camera(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((
+        Camera2d,
+        Transform::from_xyz(INITIAL_CAMERA_X, INITIAL_CAMERA_Y, 0.0),
+        OrthographicProjection {
+            scale: INITIAL_CAMERA_SCALE,
+            ..OrthographicProjection::default_2d()
+        },
+    ));
 }
 
 fn enable_ime_input(mut windows: Query<&mut Window>) {
@@ -59,7 +69,9 @@ fn enable_ime_input(mut windows: Query<&mut Window>) {
 }
 
 fn configure_egui_fonts(mut contexts: EguiContexts) {
-    let ctx = contexts.ctx_mut();
+    let Some(ctx) = contexts.try_ctx_mut() else {
+        return;
+    };
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "noto-sans-cjk".to_string(),

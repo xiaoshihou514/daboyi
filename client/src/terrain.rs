@@ -1,12 +1,23 @@
+use crate::editor::{
+    province_country_tag, AdminAreas, AdminMap, Countries, CountryMap, NonPlayableProvinces,
+};
+use crate::map::{BorderVersion, ColoringVersion, MapResource};
+use crate::state::AppState;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
-use shared::conv::{u32_to_usize, usize_to_u32};
+use serde::{Deserialize, Serialize};
+use shared::conv::{f32_to_i32, u32_to_usize, usize_to_u32};
 use shared::map::{RiverData, TerrainData};
 use std::collections::HashMap;
+use std::fs;
+use std::io;
 
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
 const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
+const TERRAIN_ADJACENCY_BIN_PATH: &str = "assets/terrain_adjacency.bin";
+const TERRAIN_ADJACENCY_CACHE_VERSION: u32 = 3;
+const SURROUND_THRESHOLD: f32 = 0.8;
 /// Three copies of the 360°-wide world for seamless horizontal wrapping.
 const WORLD_OFFSETS: [f32; 3] = [-360.0, 0.0, 360.0];
 
@@ -17,9 +28,80 @@ const RIVER_COLOR: [f32; 4] = [0.18, 0.47, 0.75, 0.85];
 
 pub struct TerrainPlugin;
 
+#[derive(Clone)]
+struct TerrainPolygonMeta {
+    original_color: [f32; 4],
+    vertex_count: usize,
+    boundary_segments: Vec<[[f32; 2]; 2]>,
+}
+
+#[derive(Resource)]
+pub struct TerrainMeshData {
+    pub mesh_handle: Handle<Mesh>,
+    polygons: Vec<TerrainPolygonMeta>,
+    total_vertices: usize,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct TerrainPolygonAdjacency {
+    pub adjacent_provinces: Vec<u32>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TerrainProvinceBorder {
+    pub terrain_index: u32,
+    pub province_id: u32,
+    pub chains: Vec<Vec<[f32; 2]>>,
+}
+
+#[derive(Resource, Default)]
+pub struct TerrainAdjacencyData {
+    pub polygons: Vec<TerrainPolygonAdjacency>,
+    pub borders: Vec<TerrainProvinceBorder>,
+    pub component_ids: Vec<u32>,
+    pub water_polygons: Vec<bool>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainOwnerResolution {
+    pub owner_tag: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TerrainAdjacencyCache {
+    version: u32,
+    province_count: u32,
+    terrain_polygon_count: u32,
+    polygons: Vec<TerrainPolygonAdjacency>,
+    borders: Vec<TerrainProvinceBorder>,
+    component_ids: Vec<u32>,
+    water_polygons: Vec<bool>,
+}
+
+#[derive(Default)]
+struct LastTerrainVisualState {
+    border_version: u64,
+    coloring_version: u64,
+}
+
+#[derive(Resource, Default)]
+struct TerrainAdjacencyBuildTask {
+    handle: Option<std::thread::JoinHandle<TerrainAdjacencyData>>,
+    province_count: u32,
+    terrain_polygon_count: u32,
+}
+
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (load_terrain, spawn_rivers));
+        app.init_resource::<TerrainAdjacencyData>()
+            .init_resource::<TerrainAdjacencyBuildTask>()
+            .add_systems(Startup, (load_terrain, spawn_rivers))
+            .add_systems(
+                Update,
+                (compute_terrain_adjacency, update_terrain_visuals)
+                    .chain()
+                    .run_if(in_state(AppState::Editing)),
+            );
     }
 }
 
@@ -45,6 +127,7 @@ fn load_terrain(
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(total_verts);
     let mut colors: Vec<[f32; 4]> = Vec::with_capacity(total_verts);
     let mut indices: Vec<u32> = Vec::with_capacity(total_idxs);
+    let mut polygon_meta: Vec<TerrainPolygonMeta> = Vec::with_capacity(terrain.polygons.len());
 
     for poly in &terrain.polygons {
         let base = usize_to_u32(positions.len());
@@ -55,6 +138,11 @@ fn load_terrain(
         for &i in &poly.indices {
             indices.push(i + base);
         }
+        polygon_meta.push(TerrainPolygonMeta {
+            original_color: poly.color,
+            vertex_count: poly.vertices.len(),
+            boundary_segments: terrain_polygon_boundary_segments(poly),
+        });
     }
 
     let mut mesh = Mesh::new(
@@ -72,15 +160,613 @@ fn load_terrain(
         commands.spawn((
             Mesh2d(handle.clone()),
             MeshMaterial2d(material.clone()),
-            Transform::from_xyz(x_off, 0.0, 1.0),
+            Transform::from_xyz(x_off, 0.0, -0.2),
         ));
     }
+
+    commands.insert_resource(TerrainMeshData {
+        mesh_handle: handle,
+        polygons: polygon_meta,
+        total_vertices: total_verts,
+    });
 
     eprintln!(
         "Terrain: {} polygons, {} vertices",
         terrain.polygons.len(),
         total_verts,
     );
+}
+
+fn compute_terrain_adjacency(
+    map: Option<Res<MapResource>>,
+    terrain_mesh: Option<Res<TerrainMeshData>>,
+    mut terrain_adjacency: ResMut<TerrainAdjacencyData>,
+    mut build_task: ResMut<TerrainAdjacencyBuildTask>,
+) {
+    if !terrain_adjacency.polygons.is_empty() {
+        return;
+    }
+    let (Some(map), Some(terrain_mesh)) = (map, terrain_mesh) else {
+        return;
+    };
+    let province_count = usize_to_u32(map.0.provinces.len());
+    let terrain_polygon_count = usize_to_u32(terrain_mesh.polygons.len());
+
+    if let Some(handle) = build_task.handle.as_ref() {
+        if !handle.is_finished() {
+            return;
+        }
+        let handle = build_task.handle.take().unwrap();
+        let adjacency = match handle.join() {
+            Ok(adjacency) => adjacency,
+            Err(_) => {
+                eprintln!("Terrain adjacency: background build thread panicked");
+                build_task.province_count = 0;
+                build_task.terrain_polygon_count = 0;
+                return;
+            }
+        };
+        *terrain_adjacency = adjacency;
+        if let Err(error) = save_cached_terrain_adjacency(
+            build_task.province_count,
+            build_task.terrain_polygon_count,
+            &terrain_adjacency,
+        ) {
+            eprintln!("Failed to save {TERRAIN_ADJACENCY_BIN_PATH}: {error}");
+        }
+        build_task.province_count = 0;
+        build_task.terrain_polygon_count = 0;
+        eprintln!(
+            "Terrain adjacency: ready ({} terrain borders)",
+            terrain_adjacency.borders.len()
+        );
+        return;
+    }
+
+    match load_cached_terrain_adjacency(province_count, terrain_polygon_count) {
+        Ok(Some(cache)) => {
+            eprintln!(
+                "Loaded terrain adjacency cache: {} polygons, {} borders",
+                cache.polygons.len(),
+                cache.borders.len()
+            );
+            *terrain_adjacency = cache;
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("Failed to load {TERRAIN_ADJACENCY_BIN_PATH}: {error}");
+        }
+    }
+
+    if build_task.province_count != 0 || build_task.terrain_polygon_count != 0 {
+        return;
+    }
+
+    eprintln!(
+        "Terrain adjacency: building cache for {} polygons",
+        terrain_mesh.polygons.len()
+    );
+    let province_boundaries: Vec<(u32, Vec<Vec<[f32; 2]>>)> = map
+        .0
+        .provinces
+        .iter()
+        .map(|province| (province.id, province.boundary.clone()))
+        .collect();
+    let terrain_boundaries: Vec<Vec<[[f32; 2]; 2]>> = terrain_mesh
+        .polygons
+        .iter()
+        .map(|polygon| polygon.boundary_segments.clone())
+        .collect();
+    let terrain_is_water: Vec<bool> = terrain_mesh
+        .polygons
+        .iter()
+        .map(|polygon| is_water_terrain_color(polygon.original_color))
+        .collect();
+    build_task.province_count = province_count;
+    build_task.terrain_polygon_count = terrain_polygon_count;
+    build_task.handle = Some(std::thread::spawn(move || {
+        build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water)
+    }));
+}
+
+fn build_terrain_adjacency(
+    province_boundaries: &[(u32, Vec<Vec<[f32; 2]>>)],
+    terrain_boundaries: &[Vec<[[f32; 2]; 2]>],
+    terrain_is_water: &[bool],
+) -> TerrainAdjacencyData {
+    let mut province_edges: HashMap<[(i32, i32); 2], Vec<u32>> = HashMap::new();
+    for (province_id, rings) in province_boundaries {
+        for ring in rings {
+            let ring_len = ring.len();
+            for index in 0..ring_len {
+                let segment = [ring[index], ring[(index + 1) % ring_len]];
+                province_edges
+                    .entry(quantized_segment_key(segment))
+                    .or_default()
+                    .push(*province_id);
+            }
+        }
+    }
+
+    let mut terrain_pair_segments: HashMap<(u32, u32), Vec<[[f32; 2]; 2]>> = HashMap::new();
+    let mut terrain_edges: HashMap<[(i32, i32); 2], Vec<u32>> = HashMap::new();
+    for (terrain_index, segments) in terrain_boundaries.iter().enumerate() {
+        let terrain_index = usize_to_u32(terrain_index);
+        for &segment in segments {
+            terrain_edges
+                .entry(quantized_segment_key(segment))
+                .or_default()
+                .push(terrain_index);
+            if let Some(province_ids) = province_edges.get(&quantized_segment_key(segment)) {
+                for province_id in province_ids {
+                    terrain_pair_segments
+                        .entry((terrain_index, *province_id))
+                        .or_default()
+                        .push(segment);
+                }
+            }
+        }
+    }
+
+    let mut polygons = vec![TerrainPolygonAdjacency::default(); terrain_boundaries.len()];
+    let mut borders = Vec::new();
+    for ((terrain_index, province_id), segments) in terrain_pair_segments {
+        let chains = merge_unordered_segments(segments);
+        if chains.is_empty() {
+            continue;
+        }
+        polygons[u32_to_usize(terrain_index)]
+            .adjacent_provinces
+            .push(province_id);
+        borders.push(TerrainProvinceBorder {
+            terrain_index,
+            province_id,
+            chains,
+        });
+    }
+
+    for polygon in &mut polygons {
+        polygon.adjacent_provinces.sort_unstable();
+        polygon.adjacent_provinces.dedup();
+    }
+
+    let component_ids =
+        terrain_component_ids(terrain_boundaries.len(), terrain_edges, terrain_is_water);
+
+    TerrainAdjacencyData {
+        polygons,
+        borders,
+        component_ids,
+        water_polygons: terrain_is_water.to_vec(),
+    }
+}
+
+fn load_cached_terrain_adjacency(
+    province_count: u32,
+    terrain_polygon_count: u32,
+) -> io::Result<Option<TerrainAdjacencyData>> {
+    let bytes = match fs::read(TERRAIN_ADJACENCY_BIN_PATH) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let cache: TerrainAdjacencyCache = bincode::deserialize(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if cache.version != TERRAIN_ADJACENCY_CACHE_VERSION
+        || cache.province_count != province_count
+        || cache.terrain_polygon_count != terrain_polygon_count
+    {
+        return Ok(None);
+    }
+    Ok(Some(TerrainAdjacencyData {
+        polygons: cache.polygons,
+        borders: cache.borders,
+        component_ids: cache.component_ids,
+        water_polygons: cache.water_polygons,
+    }))
+}
+
+fn save_cached_terrain_adjacency(
+    province_count: u32,
+    terrain_polygon_count: u32,
+    terrain_adjacency: &TerrainAdjacencyData,
+) -> io::Result<()> {
+    let bytes = bincode::serialize(&TerrainAdjacencyCache {
+        version: TERRAIN_ADJACENCY_CACHE_VERSION,
+        province_count,
+        terrain_polygon_count,
+        polygons: terrain_adjacency.polygons.clone(),
+        borders: terrain_adjacency.borders.clone(),
+        component_ids: terrain_adjacency.component_ids.clone(),
+        water_polygons: terrain_adjacency.water_polygons.clone(),
+    })
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    fs::write(TERRAIN_ADJACENCY_BIN_PATH, bytes)
+}
+
+fn update_terrain_visuals(
+    terrain_mesh: Option<Res<TerrainMeshData>>,
+    terrain_adjacency: Res<TerrainAdjacencyData>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    countries: Res<Countries>,
+    admin_areas: Res<AdminAreas>,
+    admin_map: Res<AdminMap>,
+    country_map: Res<CountryMap>,
+    non_playable_provinces: Res<NonPlayableProvinces>,
+    border_version: Res<BorderVersion>,
+    coloring_version: Res<ColoringVersion>,
+    mut last_state: Local<LastTerrainVisualState>,
+) {
+    let Some(terrain_mesh) = terrain_mesh else {
+        return;
+    };
+    if terrain_adjacency.polygons.len() != terrain_mesh.polygons.len() {
+        return;
+    }
+    let changed = terrain_adjacency.is_changed()
+        || admin_map.is_changed()
+        || country_map.is_changed()
+        || last_state.border_version != border_version.0
+        || last_state.coloring_version != coloring_version.0;
+    if !changed {
+        return;
+    }
+
+    let Some(mesh) = meshes.get_mut(&terrain_mesh.mesh_handle) else {
+        return;
+    };
+
+    let country_color_lookup: HashMap<&str, [f32; 4]> = countries
+        .0
+        .iter()
+        .map(|country| (country.tag.as_str(), country.color))
+        .collect();
+
+    let mut colors = Vec::with_capacity(terrain_mesh.total_vertices);
+    let owner_tint_strength = 0.35;
+    for (terrain_index, polygon) in terrain_mesh.polygons.iter().enumerate() {
+        let display_color = terrain_display_color(
+            usize_to_u32(terrain_index),
+            polygon.original_color,
+            owner_tint_strength,
+            &terrain_adjacency,
+            &country_color_lookup,
+            &admin_areas.0,
+            &admin_map,
+            &country_map,
+            &non_playable_provinces,
+        );
+        for _ in 0..polygon.vertex_count {
+            colors.push(display_color);
+        }
+    }
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    last_state.border_version = border_version.0;
+    last_state.coloring_version = coloring_version.0;
+}
+
+fn terrain_display_color(
+    terrain_index: u32,
+    original_color: [f32; 4],
+    owner_tint_strength: f32,
+    terrain_adjacency: &TerrainAdjacencyData,
+    country_color_lookup: &HashMap<&str, [f32; 4]>,
+    admin_areas: &[shared::AdminArea],
+    admin_map: &AdminMap,
+    country_map: &CountryMap,
+    non_playable_provinces: &NonPlayableProvinces,
+) -> [f32; 4] {
+    if is_water_terrain_color(original_color) {
+        return original_color;
+    }
+    let Some(resolution) = terrain_owner_resolution(
+        terrain_index,
+        terrain_adjacency,
+        admin_areas,
+        admin_map,
+        country_map,
+        non_playable_provinces,
+    ) else {
+        return original_color;
+    };
+    let Some(ref tag) = resolution.owner_tag else {
+        return original_color;
+    };
+    let owner_color = country_color_lookup
+        .get(tag.as_str())
+        .copied()
+        .unwrap_or([0.55, 0.55, 0.55, 1.0]);
+    mix_colors(original_color, owner_color, owner_tint_strength)
+}
+
+pub fn terrain_polygon_surrounding_tag(
+    terrain_index: u32,
+    terrain_adjacency: &TerrainAdjacencyData,
+    admin_areas: &[shared::AdminArea],
+    admin_map: &AdminMap,
+    country_map: &CountryMap,
+    non_playable_provinces: &NonPlayableProvinces,
+) -> Option<String> {
+    terrain_owner_resolution(
+        terrain_index,
+        terrain_adjacency,
+        admin_areas,
+        admin_map,
+        country_map,
+        non_playable_provinces,
+    )
+    .and_then(|resolution| resolution.owner_tag)
+}
+
+pub fn terrain_owner_resolution(
+    terrain_index: u32,
+    terrain_adjacency: &TerrainAdjacencyData,
+    admin_areas: &[shared::AdminArea],
+    admin_map: &AdminMap,
+    country_map: &CountryMap,
+    non_playable_provinces: &NonPlayableProvinces,
+) -> Option<TerrainOwnerResolution> {
+    let component_id = *terrain_adjacency
+        .component_ids
+        .get(u32_to_usize(terrain_index))?;
+    let mut total_boundary = 0.0_f32;
+    let mut tag_lengths: HashMap<String, f32> = HashMap::new();
+    for border in &terrain_adjacency.borders {
+        if terrain_adjacency
+            .component_ids
+            .get(u32_to_usize(border.terrain_index))
+            .copied()
+            != Some(component_id)
+        {
+            continue;
+        }
+        if non_playable_provinces.0.contains(&border.province_id) {
+            continue;
+        }
+        let border_length = border
+            .chains
+            .iter()
+            .map(|chain| chain_length(chain))
+            .sum::<f32>();
+        total_boundary += border_length;
+        if let Some(tag) =
+            province_country_tag(admin_areas, admin_map, country_map, border.province_id)
+        {
+            *tag_lengths.entry(tag.to_owned()).or_insert(0.0) += border_length;
+        }
+    }
+    if total_boundary <= 1e-6 {
+        return Some(TerrainOwnerResolution { owner_tag: None });
+    }
+    let mut tag_lengths_vec: Vec<(String, f32)> = tag_lengths.into_iter().collect();
+    tag_lengths_vec.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let winner = tag_lengths_vec.first().cloned();
+    let (winner_tag, covered_length) = match winner {
+        Some((tag, length)) => (Some(tag), length),
+        None => (None, 0.0),
+    };
+    let coverage_ratio = if total_boundary <= 1e-6 {
+        0.0
+    } else {
+        covered_length / total_boundary
+    };
+    let owner_tag = if coverage_ratio >= SURROUND_THRESHOLD {
+        winner_tag.clone()
+    } else {
+        None
+    };
+    Some(TerrainOwnerResolution { owner_tag })
+}
+
+pub fn terrain_polygon_is_water(
+    terrain_index: u32,
+    terrain_adjacency: &TerrainAdjacencyData,
+) -> bool {
+    terrain_adjacency
+        .water_polygons
+        .get(u32_to_usize(terrain_index))
+        .copied()
+        .unwrap_or(false)
+}
+
+fn mix_colors(base: [f32; 4], overlay: [f32; 4], overlay_strength: f32) -> [f32; 4] {
+    let base_strength = 1.0 - overlay_strength;
+    [
+        base[0] * base_strength + overlay[0] * overlay_strength,
+        base[1] * base_strength + overlay[1] * overlay_strength,
+        base[2] * base_strength + overlay[2] * overlay_strength,
+        1.0,
+    ]
+}
+
+fn chain_length(chain: &[[f32; 2]]) -> f32 {
+    chain.windows(2).fold(0.0, |acc, segment| {
+        let dx = segment[1][0] - segment[0][0];
+        let dy = segment[1][1] - segment[0][1];
+        acc + (dx * dx + dy * dy).sqrt()
+    })
+}
+
+fn same_terrain_color(color: [f32; 4], expected: [f32; 4]) -> bool {
+    (0..4).all(|index| (color[index] - expected[index]).abs() < 0.0001)
+}
+
+fn is_water_terrain_color(color: [f32; 4]) -> bool {
+    [
+        [0.027, 0.106, 0.314, 1.0],
+        [0.039, 0.165, 0.416, 1.0],
+        [0.051, 0.227, 0.604, 1.0],
+        [0.102, 0.333, 0.722, 1.0],
+        [0.071, 0.282, 0.659, 1.0],
+        [0.157, 0.439, 0.816, 1.0],
+        [0.102, 0.384, 0.753, 1.0],
+        [0.847, 0.800, 0.667, 1.0],
+    ]
+    .into_iter()
+    .any(|expected| same_terrain_color(color, expected))
+}
+
+fn quantized_segment_key(segment: [[f32; 2]; 2]) -> [(i32, i32); 2] {
+    let start = quantized_point(segment[0]);
+    let end = quantized_point(segment[1]);
+    if start <= end {
+        [start, end]
+    } else {
+        [end, start]
+    }
+}
+
+fn quantized_point(point: [f32; 2]) -> (i32, i32) {
+    (
+        f32_to_i32((point[0] * 100.0).round()),
+        f32_to_i32((point[1] * 100.0).round()),
+    )
+}
+
+fn terrain_component_ids(
+    polygon_count: usize,
+    terrain_edges: HashMap<[(i32, i32); 2], Vec<u32>>,
+    terrain_is_water: &[bool],
+) -> Vec<u32> {
+    let mut adjacency: Vec<Vec<u32>> = vec![Vec::new(); polygon_count];
+    for polygons in terrain_edges.into_values() {
+        if polygons.len() < 2 {
+            continue;
+        }
+        for left_index in 0..polygons.len() {
+            for right_index in left_index + 1..polygons.len() {
+                let left = polygons[left_index];
+                let right = polygons[right_index];
+                if terrain_is_water[u32_to_usize(left)] != terrain_is_water[u32_to_usize(right)] {
+                    continue;
+                }
+                adjacency[u32_to_usize(left)].push(right);
+                adjacency[u32_to_usize(right)].push(left);
+            }
+        }
+    }
+
+    let mut component_ids = vec![u32::MAX; polygon_count];
+    let mut next_component = 0_u32;
+    for polygon_index in 0..polygon_count {
+        if component_ids[polygon_index] != u32::MAX {
+            continue;
+        }
+        let mut stack = vec![usize_to_u32(polygon_index)];
+        component_ids[polygon_index] = next_component;
+        while let Some(current) = stack.pop() {
+            for &neighbor in &adjacency[u32_to_usize(current)] {
+                let neighbor_index = u32_to_usize(neighbor);
+                if component_ids[neighbor_index] != u32::MAX {
+                    continue;
+                }
+                component_ids[neighbor_index] = next_component;
+                stack.push(neighbor);
+            }
+        }
+        next_component = next_component.saturating_add(1);
+    }
+    component_ids
+}
+
+fn terrain_polygon_boundary_segments(poly: &shared::map::TerrainPolygon) -> Vec<[[f32; 2]; 2]> {
+    let mut edge_counts: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut edge_points: HashMap<(u32, u32), [[f32; 2]; 2]> = HashMap::new();
+
+    for triangle in poly.indices.chunks_exact(3) {
+        for &(start, end) in &[
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ] {
+            let key = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            *edge_counts.entry(key).or_insert(0) += 1;
+            edge_points.entry(key).or_insert([
+                poly.vertices[u32_to_usize(start)],
+                poly.vertices[u32_to_usize(end)],
+            ]);
+        }
+    }
+
+    edge_counts
+        .into_iter()
+        .filter_map(|(key, count)| {
+            if count == 1 {
+                edge_points.get(&key).copied()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn merge_unordered_segments(segments: Vec<[[f32; 2]; 2]>) -> Vec<Vec<[f32; 2]>> {
+    let mut chains: Vec<Vec<[f32; 2]>> = segments
+        .into_iter()
+        .map(|segment| vec![segment[0], segment[1]])
+        .collect();
+
+    'restart: loop {
+        let chain_count = chains.len();
+        for left_index in 0..chain_count {
+            for right_index in 0..chain_count {
+                if left_index == right_index {
+                    continue;
+                }
+                let left_first = quantized_point(chains[left_index][0]);
+                let left_last = quantized_point(*chains[left_index].last().unwrap());
+                let right_first = quantized_point(chains[right_index][0]);
+                let right_last = quantized_point(*chains[right_index].last().unwrap());
+
+                if left_last == right_first {
+                    let tail = chains[right_index][1..].to_vec();
+                    chains[left_index].extend(tail);
+                    chains.remove(right_index);
+                    continue 'restart;
+                }
+                if left_last == right_last {
+                    let mut reversed = chains[right_index].clone();
+                    reversed.reverse();
+                    chains[left_index].extend_from_slice(&reversed[1..]);
+                    chains.remove(right_index);
+                    continue 'restart;
+                }
+                if left_first == right_last {
+                    let prefix = chains[right_index][..chains[right_index].len() - 1].to_vec();
+                    let tail = std::mem::take(&mut chains[left_index]);
+                    let mut new_chain = prefix;
+                    new_chain.extend(tail);
+                    chains[left_index] = new_chain;
+                    chains.remove(right_index);
+                    continue 'restart;
+                }
+                if left_first == right_first {
+                    let mut reversed = chains[right_index].clone();
+                    reversed.reverse();
+                    let tail = std::mem::take(&mut chains[left_index]);
+                    reversed.extend_from_slice(&tail[1..]);
+                    chains[left_index] = reversed;
+                    chains.remove(right_index);
+                    continue 'restart;
+                }
+            }
+        }
+        break;
+    }
+
+    chains
 }
 
 /// Apply one iteration of Chaikin's curve subdivision to smooth a polyline.
@@ -357,7 +1043,7 @@ fn spawn_rivers(
                 &mut positions,
                 &mut colors,
                 &mut indices,
-                0.5,
+                -0.1,
             );
         }
 
@@ -374,7 +1060,7 @@ fn spawn_rivers(
     for (node_id, mut rim_points) in junction_rims {
         rim_points.push(river_data.nodes[u32_to_usize(node_id)].position);
         if rim_points.len() >= 4 {
-            add_junction_fill(&rim_points, &mut positions, &mut colors, &mut indices, 0.5);
+            add_junction_fill(&rim_points, &mut positions, &mut colors, &mut indices, -0.1);
         }
     }
 
@@ -397,7 +1083,7 @@ fn spawn_rivers(
         commands.spawn((
             Mesh2d(handle.clone()),
             MeshMaterial2d(material.clone()),
-            Transform::from_xyz(x_off, 0.0, 0.5),
+            Transform::from_xyz(x_off, 0.0, -0.1),
         ));
     }
 
@@ -406,4 +1092,140 @@ fn spawn_rivers(
         river_data.edges.len(),
         indices.len() / 6,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn surrounding_tag_requires_eighty_percent_boundary_coverage() {
+        let admin_areas = vec![
+            shared::AdminArea {
+                id: 1,
+                name: "A1".to_owned(),
+                country_tag: "A".to_owned(),
+                parent_id: None,
+                color: None,
+            },
+            shared::AdminArea {
+                id: 2,
+                name: "B1".to_owned(),
+                country_tag: "B".to_owned(),
+                parent_id: None,
+                color: None,
+            },
+        ];
+        let admin_map = AdminMap(HashMap::from([(10, 1), (11, 1), (12, 2)]));
+        let country_map = CountryMap::default();
+        let mostly_a = TerrainAdjacencyData {
+            polygons: vec![TerrainPolygonAdjacency {
+                adjacent_provinces: vec![10, 11, 12],
+            }],
+            component_ids: vec![0],
+            water_polygons: vec![false],
+            borders: vec![
+                TerrainProvinceBorder {
+                    terrain_index: 0,
+                    province_id: 10,
+                    chains: vec![vec![[0.0, 0.0], [4.0, 0.0]]],
+                },
+                TerrainProvinceBorder {
+                    terrain_index: 0,
+                    province_id: 11,
+                    chains: vec![vec![[4.0, 0.0], [8.0, 0.0]]],
+                },
+                TerrainProvinceBorder {
+                    terrain_index: 0,
+                    province_id: 12,
+                    chains: vec![vec![[8.0, 0.0], [10.0, 0.0]]],
+                },
+            ],
+        };
+
+        assert_eq!(
+            terrain_polygon_surrounding_tag(
+                0,
+                &mostly_a,
+                &admin_areas,
+                &admin_map,
+                &country_map,
+                &NonPlayableProvinces::default(),
+            ),
+            Some(String::from("A"))
+        );
+        assert_eq!(
+            terrain_polygon_surrounding_tag(
+                0,
+                &TerrainAdjacencyData {
+                    polygons: mostly_a.polygons.clone(),
+                    component_ids: mostly_a.component_ids.clone(),
+                    water_polygons: mostly_a.water_polygons.clone(),
+                    borders: vec![
+                        TerrainProvinceBorder {
+                            terrain_index: 0,
+                            province_id: 10,
+                            chains: vec![vec![[0.0, 0.0], [3.0, 0.0]]],
+                        },
+                        TerrainProvinceBorder {
+                            terrain_index: 0,
+                            province_id: 11,
+                            chains: vec![vec![[3.0, 0.0], [6.0, 0.0]]],
+                        },
+                        TerrainProvinceBorder {
+                            terrain_index: 0,
+                            province_id: 12,
+                            chains: vec![vec![[6.0, 0.0], [10.0, 0.0]]],
+                        },
+                    ],
+                },
+                &admin_areas,
+                &admin_map,
+                &country_map,
+                &NonPlayableProvinces::default(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn water_tiles_keep_original_color() {
+        let admin_areas = vec![shared::AdminArea {
+            id: 1,
+            name: "A1".to_owned(),
+            country_tag: "A".to_owned(),
+            parent_id: None,
+            color: None,
+        }];
+        let admin_map = AdminMap(HashMap::from([(10, 1)]));
+        let country_map = CountryMap::default();
+        let terrain_adjacency = TerrainAdjacencyData {
+            polygons: vec![TerrainPolygonAdjacency {
+                adjacent_provinces: vec![10],
+            }],
+            component_ids: vec![0],
+            water_polygons: vec![true],
+            borders: vec![TerrainProvinceBorder {
+                terrain_index: 0,
+                province_id: 10,
+                chains: vec![vec![[0.0, 0.0], [10.0, 0.0]]],
+            }],
+        };
+        let original = [0.039, 0.165, 0.416, 1.0];
+
+        assert_eq!(
+            terrain_display_color(
+                0,
+                original,
+                0.35,
+                &terrain_adjacency,
+                &HashMap::from([("A", [1.0, 0.0, 0.0, 1.0])]),
+                &admin_areas,
+                &admin_map,
+                &country_map,
+                &NonPlayableProvinces::default(),
+            ),
+            original
+        );
+    }
 }
