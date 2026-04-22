@@ -1,5 +1,6 @@
 //! 编辑器资源和状态管理
 
+use crate::memory::MemoryMonitor;
 use bevy::prelude::*;
 use shared::map::MapData;
 use shared::AdminArea;
@@ -137,6 +138,8 @@ impl Plugin for EditorPlugin {
 /// 启动时加载着色文件
 fn load_coloring_on_startup(mut commands: Commands) {
     load_coloring(&mut commands);
+    // 监控资源大小
+    MemoryMonitor::log_memory_usage("After loading coloring");
 }
 
 fn load_non_playable_provinces(mut commands: Commands) {
@@ -159,5 +162,7 @@ fn build_spatial_hash(map: Option<Res<MapResource>>, mut spatial_hash: ResMut<Sp
     if !map.is_changed() && !spatial_hash.is_added() {
         return;
     }
+    MemoryMonitor::log_memory_usage("Before building spatial hash");
     *spatial_hash = SpatialHash::build(&map.0.provinces);
+    MemoryMonitor::log_memory_usage("After building spatial hash");
 }

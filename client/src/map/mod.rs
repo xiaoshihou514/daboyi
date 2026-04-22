@@ -3,6 +3,7 @@ mod color;
 mod interact;
 mod material;
 
+use crate::memory::MemoryMonitor;
 use bevy::ecs::system::SystemParam;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -35,6 +36,15 @@ pub const MAP_WIDTH: f32 = 360.0;
 /// Province tag (lowercased) → Chinese display name.
 #[derive(Resource, Default)]
 pub struct ProvinceNames(pub HashMap<String, String>);
+
+/// 颜色更新队列资源，用于批量处理颜色更新
+#[derive(Resource, Default)]
+pub struct ColorUpdateQueue {
+    /// 需要更新颜色的省份ID
+    pub queue: HashSet<usize>,
+    /// 是否需要完全重建
+    pub full_rebuild: bool,
+}
 
 pub struct MapPlugin;
 
@@ -89,6 +99,12 @@ pub struct ProvinceColorBuffer {
 impl ExtractResource for ProvinceColorBuffer {
     type Source = ProvinceColorBuffer;
     fn extract_resource(source: &Self::Source) -> Self {
+        MemoryMonitor::log_estimated_allocation(
+            "ProvinceColorBuffer render clone",
+            source.data.capacity(),
+            0,
+            "ExtractResource clones the full CPU-side texture buffer into the render world",
+        );
         source.clone()
     }
 }
@@ -159,6 +175,7 @@ impl Plugin for MapPlugin {
             .insert_resource(BorderDirty::default())
             .insert_resource(PaintDebounce::default())
             .insert_resource(ProvinceNames::default())
+            .insert_resource(ColorUpdateQueue::default())
             .add_systems(Startup, load_map)
             .add_systems(
                 Update,
@@ -207,6 +224,8 @@ fn load_map(
     mut images: ResMut<Assets<Image>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    MemoryMonitor::log_memory_usage("Before loading map");
+    MemoryMonitor::log_detailed_memory_usage("Before loading map");
     let map_data = match MapData::load(MAP_BIN_PATH) {
         Ok(d) => d,
         Err(e) => {
@@ -225,6 +244,9 @@ fn load_map(
         "Loaded map: {} provinces",
         map_data.provinces.len()
     );
+    MemoryMonitor::log_memory_usage("After loading map data");
+    MemoryMonitor::log_detailed_memory_usage("After loading map data");
+    MemoryMonitor::log_collection_size("Map provinces", &map_data.provinces);
 
     let n = map_data.provinces.len();
     let tex_height = (n + TEX_WIDTH - 1) / TEX_WIDTH;
@@ -279,6 +301,35 @@ fn load_map(
         all_positions.len(),
         all_indices.len() / 3
     );
+    let map_mesh_cpu_bytes = all_positions
+        .capacity()
+        .saturating_mul(std::mem::size_of::<[f32; 3]>())
+        .saturating_add(
+            all_normals
+                .capacity()
+                .saturating_mul(std::mem::size_of::<[f32; 3]>()),
+        )
+        .saturating_add(
+            all_uvs
+                .capacity()
+                .saturating_mul(std::mem::size_of::<[f32; 2]>()),
+        )
+        .saturating_add(
+            all_indices
+                .capacity()
+                .saturating_mul(std::mem::size_of::<u32>()),
+        );
+    MemoryMonitor::log_estimated_allocation(
+        "Map mesh asset",
+        map_mesh_cpu_bytes,
+        map_mesh_cpu_bytes,
+        "MAIN_WORLD mesh bytes plus matching GPU vertex/index buffers",
+    );
+    MemoryMonitor::log_vec_allocation("Map mesh positions", &all_positions);
+    MemoryMonitor::log_vec_allocation("Map mesh normals", &all_normals);
+    MemoryMonitor::log_vec_allocation("Map mesh uvs", &all_uvs);
+    MemoryMonitor::log_vec_allocation("Map mesh indices", &all_indices);
+    MemoryMonitor::log_memory_usage("After collecting mesh data");
 
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -290,6 +341,7 @@ fn load_map(
     mesh.insert_indices(Indices::U32(all_indices));
 
     let mesh_handle = meshes.add(mesh);
+    MemoryMonitor::log_memory_usage("After creating mesh");
 
     // Province colour lookup texture: 256 × ceil(N/256), Rgba8Unorm.
     // We keep a separate clone of pixel_data in ProvinceColorBuffer — the Image
@@ -297,6 +349,33 @@ fn load_map(
     // colour updates go through `write_texture` in update_province_texture_gpu
     // so that the GpuImage (and its TextureView) is never recreated.
     let color_buf_data = political_pixel_data.clone();
+    let texture_bytes = TEX_WIDTH * tex_height * 4;
+    MemoryMonitor::log_estimated_allocation(
+        "Province political image asset",
+        texture_bytes,
+        texture_bytes,
+        "political texture bytes retained in Assets<Image> plus GPU texture",
+    );
+    MemoryMonitor::log_estimated_allocation(
+        "Province terrain image asset",
+        texture_bytes,
+        texture_bytes,
+        "terrain texture bytes retained in Assets<Image> plus GPU texture",
+    );
+    MemoryMonitor::log_estimated_allocation(
+        "ProvinceColorBuffer main copy",
+        color_buf_data.capacity(),
+        0,
+        "CPU-side mutable political color buffer kept in the main world",
+    );
+    MemoryMonitor::log_vec_allocation("Province political pixels", &political_pixel_data);
+    MemoryMonitor::log_vec_allocation("Province terrain pixels", &terrain_pixel_data);
+    MemoryMonitor::log_vec_allocation("ProvinceColorBuffer pixels", &color_buf_data);
+
+    // Log texture creation details
+    bevy::log::info!(target: "daboyi::startup", "Creating province texture: {}x{} ({} MB)", 
+        TEX_WIDTH, tex_height, (TEX_WIDTH * tex_height * 4) as f64 / (1024.0 * 1024.0));
+
     let mut political_image = Image::new(
         Extent3d {
             width: TEX_WIDTH as u32,
@@ -310,6 +389,7 @@ fn load_map(
     );
     political_image.sampler = ImageSampler::nearest();
     let political_tex_handle = images.add(political_image);
+
     let mut terrain_image = Image::new(
         Extent3d {
             width: TEX_WIDTH as u32,
@@ -373,6 +453,7 @@ fn load_map(
     }
     commands.insert_resource(ProvinceNames(province_name_map));
 
+    MemoryMonitor::log_memory_usage("After loading province names");
     next_state.set(AppState::Editing);
 }
 
@@ -476,22 +557,46 @@ fn color_provinces(
     non_playable_provinces: Res<NonPlayableProvinces>,
     mut guard: ColoringGuard,
     mut pending_province_recolor: ResMut<PendingProvinceRecolor>,
+    mut color_update_queue: ResMut<ColorUpdateQueue>,
 ) {
     let (Some(map), Some(mut color_buf)) = (map, color_buf) else {
         return;
     };
 
+    // Check if we actually need to update colors
     let mode_changed = guard.last.mode != Some(*mode);
     let selection_changed = guard.last.selected != selected.0;
     let active_admin_changed = guard.last.active_admin != active_admin.0;
     let active_country_changed = guard.last.active_country != active_country.0;
     let coloring_changed = guard.last.coloring_version != guard.coloring_version.0;
     let has_pending_province = !pending_province_recolor.0.is_empty();
+    let has_queue_updates = !color_update_queue.queue.is_empty() || color_update_queue.full_rebuild;
 
-    let needs_full_recolor =
-        mode_changed || coloring_changed || active_admin_changed || active_country_changed;
+    // Early return if no changes
+    if !mode_changed
+        && !selection_changed
+        && !active_admin_changed
+        && !active_country_changed
+        && !coloring_changed
+        && !has_pending_province
+        && !has_queue_updates
+    {
+        return;
+    }
 
-    if !needs_full_recolor && !selection_changed && !has_pending_province {
+    MemoryMonitor::log_memory_usage("Before color_provinces");
+    MemoryMonitor::track_memory_growth("Before color_provinces");
+    MemoryMonitor::log_hashset_lower_bound("PendingProvinceRecolor", &pending_province_recolor.0);
+    MemoryMonitor::log_hashset_lower_bound("ColorUpdateQueue", &color_update_queue.queue);
+
+    // Check if we have queue-based updates
+    let needs_full_recolor = mode_changed
+        || coloring_changed
+        || active_admin_changed
+        || active_country_changed
+        || color_update_queue.full_rebuild;
+
+    if !needs_full_recolor && !selection_changed && !has_pending_province && !has_queue_updates {
         return;
     }
 
@@ -543,6 +648,30 @@ fn color_provinces(
         guard.last.active_country = active_country.0.clone();
         guard.last.coloring_version = guard.coloring_version.0;
         pending_province_recolor.0.clear();
+        color_update_queue.queue.clear();
+        color_update_queue.full_rebuild = false;
+        return;
+    }
+
+    // Handle queue-based updates
+    if has_queue_updates {
+        let mut updated = false;
+        // Process queue updates
+        let queue = std::mem::take(&mut color_update_queue.queue);
+        for pid in queue {
+            if pid >= map.0.provinces.len() {
+                continue;
+            }
+            let is_selected = selected.0 == Some(pid as u32);
+            let base = base_color(pid);
+            let color = if is_selected { brighten(base) } else { base };
+            write_color(&mut color_buf.data, pid, color);
+            updated = true;
+        }
+        if updated {
+            color_buf.version += 1;
+            guard.last.active_country = active_country.0.clone();
+        }
         return;
     }
 
@@ -584,6 +713,8 @@ fn color_provinces(
         guard.last.selected = selected.0;
         guard.last.active_country = active_country.0.clone();
     }
+
+    MemoryMonitor::log_memory_usage("After color_provinces");
 }
 
 #[cfg(test)]

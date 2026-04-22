@@ -1586,6 +1586,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bincode",
+ "lazy_static",
  "serde",
  "serde_json",
  "shared",

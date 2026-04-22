@@ -2,7 +2,9 @@ use crate::editor::{
     province_country_tag, AdminAreas, AdminMap, Countries, CountryMap, NonPlayableProvinces,
 };
 use crate::map::{BorderVersion, ColoringVersion, MapResource};
+use crate::memory::MemoryMonitor;
 use crate::state::AppState;
+use bevy::log::info;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
@@ -86,6 +88,32 @@ struct LastTerrainVisualState {
     coloring_version: u64,
 }
 
+const PAINT_MEMORY_LOG_INTERVAL_SECS: f32 = 1.0;
+
+struct TerrainMemoryDiagnostics {
+    timer: Timer,
+    recolor_count: u32,
+    admin_map_updates: u32,
+    country_map_updates: u32,
+    border_version_updates: u32,
+    coloring_version_updates: u32,
+    uploaded_bytes: usize,
+}
+
+impl Default for TerrainMemoryDiagnostics {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(PAINT_MEMORY_LOG_INTERVAL_SECS, TimerMode::Repeating),
+            recolor_count: 0,
+            admin_map_updates: 0,
+            country_map_updates: 0,
+            border_version_updates: 0,
+            coloring_version_updates: 0,
+            uploaded_bytes: 0,
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 struct TerrainAdjacencyBuildTask {
     handle: Option<std::thread::JoinHandle<TerrainAdjacencyData>>,
@@ -133,6 +161,7 @@ fn load_terrain(
     let mut water_colors: Vec<[f32; 4]> = Vec::new();
     let mut water_indices: Vec<u32> = Vec::new();
     let mut polygon_meta: Vec<TerrainPolygonMeta> = Vec::with_capacity(terrain.polygons.len());
+    let mut boundary_segment_count = 0usize;
 
     for poly in &terrain.polygons {
         let base = positions.len() as u32;
@@ -158,7 +187,70 @@ fn load_terrain(
             vertex_count: poly.vertices.len(),
             boundary_segments: terrain_polygon_boundary_segments(poly),
         });
+        boundary_segment_count += polygon_meta
+            .last()
+            .map(|meta| meta.boundary_segments.len())
+            .unwrap_or(0);
     }
+
+    let terrain_mesh_bytes = positions
+        .capacity()
+        .saturating_mul(std::mem::size_of::<[f32; 3]>())
+        .saturating_add(
+            colors
+                .capacity()
+                .saturating_mul(std::mem::size_of::<[f32; 4]>()),
+        )
+        .saturating_add(
+            indices
+                .capacity()
+                .saturating_mul(std::mem::size_of::<u32>()),
+        );
+    MemoryMonitor::log_estimated_allocation(
+        "Terrain mesh asset",
+        terrain_mesh_bytes,
+        terrain_mesh_bytes,
+        "terrain mesh bytes retained in the main world plus GPU vertex/index buffers",
+    );
+    MemoryMonitor::log_vec_allocation("Terrain mesh positions", &positions);
+    MemoryMonitor::log_vec_allocation("Terrain mesh colors", &colors);
+    MemoryMonitor::log_vec_allocation("Terrain mesh indices", &indices);
+    if !water_positions.is_empty() {
+        let water_mesh_bytes = water_positions
+            .capacity()
+            .saturating_mul(std::mem::size_of::<[f32; 3]>())
+            .saturating_add(
+                water_colors
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<[f32; 4]>()),
+            )
+            .saturating_add(
+                water_indices
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<u32>()),
+            );
+        MemoryMonitor::log_estimated_allocation(
+            "Terrain water overlay asset",
+            water_mesh_bytes,
+            water_mesh_bytes,
+            "water overlay mesh bytes retained in the main world plus GPU buffers",
+        );
+        MemoryMonitor::log_vec_allocation("Terrain water positions", &water_positions);
+        MemoryMonitor::log_vec_allocation("Terrain water colors", &water_colors);
+        MemoryMonitor::log_vec_allocation("Terrain water indices", &water_indices);
+    }
+    let terrain_meta_bytes = polygon_meta
+        .capacity()
+        .saturating_mul(std::mem::size_of::<TerrainPolygonMeta>())
+        .saturating_add(
+            boundary_segment_count.saturating_mul(std::mem::size_of::<[[f32; 2]; 2]>()),
+        );
+    MemoryMonitor::log_estimated_allocation(
+        "Terrain polygon metadata",
+        terrain_meta_bytes,
+        0,
+        "polygon metadata retained on the CPU for ownership tinting and adjacency work",
+    );
 
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -433,19 +525,52 @@ fn update_terrain_visuals(
     border_version: Res<BorderVersion>,
     coloring_version: Res<ColoringVersion>,
     mut last_state: Local<LastTerrainVisualState>,
+    time: Res<Time>,
+    mut diagnostics: Local<TerrainMemoryDiagnostics>,
 ) {
+    diagnostics.timer.tick(time.delta());
+    let flush_diagnostics = |diagnostics: &mut TerrainMemoryDiagnostics| {
+        if diagnostics.recolor_count == 0 || !diagnostics.timer.just_finished() {
+            return;
+        }
+        let uploaded_mib = diagnostics.uploaded_bytes as f64 / (1024.0 * 1024.0);
+        info!(
+            target: "daboyi::paint::memory",
+            "terrain recolor activity: recolors={} uploaded_mib={uploaded_mib:.1} admin_map_updates={} country_map_updates={} border_version_updates={} coloring_version_updates={}",
+            diagnostics.recolor_count,
+            diagnostics.admin_map_updates,
+            diagnostics.country_map_updates,
+            diagnostics.border_version_updates,
+            diagnostics.coloring_version_updates,
+        );
+        diagnostics.recolor_count = 0;
+        diagnostics.admin_map_updates = 0;
+        diagnostics.country_map_updates = 0;
+        diagnostics.border_version_updates = 0;
+        diagnostics.coloring_version_updates = 0;
+        diagnostics.uploaded_bytes = 0;
+    };
+
     let Some(terrain_mesh) = terrain_mesh else {
+        flush_diagnostics(&mut diagnostics);
         return;
     };
     if terrain_adjacency.polygons.len() != terrain_mesh.polygons.len() {
+        flush_diagnostics(&mut diagnostics);
         return;
     }
-    let changed = terrain_adjacency.is_changed()
-        || admin_map.is_changed()
-        || country_map.is_changed()
-        || last_state.border_version != border_version.0
-        || last_state.coloring_version != coloring_version.0;
+    let admin_map_changed = admin_map.is_changed();
+    let country_map_changed = country_map.is_changed();
+    let border_version_changed = last_state.border_version != border_version.0;
+    let coloring_version_changed = last_state.coloring_version != coloring_version.0;
+    // Raw admin/country map edits can happen every brush frame. Recoloring the
+    // full terrain mesh (~2.1M vertices) on each of those changes is far too
+    // expensive, so terrain tinting follows the existing debounced ownership
+    // update signal (`BorderVersion`) instead.
+    let changed =
+        terrain_adjacency.is_changed() || border_version_changed || coloring_version_changed;
     if !changed {
+        flush_diagnostics(&mut diagnostics);
         return;
     }
 
@@ -478,9 +603,27 @@ fn update_terrain_visuals(
         }
     }
 
+    diagnostics.recolor_count = diagnostics.recolor_count.saturating_add(1);
+    diagnostics.admin_map_updates = diagnostics
+        .admin_map_updates
+        .saturating_add(u32::from(admin_map_changed));
+    diagnostics.country_map_updates = diagnostics
+        .country_map_updates
+        .saturating_add(u32::from(country_map_changed));
+    diagnostics.border_version_updates = diagnostics
+        .border_version_updates
+        .saturating_add(u32::from(border_version_changed));
+    diagnostics.coloring_version_updates = diagnostics
+        .coloring_version_updates
+        .saturating_add(u32::from(coloring_version_changed));
+    diagnostics.uploaded_bytes = diagnostics
+        .uploaded_bytes
+        .saturating_add(colors.len().saturating_mul(std::mem::size_of::<[f32; 4]>()));
+
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     last_state.border_version = border_version.0;
     last_state.coloring_version = coloring_version.0;
+    flush_diagnostics(&mut diagnostics);
 }
 
 fn terrain_display_color(
@@ -1126,13 +1269,37 @@ fn spawn_rivers(
         return;
     }
 
+    let river_quad_count = indices.len() / 6;
+    let river_mesh_bytes = positions
+        .capacity()
+        .saturating_mul(std::mem::size_of::<[f32; 3]>())
+        .saturating_add(
+            colors
+                .capacity()
+                .saturating_mul(std::mem::size_of::<[f32; 4]>()),
+        )
+        .saturating_add(
+            indices
+                .capacity()
+                .saturating_mul(std::mem::size_of::<u32>()),
+        );
+    MemoryMonitor::log_estimated_allocation(
+        "River mesh asset",
+        river_mesh_bytes,
+        river_mesh_bytes,
+        "river mesh bytes retained in the main world plus GPU buffers",
+    );
+    MemoryMonitor::log_vec_allocation("River mesh positions", &positions);
+    MemoryMonitor::log_vec_allocation("River mesh colors", &colors);
+    MemoryMonitor::log_vec_allocation("River mesh indices", &indices);
+
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors.clone());
-    mesh.insert_indices(Indices::U32(indices.clone()));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_indices(Indices::U32(indices));
     let handle = meshes.add(mesh);
     let material = materials.add(ColorMaterial::default());
 
@@ -1148,7 +1315,7 @@ fn spawn_rivers(
         target: "daboyi::startup",
         "Rivers: {} edges, {} quads",
         river_data.edges.len(),
-        indices.len() / 6,
+        river_quad_count,
     );
 }
 

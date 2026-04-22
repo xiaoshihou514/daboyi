@@ -9,4 +9,5 @@ bevy_egui = "0.31"
 serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = "1"
+lazy_static = "1"
 shared = { path = "../shared" }

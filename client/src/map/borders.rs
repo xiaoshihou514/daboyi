@@ -4,7 +4,6 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::render::mesh::{
     Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology,
-    VertexAttributeValues,
 };
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{
@@ -21,14 +20,22 @@ use crate::editor::{
     AdminMap, CountryMap, NonPlayableProvinces,
 };
 use crate::map::{BorderVersion, MapMode, MapResource, MAP_WIDTH};
+use crate::memory::MemoryMonitor;
 use crate::state::AppState;
 use crate::terrain::{
     terrain_polygon_is_water, terrain_polygon_surrounding_tag, TerrainAdjacencyData,
 };
+use bevy::log::info;
 use bevy::sprite::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin};
+
+use std::collections::HashSet;
 
 const ADJACENCY_BIN_PATH: &str = "assets/province_adjacency.bin";
 const ADJACENCY_CACHE_VERSION: u32 = 1;
+const BORDER_CHUNK_WIDTH: f32 = 30.0;
+const BORDER_CHUNK_HEIGHT: f32 = 15.0;
+const BORDER_CHUNK_COLS: u32 = 12;
+const BORDER_CHUNK_ROWS: u32 = 12;
 
 const ATTRIBUTE_BORDER_OFFSET: MeshVertexAttribute =
     MeshVertexAttribute::new("BorderOffset", 983_541_201, VertexFormat::Float32x2);
@@ -108,7 +115,7 @@ impl Material2d for BorderMaterial {
 
 #[derive(Resource, Default)]
 struct BorderAssets {
-    mesh: Option<Handle<Mesh>>,
+    meshes: HashMap<u16, Handle<Mesh>>,
     material: Option<Handle<BorderMaterial>>,
 }
 
@@ -119,6 +126,34 @@ struct BorderScratch {
     tiers: Vec<f32>,
     indices: Vec<u32>,
 }
+
+/// 边界变化跟踪资源
+#[derive(Resource, Default)]
+pub struct BorderChanges {
+    /// 发生变化的省份ID
+    pub changed_provinces: HashSet<u32>,
+    /// 边界版本
+    pub version: u64,
+}
+
+#[derive(Default)]
+struct BorderChunkIndex {
+    province_chunks: Vec<Vec<u16>>,
+    adjacency_by_chunk: HashMap<u16, Vec<usize>>,
+    terrain_by_chunk: HashMap<u16, Vec<usize>>,
+    all_chunks: Vec<u16>,
+}
+
+/// 边界数据资源，用于存储分块索引与运行时状态
+#[derive(Resource, Default)]
+pub struct BorderData {
+    /// 边界计算是否正在进行中
+    pub is_computing: bool,
+    chunk_index: Option<BorderChunkIndex>,
+}
+
+#[derive(Component, Clone, Copy)]
+struct BorderChunk(u16);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OwnerKey {
@@ -141,6 +176,8 @@ impl Plugin for BordersPlugin {
             .insert_resource(ProvinceAdjacency::default())
             .insert_resource(BorderAssets::default())
             .insert_resource(BorderScratch::default())
+            .insert_resource(BorderData::default())
+            .insert_resource(BorderChanges::default())
             .add_systems(
                 Update,
                 (
@@ -168,6 +205,7 @@ struct BorderInputs<'w, 's> {
     mode: Res<'w, MapMode>,
     border_assets: ResMut<'w, BorderAssets>,
     scratch: ResMut<'w, BorderScratch>,
+    border_changes: ResMut<'w, BorderChanges>,
     _marker: std::marker::PhantomData<&'s ()>,
 }
 
@@ -195,6 +233,12 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
             cached_borders.len()
         );
         adjacency.0 = cached_borders;
+        MemoryMonitor::log_estimated_allocation(
+            "Province adjacency cache",
+            cached_borders_bytes(&adjacency.0),
+            0,
+            "cached shared-border chains retained on the CPU",
+        );
         return;
     }
 
@@ -211,6 +255,12 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
         );
     }
     adjacency.0 = cached_borders;
+    MemoryMonitor::log_estimated_allocation(
+        "Province adjacency cache",
+        cached_borders_bytes(&adjacency.0),
+        0,
+        "cached shared-border chains retained on the CPU",
+    );
 }
 
 fn build_adjacency(map: &shared::map::MapData) -> Vec<CachedBorder> {
@@ -311,8 +361,9 @@ fn rebuild_borders(
     mut materials: ResMut<Assets<BorderMaterial>>,
     mut border_inputs: BorderInputs,
     map: Option<Res<MapResource>>,
-    existing: Query<Entity, With<BorderMesh>>,
+    existing: Query<(Entity, &BorderChunk), With<BorderMesh>>,
     mut border_state: BorderState,
+    mut border_data: ResMut<BorderData>,
 ) {
     let Some(map) = map else { return };
 
@@ -320,41 +371,72 @@ fn rebuild_borders(
         return;
     }
 
+    // Check if we actually need to rebuild borders
     let mode_changed = Some(*border_inputs.mode) != *border_state.last_mode;
     let border_changed = *border_state.last_border_version != border_inputs.border_version.0;
     let active_admin_changed = *border_state.last_active_admin != border_inputs.active_admin.0;
     let active_country_changed =
         *border_state.last_active_country != border_inputs.active_country.0;
+
+    // Early return if no changes
     if !mode_changed && !border_changed && !active_admin_changed && !active_country_changed {
         return;
     }
+
+    MemoryMonitor::log_memory_usage("Before border rebuild");
+    MemoryMonitor::log_detailed_memory_usage("Before border rebuild");
     *border_state.last_mode = Some(*border_inputs.mode);
     *border_state.last_border_version = border_inputs.border_version.0;
     *border_state.last_active_admin = border_inputs.active_admin.0;
     *border_state.last_active_country = border_inputs.active_country.0.clone();
 
-    // Early-return for non-political mode BEFORE touching the mesh, so
-    // recycle_mesh_buffers never strips it and leaves zero vertices for the GPU allocator.
+    let existing_chunk_entities = group_chunk_entities(&existing);
+
+    // Early-return for non-political mode BEFORE touching the mesh
     if *border_inputs.mode != MapMode::Map {
         despawn_border_entities(&mut commands, &existing);
+        border_inputs.border_changes.changed_provinces.clear();
         return;
     }
 
-    if let Some(mesh_handle) = border_inputs.border_assets.mesh.clone() {
-        if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-            recycle_mesh_buffers(mesh, &mut border_inputs.scratch);
-        } else {
-            border_inputs.scratch.positions.clear();
-            border_inputs.scratch.offsets.clear();
-            border_inputs.scratch.tiers.clear();
-            border_inputs.scratch.indices.clear();
-        }
-    } else {
-        border_inputs.scratch.positions.clear();
-        border_inputs.scratch.offsets.clear();
-        border_inputs.scratch.tiers.clear();
-        border_inputs.scratch.indices.clear();
+    // If already computing, skip to avoid duplicate tasks
+    if border_data.is_computing {
+        return;
     }
+
+    border_data.is_computing = true;
+    let chunk_index = border_data.chunk_index.get_or_insert_with(|| {
+        build_border_chunk_index(
+            &map.0,
+            &border_inputs.adjacency.0,
+            &border_inputs.terrain_adjacency,
+        )
+    });
+
+    let full_rebuild = mode_changed
+        || active_admin_changed
+        || active_country_changed
+        || existing_chunk_entities.is_empty()
+        || border_inputs.border_changes.changed_provinces.is_empty();
+    let dirty_chunks = if full_rebuild {
+        chunk_index.all_chunks.clone()
+    } else {
+        dirty_chunks_from_provinces(chunk_index, &border_inputs.border_changes.changed_provinces)
+    };
+
+    if dirty_chunks.is_empty() {
+        border_data.is_computing = false;
+        border_inputs.border_changes.changed_provinces.clear();
+        return;
+    }
+
+    info!(
+        target: "daboyi::paint::memory",
+        "border rebuild scope: full_rebuild={} dirty_chunks={} changed_provinces={}",
+        full_rebuild,
+        dirty_chunks.len(),
+        border_inputs.border_changes.changed_provinces.len(),
+    );
 
     let mut country_keys: HashMap<String, u32> = HashMap::new();
     let mut next_country_key = 0_u32;
@@ -404,155 +486,99 @@ fn rebuild_borders(
     let admin_assignments = &border_inputs.admin_assignments;
     let country_map = &border_inputs.country_map;
     let terrain_adjacency = &border_inputs.terrain_adjacency;
-
-    let BorderScratch {
-        positions,
-        offsets,
-        tiers,
-        indices,
-    } = &mut *border_inputs.scratch;
-
-    let mut junction_rims: HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
-
-    for border in &border_inputs.adjacency.0 {
-        let ia = border.provinces[0] as usize;
-        let ib = border.provinces[1] as usize;
-        if is_wasteland(ia) || is_wasteland(ib) {
-            continue;
-        }
-        let Some(border_tier) = province_border_tier(
-            map.0.provinces[ia].id,
-            map.0.provinces[ib].id,
-            admin_areas,
-            admin_assignments,
-            country_map,
-            province_owner(ia),
-            province_owner(ib),
-        ) else {
-            continue;
-        };
-
-        for chain in &border.chains {
-            if chain.len() < 2 {
-                continue;
-            }
-            polyline_to_border_strip(chain, positions, offsets, tiers, indices, border_tier);
-            if border_tier == BorderTier::Country {
-                collect_country_junction_rims(&mut junction_rims, chain);
-            }
-        }
-    }
-
-    let mut terrain_owner_cache: HashMap<u32, Option<String>> = HashMap::new();
-    for terrain_border in &terrain_adjacency.borders {
-        if terrain_polygon_is_water(terrain_border.terrain_index, terrain_adjacency) {
-            continue;
-        }
-        let Some(province_tag) = province_country_tag(
-            admin_areas,
-            admin_assignments,
-            country_map,
-            terrain_border.province_id,
-        ) else {
-            continue;
-        };
-        if border_inputs
-            .non_playable_provinces
-            .0
-            .contains(&terrain_border.province_id)
-        {
-            continue;
-        }
-        let terrain_owner = terrain_owner_cache
-            .entry(terrain_border.terrain_index)
-            .or_insert_with(|| {
-                terrain_polygon_surrounding_tag(
-                    terrain_border.terrain_index,
-                    terrain_adjacency,
-                    admin_areas,
-                    admin_assignments,
-                    country_map,
-                    &border_inputs.non_playable_provinces,
-                )
-            });
-        if !terrain_border_should_render(terrain_owner.as_deref(), province_tag) {
-            continue;
-        }
-        for chain in &terrain_border.chains {
-            if chain.len() < 2 {
-                continue;
-            }
-            polyline_to_border_strip(
-                chain,
-                positions,
-                offsets,
-                tiers,
-                indices,
-                BorderTier::Country,
-            );
-            collect_country_junction_rims(&mut junction_rims, chain);
-        }
-    }
-
-    for (_, (center, rim_points)) in junction_rims {
-        if rim_points.len() >= 6 {
-            add_junction_fill(center, &rim_points, positions, offsets, tiers, indices);
-        }
-    }
-
-    if positions.is_empty() {
-        despawn_border_entities(&mut commands, &existing);
-        // Restore minimal valid geometry so the GPU allocator doesn't divide by zero
-        // when it processes this mesh handle (entities are still alive this frame
-        // until deferred despawns are flushed).
-        if let Some(mesh_handle) = border_inputs.border_assets.mesh.clone() {
-            if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32, 0.0, 0.0]; 3]);
-                mesh.insert_attribute(ATTRIBUTE_BORDER_OFFSET, vec![[0.0f32, 0.0]; 3]);
-                mesh.insert_attribute(ATTRIBUTE_BORDER_TIER, vec![0.0f32; 3]);
-                mesh.insert_indices(Indices::U32(vec![0, 1, 2]));
-            }
-        }
-        return;
-    }
-    let mesh_handle = border_inputs
-        .border_assets
-        .mesh
-        .get_or_insert_with(|| {
-            meshes.add(Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-            ))
-        })
-        .clone();
     let material_handle = border_inputs
         .border_assets
         .material
         .get_or_insert_with(|| materials.add(BorderMaterial::default()))
         .clone();
 
-    positions.shrink_to_fit();
-    offsets.shrink_to_fit();
-    tiers.shrink_to_fit();
-    indices.shrink_to_fit();
+    let mut total_uploaded_bytes = 0usize;
+    for chunk_id in dirty_chunks {
+        let chunk_entities = existing_chunk_entities.get(&chunk_id);
+        let BorderScratch {
+            positions,
+            offsets,
+            tiers,
+            indices,
+        } = &mut *border_inputs.scratch;
+        positions.clear();
+        offsets.clear();
+        tiers.clear();
+        indices.clear();
 
-    if let Some(mesh) = meshes.get_mut(&mesh_handle) {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, std::mem::take(positions));
-        mesh.insert_attribute(ATTRIBUTE_BORDER_OFFSET, std::mem::take(offsets));
-        mesh.insert_attribute(ATTRIBUTE_BORDER_TIER, std::mem::take(tiers));
-        mesh.insert_indices(Indices::U32(std::mem::take(indices)));
+        build_chunk_geometry(
+            chunk_id,
+            chunk_index,
+            &border_inputs.adjacency.0,
+            terrain_adjacency,
+            &map.0,
+            admin_areas,
+            admin_assignments,
+            country_map,
+            &border_inputs.non_playable_provinces,
+            is_wasteland,
+            &province_owner,
+            positions,
+            offsets,
+            tiers,
+            indices,
+        );
+
+        let chunk_bytes = positions
+            .len()
+            .saturating_mul(std::mem::size_of::<[f32; 3]>())
+            .saturating_add(
+                offsets
+                    .len()
+                    .saturating_mul(std::mem::size_of::<[f32; 2]>()),
+            )
+            .saturating_add(tiers.len().saturating_mul(std::mem::size_of::<f32>()))
+            .saturating_add(indices.len().saturating_mul(std::mem::size_of::<u32>()));
+        total_uploaded_bytes = total_uploaded_bytes.saturating_add(chunk_bytes);
+
+        info!(
+            target: "daboyi::paint::memory",
+            "border chunk rebuild: chunk={} vertices={} indices={} approx_mib={:.1}",
+            chunk_id,
+            positions.len(),
+            indices.len(),
+            MemoryMonitor::bytes_to_mib(chunk_bytes),
+        );
+
+        upsert_chunk_mesh(
+            chunk_id,
+            positions,
+            offsets,
+            tiers,
+            indices,
+            &mut commands,
+            &mut meshes,
+            &mut border_inputs.border_assets,
+            &material_handle,
+            chunk_entities,
+        );
     }
 
-    if existing.iter().next().is_none() {
-        for &x_off in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
-            commands.spawn((
-                Mesh2d(mesh_handle.clone()),
-                MeshMaterial2d(material_handle.clone()),
-                Transform::from_xyz(x_off, 0.0, 0.8),
-                BorderMesh,
-            ));
-        }
-    }
+    MemoryMonitor::log_estimated_allocation(
+        "Border scratch buffers",
+        border_scratch_capacity_bytes(
+            &border_inputs.scratch.positions,
+            &border_inputs.scratch.offsets,
+            &border_inputs.scratch.tiers,
+            &border_inputs.scratch.indices,
+        ),
+        0,
+        "persistent Vec capacities reused between chunk rebuilds",
+    );
+    border_inputs.border_changes.changed_provinces.clear();
+    border_data.is_computing = false;
+    info!(
+        target: "daboyi::paint::memory",
+        "border rebuild complete: dirty_chunks={} uploaded_mib={:.1}",
+        border_inputs.border_assets.meshes.len(),
+        MemoryMonitor::bytes_to_mib(total_uploaded_bytes),
+    );
+    MemoryMonitor::log_memory_usage("After border rebuild");
 }
 
 fn province_border_tier(
@@ -614,33 +640,340 @@ fn border_tier_z(border_tier: BorderTier) -> f32 {
     }
 }
 
-fn despawn_border_entities(commands: &mut Commands, existing: &Query<Entity, With<BorderMesh>>) {
-    for entity in existing.iter() {
+fn despawn_border_entities(
+    commands: &mut Commands,
+    existing: &Query<(Entity, &BorderChunk), With<BorderMesh>>,
+) {
+    for (entity, _) in existing.iter() {
         commands.entity(entity).despawn();
     }
 }
 
-fn recycle_mesh_buffers(mesh: &mut Mesh, scratch: &mut BorderScratch) {
-    scratch.positions = match mesh.remove_attribute(Mesh::ATTRIBUTE_POSITION) {
-        Some(VertexAttributeValues::Float32x3(values)) => values,
-        _ => Vec::new(),
-    };
-    scratch.offsets = match mesh.remove_attribute(ATTRIBUTE_BORDER_OFFSET) {
-        Some(VertexAttributeValues::Float32x2(values)) => values,
-        _ => Vec::new(),
-    };
-    scratch.tiers = match mesh.remove_attribute(ATTRIBUTE_BORDER_TIER) {
-        Some(VertexAttributeValues::Float32(values)) => values,
-        _ => Vec::new(),
-    };
-    scratch.indices = match mesh.remove_indices() {
-        Some(Indices::U32(values)) => values,
-        _ => Vec::new(),
-    };
-    scratch.positions.clear();
-    scratch.offsets.clear();
-    scratch.tiers.clear();
-    scratch.indices.clear();
+fn group_chunk_entities(
+    existing: &Query<(Entity, &BorderChunk), With<BorderMesh>>,
+) -> HashMap<u16, Vec<Entity>> {
+    let mut grouped = HashMap::new();
+    for (entity, chunk) in existing.iter() {
+        grouped.entry(chunk.0).or_insert_with(Vec::new).push(entity);
+    }
+    grouped
+}
+
+fn build_border_chunk_index(
+    map: &shared::map::MapData,
+    adjacency: &[CachedBorder],
+    terrain_adjacency: &TerrainAdjacencyData,
+) -> BorderChunkIndex {
+    let mut province_chunks = vec![Vec::new(); map.provinces.len()];
+    for province in &map.provinces {
+        let entry = &mut province_chunks[province.id as usize];
+        for point in province
+            .boundary
+            .iter()
+            .flat_map(|ring| ring.iter().copied())
+            .chain(std::iter::once(province.centroid))
+        {
+            let chunk = chunk_id_for_point(point);
+            if !entry.contains(&chunk) {
+                entry.push(chunk);
+            }
+        }
+    }
+
+    let mut adjacency_by_chunk: HashMap<u16, Vec<usize>> = HashMap::new();
+    for (index, border) in adjacency.iter().enumerate() {
+        for chunk in chunks_for_chains(&border.chains) {
+            adjacency_by_chunk
+                .entry(chunk)
+                .or_insert_with(Vec::new)
+                .push(index);
+        }
+    }
+
+    let mut terrain_by_chunk: HashMap<u16, Vec<usize>> = HashMap::new();
+    for (index, border) in terrain_adjacency.borders.iter().enumerate() {
+        for chunk in chunks_for_chains(&border.chains) {
+            terrain_by_chunk
+                .entry(chunk)
+                .or_insert_with(Vec::new)
+                .push(index);
+        }
+    }
+
+    let mut all_chunks: Vec<u16> = adjacency_by_chunk
+        .keys()
+        .chain(terrain_by_chunk.keys())
+        .copied()
+        .collect();
+    all_chunks.sort_unstable();
+    all_chunks.dedup();
+
+    BorderChunkIndex {
+        province_chunks,
+        adjacency_by_chunk,
+        terrain_by_chunk,
+        all_chunks,
+    }
+}
+
+fn dirty_chunks_from_provinces(
+    chunk_index: &BorderChunkIndex,
+    changed_provinces: &HashSet<u32>,
+) -> Vec<u16> {
+    let mut dirty = Vec::new();
+    for &province_id in changed_provinces {
+        let Some(chunks) = chunk_index.province_chunks.get(province_id as usize) else {
+            continue;
+        };
+        for &chunk in chunks {
+            if !dirty.contains(&chunk) {
+                dirty.push(chunk);
+            }
+        }
+    }
+    dirty
+}
+
+fn chunk_id_for_point(point: [f32; 2]) -> u16 {
+    let x = point[0].clamp(0.0, MAP_WIDTH - f32::EPSILON);
+    let y = (point[1] + 90.0).clamp(0.0, 180.0 - f32::EPSILON);
+    let col = (x / BORDER_CHUNK_WIDTH).floor() as u16;
+    let row = (y / BORDER_CHUNK_HEIGHT).floor() as u16;
+    let chunk_cols = BORDER_CHUNK_COLS as u16;
+    row.saturating_mul(chunk_cols) + col.min(chunk_cols - 1)
+}
+
+fn chunks_for_chains(chains: &[Vec<[f32; 2]>]) -> Vec<u16> {
+    let mut chunks = Vec::new();
+    for &point in chains.iter().flat_map(|chain| chain.iter()) {
+        let chunk = chunk_id_for_point(point);
+        if !chunks.contains(&chunk) {
+            chunks.push(chunk);
+        }
+    }
+    chunks
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_chunk_geometry(
+    chunk_id: u16,
+    chunk_index: &BorderChunkIndex,
+    adjacency: &[CachedBorder],
+    terrain_adjacency: &TerrainAdjacencyData,
+    map: &shared::map::MapData,
+    admin_areas: &[shared::AdminArea],
+    admin_assignments: &AdminMap,
+    country_map: &CountryMap,
+    non_playable_provinces: &NonPlayableProvinces,
+    is_wasteland: impl Fn(usize) -> bool,
+    province_owner: &impl Fn(usize) -> Option<OwnerKey>,
+    positions: &mut Vec<[f32; 3]>,
+    offsets: &mut Vec<[f32; 2]>,
+    tiers: &mut Vec<f32>,
+    indices: &mut Vec<u32>,
+) {
+    let mut junction_rims: HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
+
+    if let Some(border_indexes) = chunk_index.adjacency_by_chunk.get(&chunk_id) {
+        for &border_index in border_indexes {
+            let border = &adjacency[border_index];
+            let ia = border.provinces[0] as usize;
+            let ib = border.provinces[1] as usize;
+            if is_wasteland(ia) || is_wasteland(ib) {
+                continue;
+            }
+            let Some(border_tier) = province_border_tier(
+                map.provinces[ia].id,
+                map.provinces[ib].id,
+                admin_areas,
+                admin_assignments,
+                country_map,
+                province_owner(ia),
+                province_owner(ib),
+            ) else {
+                continue;
+            };
+
+            for chain in &border.chains {
+                if chain.len() < 2 || !chain_touches_chunk(chain, chunk_id) {
+                    continue;
+                }
+                polyline_to_border_strip(chain, positions, offsets, tiers, indices, border_tier);
+                if border_tier == BorderTier::Country {
+                    collect_country_junction_rims(&mut junction_rims, chain);
+                }
+            }
+        }
+    }
+
+    let mut terrain_owner_cache: HashMap<u32, Option<String>> = HashMap::new();
+    if let Some(border_indexes) = chunk_index.terrain_by_chunk.get(&chunk_id) {
+        for &border_index in border_indexes {
+            let terrain_border = &terrain_adjacency.borders[border_index];
+            if terrain_polygon_is_water(terrain_border.terrain_index, terrain_adjacency) {
+                continue;
+            }
+            let Some(province_tag) = province_country_tag(
+                admin_areas,
+                admin_assignments,
+                country_map,
+                terrain_border.province_id,
+            ) else {
+                continue;
+            };
+            if non_playable_provinces
+                .0
+                .contains(&terrain_border.province_id)
+            {
+                continue;
+            }
+            let terrain_owner = terrain_owner_cache
+                .entry(terrain_border.terrain_index)
+                .or_insert_with(|| {
+                    terrain_polygon_surrounding_tag(
+                        terrain_border.terrain_index,
+                        terrain_adjacency,
+                        admin_areas,
+                        admin_assignments,
+                        country_map,
+                        non_playable_provinces,
+                    )
+                });
+            if !terrain_border_should_render(terrain_owner.as_deref(), province_tag) {
+                continue;
+            }
+            for chain in &terrain_border.chains {
+                if chain.len() < 2 || !chain_touches_chunk(chain, chunk_id) {
+                    continue;
+                }
+                polyline_to_border_strip(
+                    chain,
+                    positions,
+                    offsets,
+                    tiers,
+                    indices,
+                    BorderTier::Country,
+                );
+                collect_country_junction_rims(&mut junction_rims, chain);
+            }
+        }
+    }
+
+    for (_, (center, rim_points)) in junction_rims {
+        if rim_points.len() >= 6 {
+            add_junction_fill(center, &rim_points, positions, offsets, tiers, indices);
+        }
+    }
+}
+
+fn chain_touches_chunk(chain: &[[f32; 2]], chunk_id: u16) -> bool {
+    chain
+        .iter()
+        .copied()
+        .any(|point| chunk_id_for_point(point) == chunk_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_chunk_mesh(
+    chunk_id: u16,
+    positions: &mut Vec<[f32; 3]>,
+    offsets: &mut Vec<[f32; 2]>,
+    tiers: &mut Vec<f32>,
+    indices: &mut Vec<u32>,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    border_assets: &mut BorderAssets,
+    material_handle: &Handle<BorderMaterial>,
+    existing_entities: Option<&Vec<Entity>>,
+) {
+    if positions.is_empty() {
+        if let Some(entities) = existing_entities {
+            for &entity in entities {
+                commands.entity(entity).despawn();
+            }
+        }
+        border_assets.meshes.remove(&chunk_id);
+        return;
+    }
+
+    let mesh_handle = border_assets
+        .meshes
+        .entry(chunk_id)
+        .or_insert_with(|| {
+            meshes.add(Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+            ))
+        })
+        .clone();
+
+    if let Some(mesh) = meshes.get_mut(&mesh_handle) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, std::mem::take(positions));
+        mesh.insert_attribute(ATTRIBUTE_BORDER_OFFSET, std::mem::take(offsets));
+        mesh.insert_attribute(ATTRIBUTE_BORDER_TIER, std::mem::take(tiers));
+        mesh.insert_indices(Indices::U32(std::mem::take(indices)));
+    }
+
+    if existing_entities.is_none() {
+        for &x_off in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
+            commands.spawn((
+                Mesh2d(mesh_handle.clone()),
+                MeshMaterial2d(material_handle.clone()),
+                Transform::from_xyz(x_off, 0.0, 0.8),
+                BorderMesh,
+                BorderChunk(chunk_id),
+            ));
+        }
+    }
+}
+
+fn border_scratch_capacity_bytes(
+    positions: &Vec<[f32; 3]>,
+    offsets: &Vec<[f32; 2]>,
+    tiers: &Vec<f32>,
+    indices: &Vec<u32>,
+) -> usize {
+    positions
+        .capacity()
+        .saturating_mul(std::mem::size_of::<[f32; 3]>())
+        .saturating_add(
+            offsets
+                .capacity()
+                .saturating_mul(std::mem::size_of::<[f32; 2]>()),
+        )
+        .saturating_add(tiers.capacity().saturating_mul(std::mem::size_of::<f32>()))
+        .saturating_add(
+            indices
+                .capacity()
+                .saturating_mul(std::mem::size_of::<u32>()),
+        )
+}
+
+fn cached_borders_bytes(borders: &[CachedBorder]) -> usize {
+    borders.iter().fold(
+        borders
+            .len()
+            .saturating_mul(std::mem::size_of::<CachedBorder>()),
+        |acc, border| {
+            acc.saturating_add(
+                border
+                    .chains
+                    .len()
+                    .saturating_mul(std::mem::size_of::<Vec<[f32; 2]>>()),
+            )
+            .saturating_add(
+                border
+                    .chains
+                    .iter()
+                    .map(|chain| {
+                        chain
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<[f32; 2]>())
+                    })
+                    .sum::<usize>(),
+            )
+        },
+    )
 }
 
 fn border_quantize(v: f32) -> i32 {

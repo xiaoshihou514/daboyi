@@ -9,9 +9,11 @@ use crate::editor::{
     can_erase_province_from_active_selection, ActiveAdmin, ActiveCountry, AdminMap, BrushTool,
     CountryMap, DragState, NonPlayableProvinces, SpatialHash,
 };
+use crate::map::borders::BorderChanges;
 use crate::map::{
     BorderDirty, BorderVersion, MapResource, PaintDebounce, PendingProvinceRecolor, MAP_WIDTH,
 };
+use crate::memory::MemoryMonitor;
 use crate::ui::UiInputBlock;
 
 #[derive(SystemParam)]
@@ -22,6 +24,7 @@ pub(crate) struct BrushAssignments<'w, 's> {
     active_country: Res<'w, ActiveCountry>,
     admin_areas: Res<'w, crate::editor::AdminAreas>,
     pending_province_recolor: ResMut<'w, PendingProvinceRecolor>,
+    border_changes: ResMut<'w, BorderChanges>,
     border_dirty: ResMut<'w, BorderDirty>,
     border_version: ResMut<'w, BorderVersion>,
     debounce: ResMut<'w, PaintDebounce>,
@@ -44,6 +47,11 @@ pub fn brush_input_system(
     mut assignments: BrushAssignments,
 ) {
     let Some(map) = map else { return };
+
+    // 仅在开始拖拽时记录内存使用
+    if mouse_input.just_pressed(MouseButton::Left) {
+        MemoryMonitor::log_memory_usage("Before brush drag start");
+    }
 
     if assignments.ui_input_block.0 {
         flush_immediately(&mut assignments, &drag);
@@ -120,6 +128,7 @@ pub fn brush_input_system(
         }
         drag.is_dragging = false;
         drag.painted_provinces.clear();
+        MemoryMonitor::log_memory_usage("After brush drag end");
     }
 
     if !drag.is_dragging {
@@ -141,7 +150,7 @@ pub fn brush_input_system(
 
     // 获取目标行政区
     let target_admin = assignments.active_admin.0;
-    let target_country = assignments.active_country.0.clone();
+    let target_country = &assignments.active_country.0;
 
     let mut processed_provinces = Vec::new();
     let mut changed_any = false;
@@ -184,6 +193,7 @@ pub fn brush_input_system(
 
             if erased_any {
                 assignments.pending_province_recolor.0.insert(prov_id);
+                assignments.border_changes.changed_provinces.insert(prov_id);
                 changed_any = true;
             }
             processed_provinces.push(prov_id);
@@ -214,10 +224,11 @@ pub fn brush_input_system(
                     assignments.admin_map.0.insert(prov_id, admin_id);
                     assignments.country_map.0.remove(&prov_id);
                     assignments.pending_province_recolor.0.insert(prov_id);
+                    assignments.border_changes.changed_provinces.insert(prov_id);
                     changed_any = true;
                 }
                 processed_provinces.push(prov_id);
-            } else if let Some(country_tag) = &target_country {
+            } else if let Some(country_tag) = target_country {
                 if !can_assign_province_to_active_country(
                     country_tag,
                     &assignments.admin_areas.0,
@@ -234,6 +245,7 @@ pub fn brush_input_system(
                         .0
                         .insert(prov_id, country_tag.clone());
                     assignments.pending_province_recolor.0.insert(prov_id);
+                    assignments.border_changes.changed_provinces.insert(prov_id);
                     changed_any = true;
                 }
                 processed_provinces.push(prov_id);

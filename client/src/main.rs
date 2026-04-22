@@ -1,15 +1,18 @@
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 
+mod async_utils;
 mod capitals;
 mod editor;
 mod labels;
 mod map;
+mod memory;
 mod state;
 mod terrain;
 mod ui;
 
 fn main() {
+    memory::MemoryMonitor::log_memory_usage("Application start");
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.1, 0.26, 0.55)))
         .add_plugins(
@@ -35,5 +38,6 @@ fn main() {
         .add_plugins(capitals::CapitalsPlugin)
         .add_plugins(labels::LabelsPlugin)
         .add_plugins(ui::UiPlugin)
+        .add_plugins(async_utils::AsyncUtilsPlugin)
         .run();
 }
