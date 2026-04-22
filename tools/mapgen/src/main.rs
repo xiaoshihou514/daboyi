@@ -2,7 +2,6 @@ mod geo;
 
 use geo::{parse_gpb_geometry, process_polygons, process_terrain_polygon};
 use rusqlite::Connection;
-use shared::conv::{f64_to_f32, u64_to_f64};
 use shared::map::{MapData, TerrainData};
 use std::collections::HashMap;
 use std::fs;
@@ -186,7 +185,7 @@ fn main() {
             &vegetation,
             &climate,
             &raw_material,
-            f64_to_f32(harbor),
+            harbor as f32,
             hex_color,
             port_sz,
         ) {
@@ -217,7 +216,7 @@ fn main() {
     println!(
         "Wrote {} ({:.1} MB)",
         output_path.display(),
-        u64_to_f64(file_size) / 1024.0 / 1024.0
+        file_size as f64 / 1024.0 / 1024.0
     );
 
     // Pass 2: build terrain.bin from non-playable features (water + wasteland).
@@ -266,6 +265,6 @@ fn main() {
     println!(
         "Wrote {} ({:.1} MB)",
         terrain_path.display(),
-        u64_to_f64(terrain_size) / 1024.0 / 1024.0
+        terrain_size as f64 / 1024.0 / 1024.0
     );
 }

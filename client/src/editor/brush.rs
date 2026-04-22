@@ -2,7 +2,6 @@
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use shared::conv::u32_to_usize;
 use shared::map::MapProvince;
 
 use crate::editor::{
@@ -359,7 +358,7 @@ fn find_provinces_in_radius_fast(
             && map
                 .0
                 .provinces
-                .get(u32_to_usize(prov_id))
+                .get(prov_id as usize)
                 .map(|prov| {
                     [-MAP_WIDTH, 0.0, MAP_WIDTH]
                         .into_iter()
@@ -377,7 +376,7 @@ fn find_provinces_in_radius_fast(
             continue;
         }
         // 找到对应的省份
-        let prov_index = u32_to_usize(prov_id);
+        let prov_index = prov_id as usize;
         let Some(prov) = map.0.provinces.get(prov_index) else {
             continue;
         };

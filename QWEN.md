@@ -34,8 +34,7 @@ daboyi/
 ├── shared/                 # 共享类型库
 │   └── src/
 │       ├── lib.rs          # 导出模块
-│       ├── map.rs          # 地图几何类型（MapData, MapProvince, TerrainData 等）
-│       └── conv.rs         # 数值转换辅助函数（消除 as 转换）
+│       └── map.rs          # 地图几何类型（MapData, MapProvince, TerrainData 等）
 ├── client/                 # Bevy 编辑器应用（唯一可运行的二进制）
 │   └── src/
 │       ├── main.rs         # 入口：Bevy App 初始化
@@ -210,9 +209,8 @@ pub enum MapMode {
 
 ### Rust 编码规则
 
-1. **禁止 `as` 转换**：所有数值转换必须使用 `shared/src/conv.rs` 中的辅助函数
-   - 例如：`f64_to_f32`、`u32_to_usize`、`usize_to_u32`
-   - 如果需要新的转换函数，请在 `conv.rs` 中添加
+1. **允许基础类型使用 `as` 转换**：`u32`/`usize`/`f32`/`f64` 等基础数值类型可直接使用 `as`
+   - 涉及范围限制或归一化时，在调用点显式写出 `clamp`/`round` 等逻辑
 
 2. **禁止 `unsafe` 代码**：所有代码必须使用安全的 Rust
    - 无 `unsafe fn`

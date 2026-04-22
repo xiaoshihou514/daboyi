@@ -11,7 +11,8 @@ pub struct UiPlugin;
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub struct UiPass;
 
-const FONT_PATH: &str = "fonts/NotoSansCJKsc-Regular.otf";
+const FONT_PATH: &str = "NotoSansCJKsc-Regular.otf";
+const PROVINCE_FONT_PATH: &str = "王汉宗粗楷体.ttf";
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf");
 const INITIAL_CAMERA_SCALE: f32 = 0.15;
 const INITIAL_CAMERA_X: f32 = 105.0;
@@ -20,6 +21,9 @@ const INITIAL_CAMERA_Y: f32 = 35.0;
 /// Holds the loaded CJK font handle (Simplified Chinese).
 #[derive(Resource)]
 pub struct CjkFont(pub Handle<Font>);
+
+#[derive(Resource)]
+pub struct ProvinceLabelFont(pub Handle<Font>);
 
 #[derive(Resource, Default)]
 pub struct UiInputBlock(pub bool);
@@ -47,7 +51,9 @@ impl Plugin for UiPlugin {
 
 fn load_font(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font = asset_server.load(FONT_PATH);
+    let province_font = asset_server.load(PROVINCE_FONT_PATH);
     commands.insert_resource(CjkFont(font));
+    commands.insert_resource(ProvinceLabelFont(province_font));
 }
 
 fn setup_camera(mut commands: Commands) {

@@ -24,7 +24,7 @@
 2. **客户端驱动的 tick 模型**：客户端按 `GameSpeed` 计时器频率向服务端发送 `Tick` 消息
 3. **非对称序列化**：客户端→服务端用 JSON（可读性），服务端→客户端用 bincode（性能）
 4. **经济节流**：经济计算每 100 tick 执行一次，日期每 tick 推进一天，存档每 300 tick 写入 RocksDB
-5. **安全性**：代码库中无 `unsafe` 块，无 `as` 转换
+5. **安全性**：代码库中无 `unsafe` 块，基础数值类型转换可直接使用 `as`
 
 ## 项目结构
 
@@ -35,8 +35,7 @@ daboyi/
 ├── shared/                 # 共享类型库
 │   └── src/
 │       ├── lib.rs          # 核心游戏类型（Country, Province, Pop, GameState 等）
-│       ├── map.rs          # 地图几何类型（MapData, MapProvince, TerrainData）
-│       └── conv.rs         # 数值转换辅助函数（消除 as 转换）
+│       └── map.rs          # 地图几何类型（MapData, MapProvince, TerrainData）
 ├── server/                 # 服务端
 │   └── src/
 │       ├── main.rs         # 入口：HTTP 服务器启动
@@ -256,9 +255,8 @@ pub enum ServerMsg {
 
 ### Rust 编码规则
 
-1. **禁止 `as` 转换**：所有数值转换必须使用 `shared/src/conv.rs` 中的命名辅助函数
-   - 例如：`f64_to_f32`、`u32_to_usize`、`usize_to_u32`
-   - 如果需要新的转换函数，请在 `conv.rs` 中添加，使用 `From`/`TryFrom`/`.try_into().unwrap()`
+1. **允许基础类型使用 `as` 转换**：`u32`/`usize`/`f32`/`f64` 等基础数值类型可直接使用 `as`
+   - 涉及范围限制或归一化时，在调用点显式写出 `clamp`/`round` 等逻辑
 
 2. **禁止 `unsafe` 代码**：所有代码必须使用安全的 Rust
    - 无 `unsafe fn`

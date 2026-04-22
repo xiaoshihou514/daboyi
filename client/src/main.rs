@@ -3,6 +3,7 @@ use bevy_egui::EguiPlugin;
 
 mod capitals;
 mod editor;
+mod labels;
 mod map;
 mod state;
 mod terrain;
@@ -32,6 +33,7 @@ fn main() {
         .add_plugins(map::MapPlugin)
         .add_plugins(map::BordersPlugin)
         .add_plugins(capitals::CapitalsPlugin)
+        .add_plugins(labels::LabelsPlugin)
         .add_plugins(ui::UiPlugin)
         .run();
 }

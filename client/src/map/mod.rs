@@ -15,7 +15,6 @@ use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
 use material::{ProvinceMapMaterial, ProvinceMapParams};
-use shared::conv::{u32_to_usize, unit_f32_to_u8, usize_to_f32, usize_to_u32};
 use shared::map::MapData;
 use std::collections::{HashMap, HashSet};
 
@@ -26,7 +25,8 @@ use crate::editor::{
 use crate::state::AppState;
 pub use borders::BordersPlugin;
 use color::{brighten, owner_color_rgba, terrain_province_color};
-use interact::{camera_controls, province_click};
+pub use interact::camera_controls;
+use interact::province_click;
 
 pub const MAP_BIN_PATH: &str = "assets/map.bin";
 /// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
@@ -236,22 +236,25 @@ fn load_map(
         let political_color = mp.hex_color;
         let terrain_color = terrain_province_color(&mp.topography);
         let offset = pid * 4;
-        political_pixel_data[offset] = unit_f32_to_u8(political_color[0]);
-        political_pixel_data[offset + 1] = unit_f32_to_u8(political_color[1]);
-        political_pixel_data[offset + 2] = unit_f32_to_u8(political_color[2]);
-        political_pixel_data[offset + 3] = unit_f32_to_u8(political_color[3]);
-        terrain_pixel_data[offset] = unit_f32_to_u8(terrain_color[0]);
-        terrain_pixel_data[offset + 1] = unit_f32_to_u8(terrain_color[1]);
-        terrain_pixel_data[offset + 2] = unit_f32_to_u8(terrain_color[2]);
-        terrain_pixel_data[offset + 3] = unit_f32_to_u8(terrain_color[3]);
+        political_pixel_data[offset] = (political_color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+        political_pixel_data[offset + 1] =
+            (political_color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+        political_pixel_data[offset + 2] =
+            (political_color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+        political_pixel_data[offset + 3] =
+            (political_color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+        terrain_pixel_data[offset] = (terrain_color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+        terrain_pixel_data[offset + 1] = (terrain_color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+        terrain_pixel_data[offset + 2] = (terrain_color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+        terrain_pixel_data[offset + 3] = (terrain_color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
 
         if mp.vertices.is_empty() || mp.indices.is_empty() {
             continue;
         }
 
-        let col_f = usize_to_f32(pid % TEX_WIDTH);
-        let row_f = usize_to_f32(pid / TEX_WIDTH);
-        let base_idx = usize_to_u32(all_positions.len());
+        let col_f = (pid % TEX_WIDTH) as f32;
+        let row_f = (pid / TEX_WIDTH) as f32;
+        let base_idx = all_positions.len() as u32;
 
         for v in &mp.vertices {
             all_positions.push([v[0], v[1], 0.0]);
@@ -288,8 +291,8 @@ fn load_map(
     let color_buf_data = political_pixel_data.clone();
     let mut political_image = Image::new(
         Extent3d {
-            width: usize_to_u32(TEX_WIDTH),
-            height: usize_to_u32(tex_height),
+            width: TEX_WIDTH as u32,
+            height: tex_height as u32,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -301,8 +304,8 @@ fn load_map(
     let political_tex_handle = images.add(political_image);
     let mut terrain_image = Image::new(
         Extent3d {
-            width: usize_to_u32(TEX_WIDTH),
-            height: usize_to_u32(tex_height),
+            width: TEX_WIDTH as u32,
+            height: tex_height as u32,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -331,8 +334,8 @@ fn load_map(
         data: color_buf_data,
         version: 1,
         image_handle: political_tex_handle,
-        tex_width: usize_to_u32(TEX_WIDTH),
-        tex_height: usize_to_u32(tex_height),
+        tex_width: TEX_WIDTH as u32,
+        tex_height: tex_height as u32,
     });
     commands.insert_resource(ProvinceMaterialHandle(material_handle.clone()));
 
@@ -425,10 +428,10 @@ fn write_color(data: &mut [u8], pid: usize, color: [f32; 4]) {
     if offset + 4 > data.len() {
         return;
     }
-    data[offset] = unit_f32_to_u8(color[0]);
-    data[offset + 1] = unit_f32_to_u8(color[1]);
-    data[offset + 2] = unit_f32_to_u8(color[2]);
-    data[offset + 3] = unit_f32_to_u8(color[3]);
+    data[offset] = (color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+    data[offset + 1] = (color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+    data[offset + 2] = (color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
+    data[offset + 3] = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
 }
 
 fn country_color_for_tag(tag: &str, lookup: &HashMap<&str, [f32; 4]>) -> [f32; 4] {
@@ -516,7 +519,7 @@ fn color_provinces(
     if needs_full_recolor {
         // Full texture rewrite (~84 KB): recompute every province's colour.
         for pid in 0..map.0.provinces.len() {
-            let is_selected = selected.0 == Some(usize_to_u32(pid));
+            let is_selected = selected.0 == Some(pid as u32);
             let base = base_color(pid);
             let color = if is_selected { brighten(base) } else { base };
             write_color(&mut color_buf.data, pid, color);
@@ -536,7 +539,7 @@ fn color_provinces(
     if has_pending_province {
         let ids: Vec<u32> = pending_province_recolor.0.drain().collect();
         for prov_id in ids {
-            let pid = u32_to_usize(prov_id);
+            let pid = prov_id as usize;
             if pid >= map.0.provinces.len() {
                 continue;
             }
@@ -554,13 +557,13 @@ fn color_provinces(
     // Selection-only update: restore old selected province, highlight new one.
     if selection_changed {
         if let Some(old_u32) = guard.last.selected {
-            let old_pid = u32_to_usize(old_u32);
+            let old_pid = old_u32 as usize;
             if old_pid < map.0.provinces.len() {
                 write_color(&mut color_buf.data, old_pid, base_color(old_pid));
             }
         }
         if let Some(new_u32) = selected.0 {
-            let new_pid = u32_to_usize(new_u32);
+            let new_pid = new_u32 as usize;
             if new_pid < map.0.provinces.len() {
                 write_color(&mut color_buf.data, new_pid, brighten(base_color(new_pid)));
             }

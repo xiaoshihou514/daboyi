@@ -9,7 +9,6 @@
 use geo::algorithm::centroid::Centroid;
 use geo::algorithm::simplify::Simplify;
 use geo::{Coord, LineString, Polygon};
-use shared::conv::{f64_to_f32, usize_to_u32};
 use shared::map::{MapProvince, TerrainPolygon};
 
 /// WGS84 semi-major axis.
@@ -29,7 +28,7 @@ pub fn gall_stereo_to_wgs84(x: f64, y: f64) -> (f64, f64) {
 
 /// Project lon/lat to screen coordinates (equirectangular: identity mapping).
 pub fn project(lon: f64, lat: f64) -> [f32; 2] {
-    [f64_to_f32(lon), f64_to_f32(lat)]
+    [lon as f32, lat as f32]
 }
 
 /// Unwrap longitude jumps >180° within a ring to prevent giant antimeridian triangles.
@@ -93,9 +92,9 @@ pub fn triangulate_polygon(
 
     let vertices: Vec<[f32; 2]> = flat_proj
         .chunks(2)
-        .map(|c| [f64_to_f32(c[0]), f64_to_f32(c[1])])
+        .map(|c| [c[0] as f32, c[1] as f32])
         .collect();
-    let indices: Vec<u32> = indices.iter().map(|&i| usize_to_u32(i)).collect();
+    let indices: Vec<u32> = indices.iter().map(|&i| i as u32).collect();
 
     (vertices, indices)
 }
@@ -105,10 +104,10 @@ pub fn compute_centroid(outer: &[[f64; 2]]) -> [f32; 2] {
     let ls = coords_to_linestring(outer);
     let poly = Polygon::new(ls, vec![]);
     match poly.centroid() {
-        Some(c) => [f64_to_f32(c.x()), f64_to_f32(c.y())],
+        Some(c) => [c.x() as f32, c.y() as f32],
         None => {
             if let Some(first) = outer.first() {
-                [f64_to_f32(first[0]), f64_to_f32(first[1])]
+                [first[0] as f32, first[1] as f32]
             } else {
                 [0.0, 0.0]
             }
@@ -301,7 +300,7 @@ pub fn process_polygons(
                 .collect(),
         );
 
-        let base_idx = usize_to_u32(all_vertices.len());
+        let base_idx = all_vertices.len() as u32;
         let (verts, idxs) = triangulate_polygon(&outer_simplified, &holes_simplified);
         all_vertices.extend(verts);
         all_indices.extend(idxs.iter().map(|i| i + base_idx));
@@ -351,7 +350,7 @@ pub fn process_terrain_polygon(
             .iter()
             .map(|h| simplify_ring(h, SIMPLIFY_EPSILON))
             .collect();
-        let base_idx = usize_to_u32(all_vertices.len());
+        let base_idx = all_vertices.len() as u32;
         let (verts, idxs) = triangulate_polygon(&outer_simplified, &holes_simplified);
         all_vertices.extend(verts);
         all_indices.extend(idxs.iter().map(|i| i + base_idx));

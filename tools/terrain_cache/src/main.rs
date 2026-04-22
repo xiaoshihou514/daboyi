@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use shared::conv::{f32_to_i32, u32_to_usize, usize_to_u32};
 use shared::map::{MapData, TerrainData, TerrainPolygon};
 use std::collections::HashMap;
 use std::fs;
@@ -83,8 +82,8 @@ fn main() -> io::Result<()> {
         build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water);
     let cache = TerrainAdjacencyCache {
         version: TERRAIN_ADJACENCY_CACHE_VERSION,
-        province_count: usize_to_u32(map.provinces.len()),
-        terrain_polygon_count: usize_to_u32(terrain.polygons.len()),
+        province_count: map.provinces.len() as u32,
+        terrain_polygon_count: terrain.polygons.len() as u32,
         polygons,
         borders,
         component_ids,
@@ -133,7 +132,7 @@ fn build_terrain_adjacency(
     let mut terrain_pair_segments: HashMap<(u32, u32), Vec<[[f32; 2]; 2]>> = HashMap::new();
     let mut terrain_edges: HashMap<[(i32, i32); 2], Vec<u32>> = HashMap::new();
     for (terrain_index, segments) in terrain_boundaries.iter().enumerate() {
-        let terrain_index = usize_to_u32(terrain_index);
+        let terrain_index = terrain_index as u32;
         for &segment in segments {
             terrain_edges
                 .entry(quantized_segment_key(segment))
@@ -157,7 +156,7 @@ fn build_terrain_adjacency(
         if chains.is_empty() {
             continue;
         }
-        polygons[u32_to_usize(terrain_index)]
+        polygons[terrain_index as usize]
             .adjacent_provinces
             .push(province_id);
         borders.push(TerrainProvinceBorder {
@@ -194,11 +193,11 @@ fn terrain_component_ids(
             for right_index in left_index + 1..polygons.len() {
                 let left = polygons[left_index];
                 let right = polygons[right_index];
-                if terrain_is_water[u32_to_usize(left)] != terrain_is_water[u32_to_usize(right)] {
+                if terrain_is_water[left as usize] != terrain_is_water[right as usize] {
                     continue;
                 }
-                adjacency[u32_to_usize(left)].push(right);
-                adjacency[u32_to_usize(right)].push(left);
+                adjacency[left as usize].push(right);
+                adjacency[right as usize].push(left);
             }
         }
     }
@@ -209,11 +208,11 @@ fn terrain_component_ids(
         if component_ids[polygon_index] != u32::MAX {
             continue;
         }
-        let mut stack = vec![usize_to_u32(polygon_index)];
+        let mut stack = vec![polygon_index as u32];
         component_ids[polygon_index] = next_component;
         while let Some(current) = stack.pop() {
-            for &neighbor in &adjacency[u32_to_usize(current)] {
-                let neighbor_index = u32_to_usize(neighbor);
+            for &neighbor in &adjacency[current as usize] {
+                let neighbor_index = neighbor as usize;
                 if component_ids[neighbor_index] != u32::MAX {
                     continue;
                 }
@@ -242,10 +241,9 @@ fn terrain_polygon_boundary_segments(poly: &TerrainPolygon) -> Vec<[[f32; 2]; 2]
                 (end, start)
             };
             *edge_counts.entry(key).or_insert(0) += 1;
-            edge_points.entry(key).or_insert([
-                poly.vertices[u32_to_usize(start)],
-                poly.vertices[u32_to_usize(end)],
-            ]);
+            edge_points
+                .entry(key)
+                .or_insert([poly.vertices[start as usize], poly.vertices[end as usize]]);
         }
     }
 
@@ -273,8 +271,8 @@ fn quantized_segment_key(segment: [[f32; 2]; 2]) -> [(i32, i32); 2] {
 
 fn quantized_point(point: [f32; 2]) -> (i32, i32) {
     (
-        f32_to_i32((point[0] * 100.0).round()),
-        f32_to_i32((point[1] * 100.0).round()),
+        (point[0] * 100.0).round() as i32,
+        (point[1] * 100.0).round() as i32,
     )
 }
 

@@ -12,7 +12,6 @@ use bevy::render::render_resource::{
     VertexFormat,
 };
 use serde::{Deserialize, Serialize};
-use shared::conv::{f32_to_i32, u32_to_f32, u32_to_usize, usize_to_u32};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -38,7 +37,7 @@ const ATTRIBUTE_BORDER_TIER: MeshVertexAttribute =
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CachedBorder {
-    provinces: [u32; 2],
+    pub(crate) provinces: [u32; 2],
     chains: Vec<Vec<[f32; 2]>>,
 }
 
@@ -187,7 +186,7 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
         return;
     }
     let Some(map) = map else { return };
-    let province_count = usize_to_u32(map.0.provinces.len());
+    let province_count = map.0.provinces.len() as u32;
 
     if let Ok(Some(cached_borders)) = load_cached_adjacency(province_count) {
         println!(
@@ -239,8 +238,8 @@ fn build_adjacency(map: &shared::map::MapData) -> Vec<CachedBorder> {
     // Pass 1: compute merged chains for every adjacent pair.
     let mut pair_data: Vec<([u32; 2], Vec<Vec<[f32; 2]>>)> = Vec::with_capacity(pairs.len());
     for pair in pairs {
-        let ia = u32_to_usize(pair[0]);
-        let ib = u32_to_usize(pair[1]);
+        let ia = pair[0] as usize;
+        let ib = pair[1] as usize;
         if ia >= map.provinces.len() || ib >= map.provinces.len() {
             continue;
         }
@@ -408,8 +407,8 @@ fn rebuild_borders(
     let mut junction_rims: HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
 
     for border in &border_inputs.adjacency.0 {
-        let ia = u32_to_usize(border.provinces[0]);
-        let ib = u32_to_usize(border.provinces[1]);
+        let ia = border.provinces[0] as usize;
+        let ib = border.provinces[1] as usize;
         if is_wasteland(ia) || is_wasteland(ib) {
             continue;
         }
@@ -637,7 +636,7 @@ fn recycle_mesh_buffers(mesh: &mut Mesh, scratch: &mut BorderScratch) {
 }
 
 fn border_quantize(v: f32) -> i32 {
-    f32_to_i32((v * 100.0).round())
+    (v * 100.0).round() as i32
 }
 
 fn border_qpt(p: [f32; 2]) -> (i32, i32) {
@@ -775,7 +774,7 @@ fn chaikin_smooth(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 /// and leaves visible gaps at junction points.
 fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
     // Use 0.1° (≈11 km) precision so small GIS axis-aligned endpoint gaps are bridged.
-    let quantize = |v: f32| -> i32 { f32_to_i32((v * 10.0).round()) };
+    let quantize = |v: f32| -> i32 { (v * 10.0).round() as i32 };
     let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
     'restart: loop {
@@ -840,7 +839,7 @@ fn weld_endpoints_global(pair_data: &mut Vec<([u32; 2], Vec<Vec<[f32; 2]>>)>) {
     // 0.1° buckets: any two endpoints within ~0.05° of each other share a bucket.
     // Using the same resolution as merge_chains so GIS precision mismatches are
     // reliably merged across province-pair boundaries.
-    let quantize = |v: f32| -> i32 { f32_to_i32((v * 10.0).round()) };
+    let quantize = |v: f32| -> i32 { (v * 10.0).round() as i32 };
     let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
     let mut bucket_sum: HashMap<(i32, i32), ([f32; 2], u32)> = HashMap::new();
@@ -861,7 +860,7 @@ fn weld_endpoints_global(pair_data: &mut Vec<([u32; 2], Vec<Vec<[f32; 2]>>)>) {
     }
     let centroids: HashMap<(i32, i32), [f32; 2]> = bucket_sum
         .into_iter()
-        .map(|(k, (sum, n))| (k, [sum[0] / u32_to_f32(n), sum[1] / u32_to_f32(n)]))
+        .map(|(k, (sum, n))| (k, [sum[0] / n as f32, sum[1] / n as f32]))
         .collect();
 
     for (_, chains) in pair_data.iter_mut() {
@@ -995,7 +994,7 @@ fn polyline_to_border_strip(
         right.push([offset.0, offset.1]);
     }
 
-    let base = usize_to_u32(positions.len());
+    let base = positions.len() as u32;
     for i in 0..n {
         positions.push([points[i][0], points[i][1], z]);
         positions.push([points[i][0], points[i][1], z]);
@@ -1070,7 +1069,7 @@ fn add_junction_fill(
         return;
     }
 
-    let base = usize_to_u32(positions.len());
+    let base = positions.len() as u32;
     positions.push([center[0], center[1], border_tier_z(BorderTier::Country)]);
     offsets.push([0.0, 0.0]);
     tiers.push(border_tier_id(BorderTier::Country));
@@ -1079,7 +1078,7 @@ fn add_junction_fill(
         offsets.push([point[0] - center[0], point[1] - center[1]]);
         tiers.push(border_tier_id(BorderTier::Country));
     }
-    let poly_len = usize_to_u32(polygon.len());
+    let poly_len = polygon.len() as u32;
     for k in 0..poly_len {
         indices.push(base);
         indices.push(base + 1 + k);

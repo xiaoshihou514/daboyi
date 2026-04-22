@@ -3,7 +3,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use shared::conv::{u32_to_usize, u8_to_unit_f32, unit_f32_to_u8, usize_to_f32};
 
 use crate::editor::{
     child_admin_ids_in_tree, should_show_admin_children, ActiveAdmin, ActiveCountry, AdminAreas,
@@ -274,7 +273,7 @@ pub fn egui_ui_system(
                     ui.label(format!("选中省份 ID: {}", prov_id));
 
                     if let Some(ref map) = map {
-                        let prov_index = u32_to_usize(prov_id);
+                        let prov_index = prov_id as usize;
                         if prov_index < map.0.provinces.len() {
                             let prov = &map.0.provinces[prov_index];
                             let display_name = province_names
@@ -383,7 +382,7 @@ pub fn egui_ui_system(
                     if ui.button("创建").clicked() && !ui_state.new_country_name.is_empty() {
                         let idx = editor.countries.0.len();
                         let tag = format!("C{:03}", idx);
-                        let hue = (usize_to_f32(idx) * 137.5) % 360.0;
+                        let hue = (idx as f32 * 137.5) % 360.0;
                         let color = hsl_to_rgba(hue, 0.65, 0.50);
 
                         editor.countries.0.push(EditorCountry {
@@ -440,7 +439,7 @@ pub fn egui_ui_system(
                                 .iter()
                                 .filter(|a| &a.country_tag == country_tag)
                                 .count();
-                            let hue = (usize_to_f32(existing_count) * 137.508) % 360.0;
+                            let hue = (existing_count as f32 * 137.508) % 360.0;
                             let auto_color = hsl_to_rgba(hue, 0.6, 0.55);
 
                             editor.admin_areas.0.push(AdminArea {
@@ -652,18 +651,18 @@ fn hsl_to_rgba(h: f32, s: f32, l: f32) -> [f32; 4] {
 
 fn color32_from_rgba(rgba: [f32; 4]) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
-        unit_f32_to_u8(rgba[0]),
-        unit_f32_to_u8(rgba[1]),
-        unit_f32_to_u8(rgba[2]),
-        unit_f32_to_u8(rgba[3]),
+        (rgba[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (rgba[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (rgba[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (rgba[3].clamp(0.0, 1.0) * 255.0).round() as u8,
     )
 }
 
 fn rgba_from_color32(color: egui::Color32) -> [f32; 4] {
     [
-        u8_to_unit_f32(color.r()),
-        u8_to_unit_f32(color.g()),
-        u8_to_unit_f32(color.b()),
-        u8_to_unit_f32(color.a()),
+        color.r() as f32 / 255.0,
+        color.g() as f32 / 255.0,
+        color.b() as f32 / 255.0,
+        color.a() as f32 / 255.0,
     ]
 }

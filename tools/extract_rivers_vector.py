@@ -41,7 +41,9 @@ X_MAX =  15033576.0
 Y_MIN =  -5789437.0
 Y_MAX =   8379220.0
 
-R = 6371007.2          # Earth radius used by Gall Stereo (metres)
+# Match the map pipeline's inverse Gall Stereographic parameters so the
+# extracted river coordinates line up with province geometry.
+R = 6378137.0
 COS45 = math.cos(math.radians(45))
 
 IMG_W = 16384
@@ -54,7 +56,9 @@ WORK_W = IMG_W // SCALE
 WORK_H = IMG_H // SCALE
 
 # River palette indices: 3–15 encode different river widths.
-# 3–6 = wide (class 2), 7–10 = medium (class 1), 11–15 = thin (class 0)
+# Lower indices render thinner channels; higher indices render wider channels.
+# Width classes in rivers.bin follow shared/src/map.rs:
+#   0 = thin, 1 = medium, 2 = wide
 RIVER_INDEX_MIN = 3
 RIVER_INDEX_MAX = 15
 
@@ -80,10 +84,29 @@ def pixel_to_lonlat(col: float, row: float) -> tuple[float, float]:
 def width_class_for_index(idx: int) -> int:
     """Map palette index to width class 0 (thin) / 1 (medium) / 2 (wide)."""
     if idx <= 6:
-        return 2
+        return 0
     if idx <= 10:
         return 1
-    return 0
+    return 2
+
+
+def pooled_width_index(block: np.ndarray, axis=None) -> np.ndarray:
+    """
+    Preserve the widest river class present in a pooled block.
+
+    River palette indices are inverted with respect to width: lower indices are
+    wider (3-6), higher indices are thinner (11-15). Using max-pooling here
+    collapses mixed-width blocks toward thin rivers, which made every emitted
+    edge end up as width class 0. We instead keep the minimum river index
+    present in the block, falling back to 0 when no river pixel exists.
+    """
+    masked = np.where(
+        (block >= RIVER_INDEX_MIN) & (block <= RIVER_INDEX_MAX),
+        block,
+        255,
+    )
+    reduced = masked.min(axis=axis)
+    return np.where(reduced == 255, 0, reduced).astype(np.uint8)
 
 
 def build_adjacency(skeleton: np.ndarray) -> dict:
@@ -334,9 +357,10 @@ def main() -> None:
     river_mask = block_reduce(river_full, block_size=(SCALE, SCALE), func=np.max)
     print(f"River pixels (working res): {river_mask.sum():,}")
 
-    # Also downsample the palette indices (take the max, which = widest river
-    # in each block) for width-class assignment.
-    idx_small = block_reduce(arr, block_size=(SCALE, SCALE), func=np.max).astype(np.uint8)
+    # Also downsample palette indices for width-class assignment.
+    # Lower palette indices are wider rivers, so preserve the minimum river
+    # index seen in each block rather than max-pooling toward thin classes.
+    idx_small = block_reduce(arr, block_size=(SCALE, SCALE), func=pooled_width_index).astype(np.uint8)
 
     # ── Morphological closing (connect 1-pixel gaps) ─────────────────────────
     river_mask = closing(river_mask, disk(1))

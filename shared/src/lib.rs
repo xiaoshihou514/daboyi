@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub mod conv;
 pub mod map;
 
 /// A country in the map editor: has a display name, short tag, RGBA color, and optional capital.

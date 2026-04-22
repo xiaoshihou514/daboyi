@@ -1,5 +1,4 @@
 use bevy::prelude::*;
-use shared::conv::u32_to_usize;
 
 use crate::editor::{Countries, CountryMap};
 use crate::map::{MapMode, MapResource};
@@ -64,7 +63,7 @@ fn spawn_capitals(
         let Some(cap_id) = country.capital_province else {
             continue;
         };
-        let cap_idx = u32_to_usize(cap_id);
+        let cap_idx = cap_id as usize;
         if cap_idx >= map.0.provinces.len() {
             continue;
         }

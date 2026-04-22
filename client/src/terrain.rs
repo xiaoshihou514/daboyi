@@ -7,14 +7,13 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use serde::{Deserialize, Serialize};
-use shared::conv::{f32_to_i32, u32_to_usize, usize_to_u32};
 use shared::map::{RiverData, TerrainData};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
-const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
+pub const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
 const TERRAIN_ADJACENCY_BIN_PATH: &str = "assets/terrain_adjacency.bin";
 const TERRAIN_ADJACENCY_CACHE_VERSION: u32 = 3;
 const SURROUND_THRESHOLD: f32 = 0.8;
@@ -22,9 +21,12 @@ const SURROUND_THRESHOLD: f32 = 0.8;
 const WORLD_OFFSETS: [f32; 3] = [-360.0, 0.0, 360.0];
 
 /// River width in world-space degrees per width class.
-const RIVER_WIDTHS: [f32; 3] = [0.10, 0.18, 0.30];
+pub const RIVER_WIDTHS: [f32; 3] = [0.03, 0.06, 0.1];
 /// River RGBA color.
-const RIVER_COLOR: [f32; 4] = [0.18, 0.47, 0.75, 0.85];
+const RIVER_COLOR: [f32; 4] = [0.18, 0.47, 0.75, 1.0];
+const RIVER_LOCAL_Z: f32 = 0.0;
+const RIVER_LAYER_Z: f32 = 0.04;
+const WATER_OVERLAY_Z: f32 = 0.05;
 
 pub struct TerrainPlugin;
 
@@ -127,16 +129,29 @@ fn load_terrain(
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(total_verts);
     let mut colors: Vec<[f32; 4]> = Vec::with_capacity(total_verts);
     let mut indices: Vec<u32> = Vec::with_capacity(total_idxs);
+    let mut water_positions: Vec<[f32; 3]> = Vec::new();
+    let mut water_colors: Vec<[f32; 4]> = Vec::new();
+    let mut water_indices: Vec<u32> = Vec::new();
     let mut polygon_meta: Vec<TerrainPolygonMeta> = Vec::with_capacity(terrain.polygons.len());
 
     for poly in &terrain.polygons {
-        let base = usize_to_u32(positions.len());
+        let base = positions.len() as u32;
         for &[x, y] in &poly.vertices {
             positions.push([x, y, 0.0]);
             colors.push(poly.color);
         }
         for &i in &poly.indices {
             indices.push(i + base);
+        }
+        if is_water_terrain_color(poly.color) {
+            let water_base = water_positions.len() as u32;
+            for &[x, y] in &poly.vertices {
+                water_positions.push([x, y, 0.0]);
+                water_colors.push(poly.color);
+            }
+            for &i in &poly.indices {
+                water_indices.push(i + water_base);
+            }
         }
         polygon_meta.push(TerrainPolygonMeta {
             original_color: poly.color,
@@ -155,6 +170,18 @@ fn load_terrain(
 
     let handle = meshes.add(mesh);
     let material = materials.add(ColorMaterial::default());
+    let water_overlay_handle = if water_positions.is_empty() {
+        None
+    } else {
+        let mut water_mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        );
+        water_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, water_positions);
+        water_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, water_colors);
+        water_mesh.insert_indices(Indices::U32(water_indices));
+        Some(meshes.add(water_mesh))
+    };
 
     for &x_off in &WORLD_OFFSETS {
         commands.spawn((
@@ -162,6 +189,13 @@ fn load_terrain(
             MeshMaterial2d(material.clone()),
             Transform::from_xyz(x_off, 0.0, -0.2),
         ));
+        if let Some(water_overlay_handle) = water_overlay_handle.as_ref() {
+            commands.spawn((
+                Mesh2d(water_overlay_handle.clone()),
+                MeshMaterial2d(material.clone()),
+                Transform::from_xyz(x_off, 0.0, WATER_OVERLAY_Z),
+            ));
+        }
     }
 
     commands.insert_resource(TerrainMeshData {
@@ -189,8 +223,8 @@ fn compute_terrain_adjacency(
     let (Some(map), Some(terrain_mesh)) = (map, terrain_mesh) else {
         return;
     };
-    let province_count = usize_to_u32(map.0.provinces.len());
-    let terrain_polygon_count = usize_to_u32(terrain_mesh.polygons.len());
+    let province_count = map.0.provinces.len() as u32;
+    let terrain_polygon_count = terrain_mesh.polygons.len() as u32;
 
     if let Some(handle) = build_task.handle.as_ref() {
         if !handle.is_finished() {
@@ -292,7 +326,7 @@ fn build_terrain_adjacency(
     let mut terrain_pair_segments: HashMap<(u32, u32), Vec<[[f32; 2]; 2]>> = HashMap::new();
     let mut terrain_edges: HashMap<[(i32, i32); 2], Vec<u32>> = HashMap::new();
     for (terrain_index, segments) in terrain_boundaries.iter().enumerate() {
-        let terrain_index = usize_to_u32(terrain_index);
+        let terrain_index = terrain_index as u32;
         for &segment in segments {
             terrain_edges
                 .entry(quantized_segment_key(segment))
@@ -316,7 +350,7 @@ fn build_terrain_adjacency(
         if chains.is_empty() {
             continue;
         }
-        polygons[u32_to_usize(terrain_index)]
+        polygons[terrain_index as usize]
             .adjacent_provinces
             .push(province_id);
         borders.push(TerrainProvinceBorder {
@@ -427,7 +461,7 @@ fn update_terrain_visuals(
     let owner_tint_strength = 0.35;
     for (terrain_index, polygon) in terrain_mesh.polygons.iter().enumerate() {
         let display_color = terrain_display_color(
-            usize_to_u32(terrain_index),
+            terrain_index as u32,
             polygon.original_color,
             owner_tint_strength,
             &terrain_adjacency,
@@ -510,13 +544,13 @@ pub fn terrain_owner_resolution(
 ) -> Option<TerrainOwnerResolution> {
     let component_id = *terrain_adjacency
         .component_ids
-        .get(u32_to_usize(terrain_index))?;
+        .get(terrain_index as usize)?;
     let mut total_boundary = 0.0_f32;
     let mut tag_lengths: HashMap<String, f32> = HashMap::new();
     for border in &terrain_adjacency.borders {
         if terrain_adjacency
             .component_ids
-            .get(u32_to_usize(border.terrain_index))
+            .get(border.terrain_index as usize)
             .copied()
             != Some(component_id)
         {
@@ -572,7 +606,7 @@ pub fn terrain_polygon_is_water(
 ) -> bool {
     terrain_adjacency
         .water_polygons
-        .get(u32_to_usize(terrain_index))
+        .get(terrain_index as usize)
         .copied()
         .unwrap_or(false)
 }
@@ -626,8 +660,8 @@ fn quantized_segment_key(segment: [[f32; 2]; 2]) -> [(i32, i32); 2] {
 
 fn quantized_point(point: [f32; 2]) -> (i32, i32) {
     (
-        f32_to_i32((point[0] * 100.0).round()),
-        f32_to_i32((point[1] * 100.0).round()),
+        (point[0] * 100.0).round() as i32,
+        (point[1] * 100.0).round() as i32,
     )
 }
 
@@ -645,11 +679,11 @@ fn terrain_component_ids(
             for right_index in left_index + 1..polygons.len() {
                 let left = polygons[left_index];
                 let right = polygons[right_index];
-                if terrain_is_water[u32_to_usize(left)] != terrain_is_water[u32_to_usize(right)] {
+                if terrain_is_water[left as usize] != terrain_is_water[right as usize] {
                     continue;
                 }
-                adjacency[u32_to_usize(left)].push(right);
-                adjacency[u32_to_usize(right)].push(left);
+                adjacency[left as usize].push(right);
+                adjacency[right as usize].push(left);
             }
         }
     }
@@ -660,11 +694,11 @@ fn terrain_component_ids(
         if component_ids[polygon_index] != u32::MAX {
             continue;
         }
-        let mut stack = vec![usize_to_u32(polygon_index)];
+        let mut stack = vec![polygon_index as u32];
         component_ids[polygon_index] = next_component;
         while let Some(current) = stack.pop() {
-            for &neighbor in &adjacency[u32_to_usize(current)] {
-                let neighbor_index = u32_to_usize(neighbor);
+            for &neighbor in &adjacency[current as usize] {
+                let neighbor_index = neighbor as usize;
                 if component_ids[neighbor_index] != u32::MAX {
                     continue;
                 }
@@ -693,10 +727,9 @@ fn terrain_polygon_boundary_segments(poly: &shared::map::TerrainPolygon) -> Vec<
                 (end, start)
             };
             *edge_counts.entry(key).or_insert(0) += 1;
-            edge_points.entry(key).or_insert([
-                poly.vertices[u32_to_usize(start)],
-                poly.vertices[u32_to_usize(end)],
-            ]);
+            edge_points
+                .entry(key)
+                .or_insert([poly.vertices[start as usize], poly.vertices[end as usize]]);
         }
     }
 
@@ -868,7 +901,7 @@ fn emit_quad_strip_range(
         return;
     }
 
-    let base = usize_to_u32(positions.len());
+    let base = positions.len() as u32;
     for i in point_start..=point_end {
         positions.push([left[i][0], left[i][1], z]);
         positions.push([right[i][0], right[i][1], z]);
@@ -878,7 +911,7 @@ fn emit_quad_strip_range(
 
     let point_count = point_end - point_start + 1;
     for i in 0..(point_count - 1) {
-        let local = usize_to_u32(i);
+        let local = i as u32;
         let l0 = base + local * 2;
         let r0 = l0 + 1;
         let l1 = l0 + 2;
@@ -988,14 +1021,14 @@ fn add_junction_fill(
         [sum_x * inv_len, sum_y * inv_len]
     };
 
-    let base = usize_to_u32(positions.len());
+    let base = positions.len() as u32;
     positions.push([center[0], center[1], z]);
     colors.push(RIVER_COLOR);
     for point in &polygon {
         positions.push([point[0], point[1], z]);
         colors.push(RIVER_COLOR);
     }
-    let poly_len = usize_to_u32(polygon.len());
+    let poly_len = polygon.len() as u32;
     for k in 0..poly_len {
         indices.push(base);
         indices.push(base + 1 + k);
@@ -1022,10 +1055,16 @@ fn spawn_rivers(
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut junction_rims: HashMap<u32, Vec<[f32; 2]>> = HashMap::new();
+    let mut node_degrees: HashMap<u32, u32> = HashMap::new();
 
     for edge in &river_data.edges {
-        let half_w = RIVER_WIDTHS[u32_to_usize(u32::from(edge.width_class))] / 2.0;
-        let raw: Vec<[f32; 2]> = edge.points.iter().map(|&p| p).collect();
+        *node_degrees.entry(edge.start_node).or_insert(0) += 1;
+        *node_degrees.entry(edge.end_node).or_insert(0) += 1;
+    }
+
+    for edge in &river_data.edges {
+        let half_w = RIVER_WIDTHS[u32::from(edge.width_class) as usize] / 2.0;
+        let raw = edge.points.to_vec();
         let pts = chaikin_smooth(&chaikin_smooth(&raw));
         if pts.len() < 2 {
             continue;
@@ -1034,33 +1073,46 @@ fn spawn_rivers(
             continue;
         };
 
-        if left.len() >= 4 {
+        if left.len() >= 2 {
             emit_quad_strip_range(
                 &left,
                 &right,
-                1,
-                left.len() - 2,
+                0,
+                left.len() - 1,
                 &mut positions,
                 &mut colors,
                 &mut indices,
-                -0.1,
+                RIVER_LOCAL_Z,
             );
         }
 
-        if let Some(merge_points) = endpoint_merge_points(&left, &right, true) {
-            let entry = junction_rims.entry(edge.start_node).or_default();
-            entry.extend_from_slice(&merge_points);
+        let start_is_junction = node_degrees.get(&edge.start_node).copied().unwrap_or(0) > 1;
+        let end_is_junction = node_degrees.get(&edge.end_node).copied().unwrap_or(0) > 1;
+
+        if start_is_junction {
+            if let Some(merge_points) = endpoint_merge_points(&left, &right, true) {
+                let entry = junction_rims.entry(edge.start_node).or_default();
+                entry.extend_from_slice(&merge_points);
+            }
         }
-        if let Some(merge_points) = endpoint_merge_points(&left, &right, false) {
-            let entry = junction_rims.entry(edge.end_node).or_default();
-            entry.extend_from_slice(&merge_points);
+        if end_is_junction {
+            if let Some(merge_points) = endpoint_merge_points(&left, &right, false) {
+                let entry = junction_rims.entry(edge.end_node).or_default();
+                entry.extend_from_slice(&merge_points);
+            }
         }
     }
 
     for (node_id, mut rim_points) in junction_rims {
-        rim_points.push(river_data.nodes[u32_to_usize(node_id)].position);
+        rim_points.push(river_data.nodes[node_id as usize].position);
         if rim_points.len() >= 4 {
-            add_junction_fill(&rim_points, &mut positions, &mut colors, &mut indices, -0.1);
+            add_junction_fill(
+                &rim_points,
+                &mut positions,
+                &mut colors,
+                &mut indices,
+                RIVER_LOCAL_Z,
+            );
         }
     }
 
@@ -1083,7 +1135,7 @@ fn spawn_rivers(
         commands.spawn((
             Mesh2d(handle.clone()),
             MeshMaterial2d(material.clone()),
-            Transform::from_xyz(x_off, 0.0, -0.1),
+            Transform::from_xyz(x_off, 0.0, RIVER_LAYER_Z),
         ));
     }
 
