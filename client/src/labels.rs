@@ -5,12 +5,11 @@ use crate::editor::{AdminAreas, AdminMap, Countries, CountryMap, NonPlayableProv
 use crate::map::borders::ProvinceAdjacency;
 use crate::map::{MapResource, ProvinceNames, MAP_WIDTH};
 use crate::state::AppState;
-use crate::ui::{CjkFont, ProvinceLabelFont};
+use crate::ui::ProvinceLabelFont;
 
 const LABEL_FONT_BASE_SIZE: f32 = 48.0;
-const MIN_READABLE_PIXELS: f32 = 11.0;
 const NEARBY_COMPONENT_GAP: f32 = 2.0;
-const PROVINCE_LABEL_SCALE_MAX: f32 = 0.006;
+const PROVINCE_LABEL_SCALE_MAX: f32 = 0.01;
 const MULTI_CHAR_ADVANCE_UNITS: f32 = 1.28;
 const MULTI_CHAR_SIDE_PADDING_UNITS: f32 = 0.55;
 const BASE_LABEL_HEIGHT_UNITS: f32 = 1.2;
@@ -19,8 +18,8 @@ const THIN_REGION_SLENDERNESS_RANGE: f32 = 3.5;
 const THIN_REGION_EXTRA_HEIGHT_UNITS: f32 = 0.45;
 const PROVINCE_LABEL_FIT_MARGIN: f32 = 0.84;
 const REGION_LABEL_FIT_MARGIN: f32 = 0.9;
-const PROVINCE_COLLISION_PADDING_UNITS: f32 = 0.45;
-const REGION_COLLISION_PADDING_UNITS: f32 = 0.2;
+const PROVINCE_COLLISION_PADDING_UNITS: f32 = 0.18;
+const REGION_COLLISION_PADDING_UNITS: f32 = 0.08;
 pub struct LabelsPlugin;
 
 impl Plugin for LabelsPlugin {
@@ -112,6 +111,15 @@ struct VisibleLabel {
     priority: LabelPriority,
 }
 
+enum LabelCandidateOutcome {
+    Visible(VisibleLabel),
+    OffViewport,
+}
+
+struct AcceptedLabelBounds {
+    bounds: ([f32; 2], [f32; 2]),
+}
+
 fn build_province_label_cache(
     map: Option<Res<MapResource>>,
     province_names: Res<ProvinceNames>,
@@ -133,7 +141,7 @@ fn build_province_label_cache(
             .get(&province.tag.to_lowercase())
             .cloned()
             .unwrap_or_else(|| province.name.clone());
-        let points = outer_ring_points(province.boundary.first());
+        let points = boundary_points(&province.boundary);
         let single_char = text.chars().count() == 1;
         let Some(geometry) = compute_label_geometry(&points, province.centroid, single_char) else {
             continue;
@@ -207,13 +215,11 @@ fn update_world_labels(
     mut commands: Commands,
     windows: Query<&Window>,
     camera_q: Query<(&Transform, &OrthographicProjection), With<Camera2d>>,
-    cjk_font: Option<Res<CjkFont>>,
     province_font: Option<Res<ProvinceLabelFont>>,
     province_cache: Res<ProvinceLabelCache>,
     ownership_cache: Res<OwnershipLabelCache>,
     mut entities: ResMut<ActiveLabelEntities>,
 ) {
-    let Some(cjk_font) = cjk_font else { return };
     let Some(province_font) = province_font else {
         return;
     };
@@ -225,86 +231,82 @@ fn update_world_labels(
     };
 
     let viewport = viewport_bounds(camera_transform.translation, projection.scale, window);
-    let mut accepted_boxes: Vec<([f32; 2], [f32; 2])> = Vec::new();
+    let mut accepted_boxes: Vec<AcceptedLabelBounds> = Vec::new();
     let mut desired_labels: Vec<VisibleLabel> = Vec::new();
 
-    let mut province_candidates: Vec<VisibleLabel> = if projection.scale <= PROVINCE_LABEL_SCALE_MAX
-    {
-        province_cache
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                visible_label_from_geometry(
-                    LabelKey::Province(entry.province_id),
-                    entry.text.clone(),
-                    entry.geometry.clone(),
-                    LabelPriority::Province,
-                    projection.scale,
-                    camera_transform.translation.x,
-                    viewport,
-                )
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mut province_candidates: Vec<VisibleLabel> = Vec::new();
+    if projection.scale <= PROVINCE_LABEL_SCALE_MAX {
+        for entry in &province_cache.entries {
+            match visible_label_from_geometry(
+                LabelKey::Province(entry.province_id),
+                entry.text.clone(),
+                entry.geometry.clone(),
+                LabelPriority::Province,
+                projection.scale,
+                camera_transform.translation.x,
+                viewport,
+            ) {
+                LabelCandidateOutcome::Visible(label) => {
+                    province_candidates.push(label);
+                }
+                LabelCandidateOutcome::OffViewport => {}
+            }
+        }
+    }
     province_candidates.sort_by(compare_visible_labels);
     for candidate in province_candidates {
         let bounds = collision_label_bounds(&candidate);
-        if overlaps_any(bounds, &accepted_boxes) {
-            continue;
-        }
-        accepted_boxes.push(bounds);
+        accepted_boxes.push(AcceptedLabelBounds { bounds });
         desired_labels.push(candidate);
     }
 
-    let mut country_candidates: Vec<VisibleLabel> = ownership_cache
-        .countries
-        .iter()
-        .filter_map(|entry| {
-            visible_label_from_geometry(
-                entry.key.clone(),
-                entry.text.clone(),
-                entry.geometry.clone(),
-                entry.priority,
-                projection.scale,
-                camera_transform.translation.x,
-                viewport,
-            )
-        })
-        .collect();
+    let mut country_candidates: Vec<VisibleLabel> = Vec::new();
+    for entry in &ownership_cache.countries {
+        match visible_label_from_geometry(
+            entry.key.clone(),
+            entry.text.clone(),
+            entry.geometry.clone(),
+            entry.priority,
+            projection.scale,
+            camera_transform.translation.x,
+            viewport,
+        ) {
+            LabelCandidateOutcome::Visible(label) => country_candidates.push(label),
+            LabelCandidateOutcome::OffViewport => {}
+        }
+    }
     country_candidates.sort_by(compare_visible_labels);
     for candidate in country_candidates {
         let bounds = collision_label_bounds(&candidate);
-        if overlaps_any(bounds, &accepted_boxes) {
+        if overlapping_label(bounds, &accepted_boxes).is_some() {
             continue;
         }
-        accepted_boxes.push(bounds);
+        accepted_boxes.push(AcceptedLabelBounds { bounds });
         desired_labels.push(candidate);
     }
 
-    let mut admin_candidates: Vec<VisibleLabel> = ownership_cache
-        .admins
-        .iter()
-        .filter_map(|entry| {
-            visible_label_from_geometry(
-                entry.key.clone(),
-                entry.text.clone(),
-                entry.geometry.clone(),
-                entry.priority,
-                projection.scale,
-                camera_transform.translation.x,
-                viewport,
-            )
-        })
-        .collect();
+    let mut admin_candidates: Vec<VisibleLabel> = Vec::new();
+    for entry in &ownership_cache.admins {
+        match visible_label_from_geometry(
+            entry.key.clone(),
+            entry.text.clone(),
+            entry.geometry.clone(),
+            entry.priority,
+            projection.scale,
+            camera_transform.translation.x,
+            viewport,
+        ) {
+            LabelCandidateOutcome::Visible(label) => admin_candidates.push(label),
+            LabelCandidateOutcome::OffViewport => {}
+        }
+    }
     admin_candidates.sort_by(compare_visible_labels);
     for candidate in admin_candidates {
         let bounds = collision_label_bounds(&candidate);
-        if overlaps_any(bounds, &accepted_boxes) {
+        if overlapping_label(bounds, &accepted_boxes).is_some() {
             continue;
         }
-        accepted_boxes.push(bounds);
+        accepted_boxes.push(AcceptedLabelBounds { bounds });
         desired_labels.push(candidate);
     }
 
@@ -332,11 +334,7 @@ fn update_world_labels(
         };
         let text_component = Text2d::new(label.text.clone());
         let text_font = TextFont {
-            font: if label.priority == LabelPriority::Province {
-                province_font.0.clone()
-            } else {
-                cjk_font.0.clone()
-            },
+            font: province_font.0.clone(),
             font_size: LABEL_FONT_BASE_SIZE,
             ..default()
         };
@@ -552,7 +550,7 @@ fn component_bounds_for_provinces(
     for &province_id in province_ids {
         if let Some(province) = map.provinces.get(province_id as usize) {
             if let Some((aabb_min, aabb_max)) =
-                bounds_from_points(&outer_ring_points(province.boundary.first()))
+                bounds_from_points(&boundary_points(&province.boundary))
             {
                 min_x = min_x.min(aabb_min[0]);
                 max_x = max_x.max(aabb_max[0]);
@@ -577,9 +575,7 @@ fn component_points_and_centroid(
     let mut count = 0_u32;
     for &province_id in province_ids {
         let province = map.provinces.get(province_id as usize)?;
-        if let Some(ring) = province.boundary.first() {
-            points.extend(ring.iter().copied());
-        }
+        points.extend(boundary_points(&province.boundary));
         centroid_sum[0] += province.centroid[0];
         centroid_sum[1] += province.centroid[1];
         count += 1;
@@ -602,17 +598,19 @@ fn visible_label_from_geometry(
     projection_scale: f32,
     camera_x: f32,
     viewport: ([f32; 2], [f32; 2]),
-) -> Option<VisibleLabel> {
-    let x_offset = best_visible_x_offset(geometry.aabb_min, geometry.aabb_max, viewport, camera_x)?;
+) -> LabelCandidateOutcome {
+    let Some(x_offset) =
+        best_visible_x_offset(geometry.aabb_min, geometry.aabb_max, viewport, camera_x)
+    else {
+        return LabelCandidateOutcome::OffViewport;
+    };
     let shifted_geometry = shift_geometry(&geometry, x_offset);
     let (bounds_width_units, bounds_height_units) = label_box_units(&shifted_geometry, &text);
-    let font_world_size =
-        fitted_font_world_size(&shifted_geometry, &text)? * label_fit_margin(priority);
+    let base_font_world_size = fitted_font_world_size(&shifted_geometry, &text)
+        .unwrap_or_else(|| fallback_font_world_size(&shifted_geometry));
+    let font_world_size = base_font_world_size * label_fit_margin(priority);
     let font_pixels = font_world_size / projection_scale;
-    if font_pixels < MIN_READABLE_PIXELS {
-        return None;
-    }
-    Some(VisibleLabel {
+    LabelCandidateOutcome::Visible(VisibleLabel {
         key,
         text,
         center: shifted_geometry.center,
@@ -698,6 +696,10 @@ fn fitted_font_world_size(geometry: &LabelGeometry, text: &str) -> Option<f32> {
     }
 }
 
+fn fallback_font_world_size(geometry: &LabelGeometry) -> f32 {
+    geometry.min_span / label_height_units(geometry).max(1e-3)
+}
+
 fn label_box_units(geometry: &LabelGeometry, text: &str) -> (f32, f32) {
     let height_units = label_height_units(geometry);
     if geometry.single_char {
@@ -759,8 +761,11 @@ fn upright_angle(angle: f32) -> f32 {
     adjusted
 }
 
-fn outer_ring_points(ring: Option<&Vec<[f32; 2]>>) -> Vec<[f32; 2]> {
-    ring.cloned().unwrap_or_default()
+fn boundary_points(boundary: &[Vec<[f32; 2]>]) -> Vec<[f32; 2]> {
+    boundary
+        .iter()
+        .flat_map(|ring| ring.iter().copied())
+        .collect()
 }
 
 fn bounds_from_points(points: &[[f32; 2]]) -> Option<([f32; 2], [f32; 2])> {
@@ -878,11 +883,13 @@ fn rotated_bounds(center: [f32; 2], width: f32, height: f32, angle: f32) -> ([f3
     ([min_x, min_y], [max_x, max_y])
 }
 
-fn overlaps_any(bounds: ([f32; 2], [f32; 2]), accepted: &[([f32; 2], [f32; 2])]) -> bool {
+fn overlapping_label(
+    bounds: ([f32; 2], [f32; 2]),
+    accepted: &[AcceptedLabelBounds],
+) -> Option<&AcceptedLabelBounds> {
     accepted
         .iter()
-        .copied()
-        .any(|existing| aabb_intersects(bounds.0, bounds.1, existing.0, existing.1))
+        .find(|existing| aabb_intersects(bounds.0, bounds.1, existing.bounds.0, existing.bounds.1))
 }
 
 fn aabb_intersects(

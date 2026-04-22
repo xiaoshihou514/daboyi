@@ -204,7 +204,8 @@ fn load_terrain(
         total_vertices: total_verts,
     });
 
-    eprintln!(
+    bevy::log::info!(
+        target: "daboyi::startup",
         "Terrain: {} polygons, {} vertices",
         terrain.polygons.len(),
         total_verts,
@@ -259,7 +260,8 @@ fn compute_terrain_adjacency(
 
     match load_cached_terrain_adjacency(province_count, terrain_polygon_count) {
         Ok(Some(cache)) => {
-            eprintln!(
+            bevy::log::info!(
+                target: "daboyi::startup",
                 "Loaded terrain adjacency cache: {} polygons, {} borders",
                 cache.polygons.len(),
                 cache.borders.len()
@@ -1117,7 +1119,10 @@ fn spawn_rivers(
     }
 
     if positions.is_empty() {
-        eprintln!("rivers.bin contained no renderable river segments");
+        bevy::log::warn!(
+            target: "daboyi::startup",
+            "rivers.bin contained no renderable river segments"
+        );
         return;
     }
 
@@ -1139,7 +1144,8 @@ fn spawn_rivers(
         ));
     }
 
-    eprintln!(
+    bevy::log::info!(
+        target: "daboyi::startup",
         "Rivers: {} edges, {} quads",
         river_data.edges.len(),
         indices.len() / 6,

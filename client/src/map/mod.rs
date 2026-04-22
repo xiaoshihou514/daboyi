@@ -210,14 +210,21 @@ fn load_map(
     let map_data = match MapData::load(MAP_BIN_PATH) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Failed to load {MAP_BIN_PATH}: {e}");
-            eprintln!("Map will not be rendered. Run mapgen first.");
+            bevy::log::error!(target: "daboyi::startup", "Failed to load {MAP_BIN_PATH}: {e}");
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "Map will not be rendered. Run mapgen first."
+            );
             next_state.set(AppState::Editing);
             return;
         }
     };
 
-    println!("Loaded map: {} provinces", map_data.provinces.len());
+    bevy::log::info!(
+        target: "daboyi::startup",
+        "Loaded map: {} provinces",
+        map_data.provinces.len()
+    );
 
     let n = map_data.provinces.len();
     let tex_height = (n + TEX_WIDTH - 1) / TEX_WIDTH;
@@ -266,7 +273,8 @@ fn load_map(
         }
     }
 
-    println!(
+    bevy::log::info!(
+        target: "daboyi::startup",
         "Map mesh: {} vertices, {} triangles",
         all_positions.len(),
         all_indices.len() / 3
@@ -357,7 +365,11 @@ fn load_map(
                 province_name_map.insert(en.trim().to_lowercase(), zh.trim().to_string());
             }
         }
-        println!("已加载 {} 个省份名称", province_name_map.len());
+        bevy::log::info!(
+            target: "daboyi::startup",
+            "已加载 {} 个省份名称",
+            province_name_map.len()
+        );
     }
     commands.insert_resource(ProvinceNames(province_name_map));
 

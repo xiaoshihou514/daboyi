@@ -189,7 +189,8 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
     let province_count = map.0.provinces.len() as u32;
 
     if let Ok(Some(cached_borders)) = load_cached_adjacency(province_count) {
-        println!(
+        bevy::log::info!(
+            target: "daboyi::startup",
             "Loaded province adjacency cache: {} pairs",
             cached_borders.len()
         );
@@ -198,9 +199,16 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
     }
 
     let cached_borders = build_adjacency(&map.0);
-    println!("Province adjacency: {} pairs", cached_borders.len());
+    bevy::log::info!(
+        target: "daboyi::startup",
+        "Province adjacency: {} pairs",
+        cached_borders.len()
+    );
     if let Err(error) = save_cached_adjacency(province_count, &cached_borders) {
-        eprintln!("Failed to save {ADJACENCY_BIN_PATH}: {error}");
+        bevy::log::warn!(
+            target: "daboyi::startup",
+            "Failed to save {ADJACENCY_BIN_PATH}: {error}"
+        );
     }
     adjacency.0 = cached_borders;
 }

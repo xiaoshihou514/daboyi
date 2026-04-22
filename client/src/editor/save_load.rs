@@ -11,14 +11,14 @@ const COLORING_FILE: &str = "assets/coloring.json";
 /// 从 JSON 文件加载着色数据
 pub fn load_coloring(commands: &mut Commands) {
     let Ok(json) = fs::read_to_string(COLORING_FILE) else {
-        eprintln!("未找到着色文件，使用空数据");
+        bevy::log::warn!(target: "daboyi::startup", "未找到着色文件，使用空数据");
         return;
     };
 
     let file: ColoringFile = match serde_json::from_str(&json) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("解析着色文件失败：{}", e);
+            bevy::log::error!(target: "daboyi::startup", "解析着色文件失败：{e}");
             return;
         }
     };
@@ -32,5 +32,5 @@ pub fn load_coloring(commands: &mut Commands) {
     commands.insert_resource(AdminMap(file.admin_assignments));
     commands.insert_resource(NextAdminId(max_id + 1));
 
-    eprintln!("已加载着色数据从 {}", COLORING_FILE);
+    bevy::log::info!(target: "daboyi::startup", "已加载着色数据从 {COLORING_FILE}");
 }

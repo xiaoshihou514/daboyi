@@ -30,7 +30,8 @@ impl SpatialHash {
             cells.entry((gx, gy)).or_default().push(prov.id);
         }
 
-        eprintln!(
+        bevy::log::info!(
+            target: "daboyi::startup",
             "SpatialHash: {} provinces, {} cells",
             provinces.len(),
             cells.len()

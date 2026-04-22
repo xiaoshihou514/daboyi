@@ -12,7 +12,7 @@ pub struct UiPlugin;
 pub struct UiPass;
 
 const FONT_PATH: &str = "NotoSansCJKsc-Regular.otf";
-const PROVINCE_FONT_PATH: &str = "王汉宗粗楷体.ttf";
+const PROVINCE_FONT_PATH: &str = "演示秋鸿楷.ttf";
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf");
 const INITIAL_CAMERA_SCALE: f32 = 0.15;
 const INITIAL_CAMERA_X: f32 = 105.0;
