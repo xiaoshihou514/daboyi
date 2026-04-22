@@ -11,12 +11,16 @@ const LABEL_FONT_BASE_SIZE: f32 = 48.0;
 const MIN_READABLE_PIXELS: f32 = 11.0;
 const NEARBY_COMPONENT_GAP: f32 = 2.0;
 const PROVINCE_LABEL_SCALE_MAX: f32 = 0.006;
-const MULTI_CHAR_ADVANCE_UNITS: f32 = 1.18;
-const MULTI_CHAR_SIDE_PADDING_UNITS: f32 = 0.35;
+const MULTI_CHAR_ADVANCE_UNITS: f32 = 1.28;
+const MULTI_CHAR_SIDE_PADDING_UNITS: f32 = 0.55;
 const BASE_LABEL_HEIGHT_UNITS: f32 = 1.2;
 const THIN_REGION_SLENDERNESS_START: f32 = 2.5;
 const THIN_REGION_SLENDERNESS_RANGE: f32 = 3.5;
 const THIN_REGION_EXTRA_HEIGHT_UNITS: f32 = 0.45;
+const PROVINCE_LABEL_FIT_MARGIN: f32 = 0.84;
+const REGION_LABEL_FIT_MARGIN: f32 = 0.9;
+const PROVINCE_COLLISION_PADDING_UNITS: f32 = 0.45;
+const REGION_COLLISION_PADDING_UNITS: f32 = 0.2;
 pub struct LabelsPlugin;
 
 impl Plugin for LabelsPlugin {
@@ -104,6 +108,7 @@ struct VisibleLabel {
     font_pixels: f32,
     bounds_width_units: f32,
     bounds_height_units: f32,
+    collision_padding_units: f32,
     priority: LabelPriority,
 }
 
@@ -245,7 +250,7 @@ fn update_world_labels(
     };
     province_candidates.sort_by(compare_visible_labels);
     for candidate in province_candidates {
-        let bounds = label_bounds(&candidate);
+        let bounds = collision_label_bounds(&candidate);
         if overlaps_any(bounds, &accepted_boxes) {
             continue;
         }
@@ -270,7 +275,7 @@ fn update_world_labels(
         .collect();
     country_candidates.sort_by(compare_visible_labels);
     for candidate in country_candidates {
-        let bounds = label_bounds(&candidate);
+        let bounds = collision_label_bounds(&candidate);
         if overlaps_any(bounds, &accepted_boxes) {
             continue;
         }
@@ -295,7 +300,7 @@ fn update_world_labels(
         .collect();
     admin_candidates.sort_by(compare_visible_labels);
     for candidate in admin_candidates {
-        let bounds = label_bounds(&candidate);
+        let bounds = collision_label_bounds(&candidate);
         if overlaps_any(bounds, &accepted_boxes) {
             continue;
         }
@@ -601,12 +606,13 @@ fn visible_label_from_geometry(
     let x_offset = best_visible_x_offset(geometry.aabb_min, geometry.aabb_max, viewport, camera_x)?;
     let shifted_geometry = shift_geometry(&geometry, x_offset);
     let (bounds_width_units, bounds_height_units) = label_box_units(&shifted_geometry, &text);
-    let mut font_world_size = fitted_font_world_size(&shifted_geometry, &text)?;
-    let mut font_pixels = font_world_size / projection_scale;
+    let font_world_size =
+        fitted_font_world_size(&shifted_geometry, &text)? * label_fit_margin(priority);
+    let font_pixels = font_world_size / projection_scale;
     if font_pixels < MIN_READABLE_PIXELS {
         return None;
     }
-    let mut candidate = VisibleLabel {
+    Some(VisibleLabel {
         key,
         text,
         center: shifted_geometry.center,
@@ -615,30 +621,9 @@ fn visible_label_from_geometry(
         font_pixels,
         bounds_width_units,
         bounds_height_units,
+        collision_padding_units: collision_padding_units(priority),
         priority,
-    };
-    while font_pixels >= MIN_READABLE_PIXELS
-        && !aabb_contains_bounds(
-            shifted_geometry.aabb_min,
-            shifted_geometry.aabb_max,
-            label_bounds(&candidate),
-        )
-    {
-        font_world_size *= 0.9;
-        font_pixels = font_world_size / projection_scale;
-        candidate.font_world_size = font_world_size;
-        candidate.font_pixels = font_pixels;
-    }
-    if font_pixels < MIN_READABLE_PIXELS
-        || !aabb_contains_bounds(
-            shifted_geometry.aabb_min,
-            shifted_geometry.aabb_max,
-            label_bounds(&candidate),
-        )
-    {
-        return None;
-    }
-    Some(candidate)
+    })
 }
 
 fn compute_label_geometry(
@@ -731,6 +716,20 @@ fn label_height_units(geometry: &LabelGeometry) -> f32 {
     let thinness = ((slenderness - THIN_REGION_SLENDERNESS_START) / THIN_REGION_SLENDERNESS_RANGE)
         .clamp(0.0, 1.0);
     BASE_LABEL_HEIGHT_UNITS + THIN_REGION_EXTRA_HEIGHT_UNITS * thinness
+}
+
+fn label_fit_margin(priority: LabelPriority) -> f32 {
+    match priority {
+        LabelPriority::Province => PROVINCE_LABEL_FIT_MARGIN,
+        LabelPriority::Country | LabelPriority::Admin => REGION_LABEL_FIT_MARGIN,
+    }
+}
+
+fn collision_padding_units(priority: LabelPriority) -> f32 {
+    match priority {
+        LabelPriority::Province => PROVINCE_COLLISION_PADDING_UNITS,
+        LabelPriority::Country | LabelPriority::Admin => REGION_COLLISION_PADDING_UNITS,
+    }
 }
 
 fn principal_axis(points: &[[f32; 2]], centroid: [f32; 2]) -> ([f32; 2], f32) {
@@ -831,10 +830,26 @@ fn shift_geometry(geometry: &LabelGeometry, x_offset: f32) -> LabelGeometry {
     shifted
 }
 
-fn label_bounds(label: &VisibleLabel) -> ([f32; 2], [f32; 2]) {
-    let width = label.font_world_size * label.bounds_width_units;
-    let height = label.font_world_size * label.bounds_height_units;
-    rotated_bounds(label.center, width, height, label.angle)
+fn label_bounds(
+    center: [f32; 2],
+    width_units: f32,
+    height_units: f32,
+    font_world_size: f32,
+    angle: f32,
+) -> ([f32; 2], [f32; 2]) {
+    let width = font_world_size * width_units;
+    let height = font_world_size * height_units;
+    rotated_bounds(center, width, height, angle)
+}
+
+fn collision_label_bounds(label: &VisibleLabel) -> ([f32; 2], [f32; 2]) {
+    label_bounds(
+        label.center,
+        label.bounds_width_units + label.collision_padding_units * 2.0,
+        label.bounds_height_units + label.collision_padding_units,
+        label.font_world_size,
+        label.angle,
+    )
 }
 
 fn rotated_bounds(center: [f32; 2], width: f32, height: f32, angle: f32) -> ([f32; 2], [f32; 2]) {
@@ -868,17 +883,6 @@ fn overlaps_any(bounds: ([f32; 2], [f32; 2]), accepted: &[([f32; 2], [f32; 2])])
         .iter()
         .copied()
         .any(|existing| aabb_intersects(bounds.0, bounds.1, existing.0, existing.1))
-}
-
-fn aabb_contains_bounds(
-    outer_min: [f32; 2],
-    outer_max: [f32; 2],
-    inner: ([f32; 2], [f32; 2]),
-) -> bool {
-    inner.0[0] >= outer_min[0]
-        && inner.1[0] <= outer_max[0]
-        && inner.0[1] >= outer_min[1]
-        && inner.1[1] <= outer_max[1]
 }
 
 fn aabb_intersects(
@@ -965,5 +969,25 @@ mod tests {
         assert!(short.is_some());
         assert!(long.is_some());
         assert!(long.unwrap() < short.unwrap());
+    }
+
+    #[test]
+    fn province_labels_use_more_collision_padding_than_region_labels() {
+        assert!(
+            collision_padding_units(LabelPriority::Province)
+                > collision_padding_units(LabelPriority::Country)
+        );
+        assert!(
+            collision_padding_units(LabelPriority::Province)
+                > collision_padding_units(LabelPriority::Admin)
+        );
+    }
+
+    #[test]
+    fn province_labels_keep_a_larger_readability_margin() {
+        assert!(
+            label_fit_margin(LabelPriority::Province) < label_fit_margin(LabelPriority::Country)
+        );
+        assert!(label_fit_margin(LabelPriority::Province) < label_fit_margin(LabelPriority::Admin));
     }
 }
