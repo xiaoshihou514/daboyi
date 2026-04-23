@@ -16,6 +16,11 @@ const BASE_LABEL_HEIGHT_UNITS: f32 = 1.2;
 const THIN_REGION_SLENDERNESS_START: f32 = 2.5;
 const THIN_REGION_SLENDERNESS_RANGE: f32 = 3.5;
 const THIN_REGION_EXTRA_HEIGHT_UNITS: f32 = 0.45;
+const REGION_SQUAREISH_SLENDERNESS: f32 = 1.6;
+const REGION_AXIS_FOLLOW_SLENDERNESS: f32 = 3.0;
+const REGION_SQUAREISH_TILT_FRACTION: f32 = 0.35;
+const REGION_LABEL_MAX_VIEWPORT_WIDTH_FRACTION: f32 = 0.38;
+const REGION_LABEL_MAX_VIEWPORT_HEIGHT_FRACTION: f32 = 0.16;
 const PROVINCE_LABEL_FIT_MARGIN: f32 = 0.84;
 const REGION_LABEL_FIT_MARGIN: f32 = 0.9;
 const PROVINCE_COLLISION_PADDING_UNITS: f32 = 0.18;
@@ -243,6 +248,7 @@ fn update_world_labels(
                 entry.geometry.clone(),
                 LabelPriority::Province,
                 projection.scale,
+                [window.width(), window.height()],
                 camera_transform.translation.x,
                 viewport,
             ) {
@@ -268,6 +274,7 @@ fn update_world_labels(
             entry.geometry.clone(),
             entry.priority,
             projection.scale,
+            [window.width(), window.height()],
             camera_transform.translation.x,
             viewport,
         ) {
@@ -293,6 +300,7 @@ fn update_world_labels(
             entry.geometry.clone(),
             entry.priority,
             projection.scale,
+            [window.width(), window.height()],
             camera_transform.translation.x,
             viewport,
         ) {
@@ -596,6 +604,7 @@ fn visible_label_from_geometry(
     geometry: LabelGeometry,
     priority: LabelPriority,
     projection_scale: f32,
+    window_size: [f32; 2],
     camera_x: f32,
     viewport: ([f32; 2], [f32; 2]),
 ) -> LabelCandidateOutcome {
@@ -610,11 +619,20 @@ fn visible_label_from_geometry(
         .unwrap_or_else(|| fallback_font_world_size(&shifted_geometry));
     let font_world_size = base_font_world_size * label_fit_margin(priority);
     let font_pixels = font_world_size / projection_scale;
+    if !label_within_viewport_budget(
+        priority,
+        font_pixels,
+        bounds_width_units,
+        bounds_height_units,
+        window_size,
+    ) {
+        return LabelCandidateOutcome::OffViewport;
+    }
     LabelCandidateOutcome::Visible(VisibleLabel {
         key,
         text,
         center: shifted_geometry.center,
-        angle: shifted_geometry.angle,
+        angle: label_angle(&shifted_geometry, priority),
         font_world_size,
         font_pixels,
         bounds_width_units,
@@ -718,6 +736,48 @@ fn label_height_units(geometry: &LabelGeometry) -> f32 {
     let thinness = ((slenderness - THIN_REGION_SLENDERNESS_START) / THIN_REGION_SLENDERNESS_RANGE)
         .clamp(0.0, 1.0);
     BASE_LABEL_HEIGHT_UNITS + THIN_REGION_EXTRA_HEIGHT_UNITS * thinness
+}
+
+fn label_within_viewport_budget(
+    priority: LabelPriority,
+    font_pixels: f32,
+    bounds_width_units: f32,
+    bounds_height_units: f32,
+    window_size: [f32; 2],
+) -> bool {
+    if matches!(priority, LabelPriority::Province) {
+        return true;
+    }
+    let label_width_pixels = font_pixels * bounds_width_units;
+    let label_height_pixels = font_pixels * bounds_height_units;
+    label_width_pixels <= window_size[0] * REGION_LABEL_MAX_VIEWPORT_WIDTH_FRACTION
+        && label_height_pixels <= window_size[1] * REGION_LABEL_MAX_VIEWPORT_HEIGHT_FRACTION
+}
+
+fn label_angle(geometry: &LabelGeometry, priority: LabelPriority) -> f32 {
+    match priority {
+        LabelPriority::Province => geometry.angle,
+        LabelPriority::Country | LabelPriority::Admin => {
+            geometry.angle * region_axis_follow_factor(geometry.axis_length, geometry.perp_span)
+        }
+    }
+}
+
+fn region_axis_follow_factor(axis_length: f32, perp_span: f32) -> f32 {
+    let slenderness = axis_length / perp_span.max(1e-3);
+    if slenderness <= 1.0 {
+        return 0.0;
+    }
+    if slenderness <= REGION_SQUAREISH_SLENDERNESS {
+        let blend = (slenderness - 1.0) / (REGION_SQUAREISH_SLENDERNESS - 1.0);
+        return REGION_SQUAREISH_TILT_FRACTION * blend;
+    }
+    if slenderness >= REGION_AXIS_FOLLOW_SLENDERNESS {
+        return 1.0;
+    }
+    let blend = (slenderness - REGION_SQUAREISH_SLENDERNESS)
+        / (REGION_AXIS_FOLLOW_SLENDERNESS - REGION_SQUAREISH_SLENDERNESS);
+    REGION_SQUAREISH_TILT_FRACTION + (1.0 - REGION_SQUAREISH_TILT_FRACTION) * blend
 }
 
 fn label_fit_margin(priority: LabelPriority) -> f32 {
@@ -996,5 +1056,42 @@ mod tests {
             label_fit_margin(LabelPriority::Province) < label_fit_margin(LabelPriority::Country)
         );
         assert!(label_fit_margin(LabelPriority::Province) < label_fit_margin(LabelPriority::Admin));
+    }
+
+    #[test]
+    fn squareish_region_labels_stay_close_to_horizontal() {
+        let factor = region_axis_follow_factor(1.5, 1.0);
+
+        assert!(factor > 0.0);
+        assert!(factor < 0.35);
+    }
+
+    #[test]
+    fn elongated_region_labels_follow_their_axis() {
+        let factor = region_axis_follow_factor(4.0, 1.0);
+
+        assert_eq!(factor, 1.0);
+    }
+
+    #[test]
+    fn oversized_region_labels_are_hidden() {
+        assert!(!label_within_viewport_budget(
+            LabelPriority::Country,
+            48.0,
+            10.0,
+            1.4,
+            [800.0, 600.0],
+        ));
+    }
+
+    #[test]
+    fn province_labels_ignore_viewport_budget() {
+        assert!(label_within_viewport_budget(
+            LabelPriority::Province,
+            200.0,
+            20.0,
+            2.0,
+            [800.0, 600.0],
+        ));
     }
 }
