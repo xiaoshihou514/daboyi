@@ -104,6 +104,8 @@ impl Plugin for EditorPlugin {
             .init_resource::<DragState>()
             .init_resource::<NonPlayableProvinces>()
             .init_resource::<SpatialHash>()
+            .add_event::<LoadColoringEvent>()
+            .add_event::<SaveColoringEvent>()
             .add_systems(
                 Startup,
                 (load_coloring_on_startup, load_non_playable_provinces),
@@ -129,6 +131,12 @@ impl Plugin for EditorPlugin {
             .add_systems(
                 Update,
                 (validate_admin_assignments,)
+                    .run_if(in_state(AppState::Editing))
+                    .after(crate::ui::UiPass),
+            )
+            .add_systems(
+                Update,
+                (handle_load_coloring, handle_save_coloring)
                     .run_if(in_state(AppState::Editing))
                     .after(crate::ui::UiPass),
             );

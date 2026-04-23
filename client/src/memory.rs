@@ -3,25 +3,11 @@ use std::mem::{size_of, size_of_val};
 use std::sync::{Mutex, OnceLock};
 
 /// 内存使用监控工具
-pub struct MemoryMonitor {
-    /// 内存使用历史记录
-    memory_history: Vec<(String, f64)>,
-    /// 数据结构大小记录
-    object_sizes: HashMap<String, usize>,
-}
+pub struct MemoryMonitor;
 
 fn allocation_cache() -> &'static Mutex<HashMap<String, (usize, usize)>> {
     static CACHE: OnceLock<Mutex<HashMap<String, (usize, usize)>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-impl Default for MemoryMonitor {
-    fn default() -> Self {
-        Self {
-            memory_history: Vec::new(),
-            object_sizes: HashMap::new(),
-        }
-    }
 }
 
 impl MemoryMonitor {
@@ -123,17 +109,6 @@ impl MemoryMonitor {
                 );
             }
         }
-    }
-
-    /// 打印对象大小
-    pub fn log_object_size<T>(context: &str, value: &T) {
-        let size = Self::size_of(value);
-        bevy::log::info!(
-            target: "daboyi::memory",
-            "{} size: {} bytes",
-            context,
-            size
-        );
     }
 
     /// 打印集合类型的大小

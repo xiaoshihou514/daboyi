@@ -11,3 +11,4 @@ serde_json = { workspace = true }
 bincode = "1"
 lazy_static = "1"
 shared = { path = "../shared" }
+rfd = "0.17.2"

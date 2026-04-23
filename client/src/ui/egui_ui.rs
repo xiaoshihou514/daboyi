@@ -3,13 +3,15 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
+use rfd::FileDialog;
 
 use crate::editor::{
     child_admin_ids_in_tree, should_show_admin_children, ActiveAdmin, ActiveCountry, AdminAreas,
-    AdminMap, BrushTool, Countries, CountryMap, NextAdminId,
+    AdminMap, BrushTool, Countries, CountryMap, LoadColoringEvent, NextAdminId, SaveColoringEvent,
 };
 use crate::map::{
-    BorderVersion, ColoringVersion, MapMode, MapResource, ProvinceNames, SelectedProvince,
+    BorderVersion, ColoringVersion, MapMode, MapResource, MissingMapMessage, ProvinceNames,
+    SelectedProvince,
 };
 use crate::ui::UiInputBlock;
 use shared::{AdminArea, EditorCountry};
@@ -21,8 +23,10 @@ pub struct UiState {
     pub rename_target: RenameTarget,
     pub rename_buffer: String,
     pub show_new_country_dialog: bool,
+    pub focus_new_country_name: bool,
     pub new_country_name: String,
     pub show_new_admin_dialog: bool,
+    pub focus_new_admin_name: bool,
     pub new_admin_name: String,
     pub show_delete_confirm: Option<DeleteTarget>,
 }
@@ -67,11 +71,15 @@ pub fn egui_ui_system(
     mut contexts: EguiContexts,
     mut editor: EditorUiData,
     mut brush: ResMut<BrushTool>,
+    keys: Res<ButtonInput<KeyCode>>,
     selected: Res<SelectedProvince>,
     map: Option<Res<MapResource>>,
+    missing_map_message: Res<MissingMapMessage>,
     province_names: Option<Res<ProvinceNames>>,
     mut ui_state: Local<UiState>,
     mut runtime: UiRuntime,
+    mut load_coloring_events: EventWriter<LoadColoringEvent>,
+    mut save_coloring_events: EventWriter<SaveColoringEvent>,
 ) {
     *runtime.map_mode = MapMode::Map;
     let Some(ctx) = contexts.try_ctx_mut() else {
@@ -80,6 +88,18 @@ pub fn egui_ui_system(
     };
     let pointer_pos = ctx.pointer_latest_pos();
     let mut ui_blocks_pointer = false;
+
+    if !ctx.wants_keyboard_input() && keys.just_pressed(KeyCode::KeyA) {
+        if editor.active_country.0.is_some() {
+            ui_state.show_new_admin_dialog = true;
+            ui_state.focus_new_admin_name = true;
+            ui_state.new_admin_name = String::new();
+        } else {
+            ui_state.show_new_country_dialog = true;
+            ui_state.focus_new_country_name = true;
+            ui_state.new_country_name = String::new();
+        }
+    }
 
     // === Left Panel ===
     let left_panel = egui::SidePanel::left("left_panel")
@@ -182,6 +202,7 @@ pub fn egui_ui_system(
             ui.horizontal(|ui| {
                 if ui.button("新建国家").clicked() {
                     ui_state.show_new_country_dialog = true;
+                    ui_state.focus_new_country_name = true;
                     ui_state.new_country_name = String::new();
                 }
 
@@ -192,6 +213,7 @@ pub fn egui_ui_system(
                 };
                 if ui.button(adm_btn_label).clicked() && editor.active_country.0.is_some() {
                     ui_state.show_new_admin_dialog = true;
+                    ui_state.focus_new_admin_name = true;
                     ui_state.new_admin_name = String::new();
                 }
             });
@@ -211,7 +233,7 @@ pub fn egui_ui_system(
 
             // Brush
             ui.heading("刷子工具");
-            ui.checkbox(&mut brush.enabled, "启用刷子");
+            ui.checkbox(&mut brush.enabled, "启用刷子（B）");
 
             if brush.enabled {
                 ui.add(
@@ -253,10 +275,25 @@ pub fn egui_ui_system(
 
             // Save/Load
             if ui.button("保存").clicked() {
-                println!("保存功能需要实现事件系统");
+                if let Some(path) = FileDialog::new()
+                    .set_title("保存着色文件")
+                    .set_file_name("coloring.json")
+                    .add_filter("着色文件", &["json"])
+                    .save_file()
+                {
+                    save_coloring_events
+                        .send(SaveColoringEvent(path.to_string_lossy().to_string()));
+                }
             }
             if ui.button("加载").clicked() {
-                println!("加载功能需要实现事件系统");
+                if let Some(path) = FileDialog::new()
+                    .set_title("加载着色文件")
+                    .add_filter("着色文件", &["json"])
+                    .pick_file()
+                {
+                    load_coloring_events
+                        .send(LoadColoringEvent(path.to_string_lossy().to_string()));
+                }
             }
         });
     if let Some(pos) = pointer_pos {
@@ -319,8 +356,21 @@ pub fn egui_ui_system(
     // === Central Panel ===
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(egui::Color32::TRANSPARENT))
-        .show(ctx, |_ui| {
-            // Empty - map shows through
+        .show(ctx, |ui| {
+            if let Some(message) = &missing_map_message.0 {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(24.0);
+                    ui.group(|ui| {
+                        ui.set_max_width(520.0);
+                        ui.label(
+                            egui::RichText::new("基础地图缺失")
+                                .color(egui::Color32::from_rgb(255, 220, 120))
+                                .strong(),
+                        );
+                        ui.label(message);
+                    });
+                });
+            }
         });
 
     // === Dialogs ===
@@ -376,7 +426,11 @@ pub fn egui_ui_system(
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label("国家名称:");
-                ui.text_edit_singleline(&mut ui_state.new_country_name);
+                let response = ui.text_edit_singleline(&mut ui_state.new_country_name);
+                if ui_state.focus_new_country_name {
+                    response.request_focus();
+                    ui_state.focus_new_country_name = false;
+                }
 
                 ui.horizontal(|ui| {
                     if ui.button("创建").clicked() && !ui_state.new_country_name.is_empty() {
@@ -395,10 +449,12 @@ pub fn egui_ui_system(
                         editor.active_admin.0 = None;
 
                         ui_state.show_new_country_dialog = false;
+                        ui_state.focus_new_country_name = false;
                         ui_state.new_country_name = String::new();
                     }
                     if ui.button("取消").clicked() {
                         ui_state.show_new_country_dialog = false;
+                        ui_state.focus_new_country_name = false;
                         ui_state.new_country_name = String::new();
                     }
                 });
@@ -424,7 +480,11 @@ pub fn egui_ui_system(
                     ui.label("将创建为顶级行政区");
                 }
                 ui.label("行政区名称:");
-                ui.text_edit_singleline(&mut ui_state.new_admin_name);
+                let response = ui.text_edit_singleline(&mut ui_state.new_admin_name);
+                if ui_state.focus_new_admin_name {
+                    response.request_focus();
+                    ui_state.focus_new_admin_name = false;
+                }
 
                 ui.horizontal(|ui| {
                     if ui.button("创建").clicked() && !ui_state.new_admin_name.is_empty() {
@@ -453,11 +513,13 @@ pub fn egui_ui_system(
                             runtime.coloring_version.0 += 1;
 
                             ui_state.show_new_admin_dialog = false;
+                            ui_state.focus_new_admin_name = false;
                             ui_state.new_admin_name = String::new();
                         }
                     }
                     if ui.button("取消").clicked() {
                         ui_state.show_new_admin_dialog = false;
+                        ui_state.focus_new_admin_name = false;
                         ui_state.new_admin_name = String::new();
                     }
                 });

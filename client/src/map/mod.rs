@@ -52,6 +52,9 @@ pub struct MapPlugin;
 #[derive(Resource)]
 pub struct MapResource(pub MapData);
 
+#[derive(Resource, Default)]
+pub struct MissingMapMessage(pub Option<String>);
+
 /// Currently selected province.
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
@@ -168,6 +171,7 @@ impl Plugin for MapPlugin {
             .add_plugins(ExtractResourcePlugin::<ProvinceColorBuffer>::default())
             .insert_resource(SelectedProvince::default())
             .insert_resource(MapMode::default())
+            .insert_resource(MissingMapMessage::default())
             .insert_resource(LastColorState::default())
             .insert_resource(ColoringVersion::default())
             .insert_resource(PendingProvinceRecolor::default())
@@ -223,6 +227,7 @@ fn load_map(
     mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut missing_map_message: ResMut<MissingMapMessage>,
 ) {
     MemoryMonitor::log_memory_usage("Before loading map");
     MemoryMonitor::log_detailed_memory_usage("Before loading map");
@@ -234,10 +239,15 @@ fn load_map(
                 target: "daboyi::startup",
                 "Map will not be rendered. Run mapgen first."
             );
+            missing_map_message.0 = Some(
+                "未找到 assets/map.bin。请先运行 mapgen 生成基础地图，然后再加载着色文件。"
+                    .to_string(),
+            );
             next_state.set(AppState::Editing);
             return;
         }
     };
+    missing_map_message.0 = None;
 
     bevy::log::info!(
         target: "daboyi::startup",
@@ -262,7 +272,7 @@ fn load_map(
     let mut terrain_pixel_data = vec![0u8; tex_height * TEX_WIDTH * 4];
 
     for (pid, mp) in map_data.provinces.iter().enumerate() {
-        let political_color = mp.hex_color;
+        let political_color: [f32; 4] = [0.55, 0.55, 0.55, 1.0];
         let terrain_color = terrain_province_color(&mp.topography);
         let offset = pid * 4;
         political_pixel_data[offset] = (political_color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
