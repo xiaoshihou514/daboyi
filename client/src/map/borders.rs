@@ -12,6 +12,7 @@ use bevy::render::render_resource::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 use std::io;
 
@@ -331,27 +332,44 @@ fn build_adjacency(map: &shared::map::MapData) -> Vec<CachedBorder> {
 }
 
 fn load_cached_adjacency(province_count: u32) -> io::Result<Option<Vec<CachedBorder>>> {
-    let bytes = match fs::read(ADJACENCY_BIN_PATH) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let cache: ProvinceAdjacencyCache = bincode::deserialize(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if cache.version != ADJACENCY_CACHE_VERSION || cache.province_count != province_count {
-        return Ok(None);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = province_count;
+        Ok(None)
     }
-    Ok(Some(cache.borders))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes = match fs::read(ADJACENCY_BIN_PATH) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let cache: ProvinceAdjacencyCache = bincode::deserialize(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if cache.version != ADJACENCY_CACHE_VERSION || cache.province_count != province_count {
+            return Ok(None);
+        }
+        Ok(Some(cache.borders))
+    }
 }
 
 fn save_cached_adjacency(province_count: u32, borders: &[CachedBorder]) -> io::Result<()> {
-    let bytes = bincode::serialize(&ProvinceAdjacencyCache {
-        version: ADJACENCY_CACHE_VERSION,
-        province_count,
-        borders: borders.to_vec(),
-    })
-    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    fs::write(ADJACENCY_BIN_PATH, bytes)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = province_count;
+        let _ = borders;
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes = bincode::serialize(&ProvinceAdjacencyCache {
+            version: ADJACENCY_CACHE_VERSION,
+            province_count,
+            borders: borders.to_vec(),
+        })
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::write(ADJACENCY_BIN_PATH, bytes)
+    }
 }
 
 /// Rebuild the border mesh whenever political ownership semantics change.

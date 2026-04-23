@@ -18,6 +18,7 @@ A standalone **alternative-history map editor** built with Bevy and Rust. Paint 
 - Rust toolchain (stable, 2021 edition or later)
 - `clang` / `clang++` (required for some dependencies)
 - `mold` linker (configured in `.cargo/config.toml`)
+- [Trunk](https://trunkrs.dev/) (for the local/browser build)
 - [EU5toGIS dataset](https://forum.paradoxplaza.com/forum/threads/georeferenced-eu5-dataset-for-map-modding-via-gis.1903895/) — provides `datasets/locations.gpkg` and `ports.gpkg`
 - An EU5 **plain-text** save file (`.eu5`, starts with `SAV`, not a ZIP archive) — for extracting province ownership and country colors
 
@@ -92,6 +93,38 @@ cargo run -p client
 
 The editor opens directly; no server is needed.
 
+Common shortcuts are also available through the root `Makefile`:
+
+```bash
+make help
+make client
+make test
+make web-build
+```
+
+## Running the Web Build Locally
+
+Install the wasm target and Trunk once:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+```
+
+Then launch the browser version from the dedicated frontend folder:
+
+```bash
+make web-serve
+```
+
+Trunk serves the `web/` frontend, compiles `client` to `wasm32-unknown-unknown`, and exposes the generated `assets/` directory to the browser. This expects `assets/map.bin`, `assets/terrain.bin`, and other generated files to already exist locally.
+
+You can also produce a distributable bundle without starting a dev server:
+
+```bash
+make web-build
+```
+
 ## Editor Usage
 
 **Map display:**
@@ -116,6 +149,10 @@ The editor now uses a single blended map view that combines terrain shading with
 **Administrative areas:**
 
 Countries support an unlimited hierarchy of sub-areas (ADM1 → ADM2 → ADM3 …). Each area can have its own color or inherit from its parent. Painting a province to an area overrides the country-level assignment for rendering.
+
+**Browser build note:**
+
+The web build renders the same map data and uses the same wasm client binary, but local file save/load dialogs are currently desktop-only. Browser testing is intended for rendering and editor interaction against served `assets/`.
 
 ## Coloring File Format
 

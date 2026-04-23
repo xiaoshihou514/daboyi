@@ -7,3 +7,10 @@ CXX = "clang++"
 # Use mold for fast linking across all crates.
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "--cfg",
+  "getrandom_backend=\"wasm_js\"",
+  "--cfg=web_sys_unstable_apis",
+]

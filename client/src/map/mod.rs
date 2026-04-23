@@ -4,6 +4,8 @@ mod interact;
 mod material;
 
 use crate::memory::MemoryMonitor;
+#[cfg(target_arch = "wasm32")]
+use crate::web_io::{fetch_bytes, fetch_text};
 use bevy::ecs::system::SystemParam;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
@@ -15,6 +17,10 @@ use bevy::render::renderer::RenderQueue;
 use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
+#[cfg(target_arch = "wasm32")]
+use bevy::tasks::{AsyncComputeTaskPool, Task};
+#[cfg(target_arch = "wasm32")]
+use futures_lite::future;
 use material::{ProvinceMapMaterial, ProvinceMapParams};
 use shared::map::MapData;
 use std::collections::{HashMap, HashSet};
@@ -55,6 +61,10 @@ pub struct MapResource(pub MapData);
 #[derive(Resource, Default)]
 pub struct MissingMapMessage(pub Option<String>);
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource, Default)]
+struct MapLoadTask(pub Option<Task<Result<LoadedMapAssets, String>>>);
+
 /// Currently selected province.
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
@@ -64,6 +74,11 @@ pub struct SelectedProvince(pub Option<u32>);
 pub enum MapMode {
     #[default]
     Map,
+}
+
+struct LoadedMapAssets {
+    map_data: MapData,
+    province_names: ProvinceNames,
 }
 
 impl std::fmt::Display for MapMode {
@@ -167,7 +182,8 @@ impl PaintDebounce {
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(Material2dPlugin::<ProvinceMapMaterial>::default())
+        let app = app
+            .add_plugins(Material2dPlugin::<ProvinceMapMaterial>::default())
             .add_plugins(ExtractResourcePlugin::<ProvinceColorBuffer>::default())
             .insert_resource(SelectedProvince::default())
             .insert_resource(MapMode::default())
@@ -180,7 +196,6 @@ impl Plugin for MapPlugin {
             .insert_resource(PaintDebounce::default())
             .insert_resource(ProvinceNames::default())
             .insert_resource(ColorUpdateQueue::default())
-            .add_systems(Startup, load_map)
             .add_systems(
                 Update,
                 flush_paint_debounce.run_if(in_state(AppState::Editing)),
@@ -209,6 +224,13 @@ impl Plugin for MapPlugin {
                     .run_if(in_state(AppState::Editing))
                     .after(crate::ui::UiPass),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        let app = app.add_systems(Startup, load_map);
+        #[cfg(target_arch = "wasm32")]
+        let app = app
+            .init_resource::<MapLoadTask>()
+            .add_systems(Startup, start_map_load)
+            .add_systems(Update, poll_map_load.run_if(in_state(AppState::Loading)));
 
         // Register the render-world system that writes the province colour buffer
         // directly onto the existing GPU texture via `write_texture`.
@@ -221,6 +243,7 @@ impl Plugin for MapPlugin {
 }
 
 /// Build a single merged mesh for ALL provinces.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -229,12 +252,10 @@ fn load_map(
     mut next_state: ResMut<NextState<AppState>>,
     mut missing_map_message: ResMut<MissingMapMessage>,
 ) {
-    MemoryMonitor::log_memory_usage("Before loading map");
-    MemoryMonitor::log_detailed_memory_usage("Before loading map");
-    let map_data = match MapData::load(MAP_BIN_PATH) {
-        Ok(d) => d,
-        Err(e) => {
-            bevy::log::error!(target: "daboyi::startup", "Failed to load {MAP_BIN_PATH}: {e}");
+    let loaded = match load_map_assets_native() {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            bevy::log::error!(target: "daboyi::startup", "{error}");
             bevy::log::warn!(
                 target: "daboyi::startup",
                 "Map will not be rendered. Run mapgen first."
@@ -247,6 +268,64 @@ fn load_map(
             return;
         }
     };
+    finalize_loaded_map(
+        &mut commands,
+        &mut meshes,
+        &mut province_materials,
+        &mut images,
+        &mut next_state,
+        &mut missing_map_message,
+        loaded,
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_map_assets_native() -> Result<LoadedMapAssets, String> {
+    MemoryMonitor::log_memory_usage("Before loading map");
+    MemoryMonitor::log_detailed_memory_usage("Before loading map");
+    let map_data = match MapData::load(MAP_BIN_PATH) {
+        Ok(d) => d,
+        Err(error) => return Err(format!("Failed to load {MAP_BIN_PATH}: {error}")),
+    };
+    let province_names =
+        load_province_names_from_text(std::fs::read_to_string("assets/province_names.tsv").ok());
+    Ok(LoadedMapAssets {
+        map_data,
+        province_names,
+    })
+}
+
+fn load_province_names_from_text(content: Option<String>) -> ProvinceNames {
+    let mut province_name_map: HashMap<String, String> = HashMap::new();
+    if let Some(content) = content {
+        for line in content.lines() {
+            let mut parts = line.splitn(2, '\t');
+            if let (Some(en), Some(zh)) = (parts.next(), parts.next()) {
+                province_name_map.insert(en.trim().to_lowercase(), zh.trim().to_string());
+            }
+        }
+        bevy::log::info!(
+            target: "daboyi::startup",
+            "已加载 {} 个省份名称",
+            province_name_map.len()
+        );
+    }
+    ProvinceNames(province_name_map)
+}
+
+fn finalize_loaded_map(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    province_materials: &mut Assets<ProvinceMapMaterial>,
+    images: &mut Assets<Image>,
+    next_state: &mut NextState<AppState>,
+    missing_map_message: &mut MissingMapMessage,
+    loaded: LoadedMapAssets,
+) {
+    let LoadedMapAssets {
+        map_data,
+        province_names,
+    } = loaded;
     missing_map_message.0 = None;
 
     bevy::log::info!(
@@ -445,26 +524,65 @@ fn load_map(
         province.indices.shrink_to_fit();
     }
     commands.insert_resource(MapResource(stripped_map));
-
-    // Load province names (official Chinese translations).
-    let mut province_name_map: HashMap<String, String> = HashMap::new();
-    if let Ok(content) = std::fs::read_to_string("assets/province_names.tsv") {
-        for line in content.lines() {
-            let mut parts = line.splitn(2, '\t');
-            if let (Some(en), Some(zh)) = (parts.next(), parts.next()) {
-                province_name_map.insert(en.trim().to_lowercase(), zh.trim().to_string());
-            }
-        }
-        bevy::log::info!(
-            target: "daboyi::startup",
-            "已加载 {} 个省份名称",
-            province_name_map.len()
-        );
-    }
-    commands.insert_resource(ProvinceNames(province_name_map));
+    commands.insert_resource(province_names);
 
     MemoryMonitor::log_memory_usage("After loading province names");
     next_state.set(AppState::Editing);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_map_load(mut task: ResMut<MapLoadTask>) {
+    if task.0.is_some() {
+        return;
+    }
+    task.0 = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let map_bytes = fetch_bytes(MAP_BIN_PATH).await?;
+        let map_data = bincode::deserialize::<MapData>(&map_bytes)
+            .map_err(|error| format!("解析 {MAP_BIN_PATH} 失败：{error}"))?;
+        let province_names =
+            load_province_names_from_text(fetch_text("assets/province_names.tsv").await.ok());
+        Ok(LoadedMapAssets {
+            map_data,
+            province_names,
+        })
+    }));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn poll_map_load(
+    mut commands: Commands,
+    mut map_load_task: ResMut<MapLoadTask>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut missing_map_message: ResMut<MissingMapMessage>,
+) {
+    let Some(task) = map_load_task.0.as_mut() else {
+        return;
+    };
+    let Some(result) = future::block_on(future::poll_once(task)) else {
+        return;
+    };
+    map_load_task.0 = None;
+    match result {
+        Ok(loaded) => finalize_loaded_map(
+            &mut commands,
+            &mut meshes,
+            &mut province_materials,
+            &mut images,
+            &mut next_state,
+            &mut missing_map_message,
+            loaded,
+        ),
+        Err(error) => {
+            bevy::log::error!(target: "daboyi::startup", "{error}");
+            missing_map_message.0 = Some(format!(
+                "浏览器版本无法加载基础地图：{error}。请确认 web 服务器正在提供 assets/map.bin。"
+            ));
+            next_state.set(AppState::Editing);
+        }
+    }
 }
 
 fn update_zoom_visuals(

@@ -5,3 +5,6 @@ assets/province_adjacency.bin
 assets/world_1400.geojson
 tools/.venv
 /.trae
+/*.json
+/.trunk
+/web/dist

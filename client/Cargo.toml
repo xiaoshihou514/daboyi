@@ -4,11 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = "0.15"
+bevy = { version = "0.15", features = ["webgl2"] }
 bevy_egui = "0.31"
 serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = "1"
 lazy_static = "1"
+futures-lite = "2"
 shared = { path = "../shared" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = "0.17.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = "0.6"
+getrandom = { version = "0.3", features = ["wasm_js"] }

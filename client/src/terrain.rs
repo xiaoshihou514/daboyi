@@ -4,19 +4,27 @@ use crate::editor::{
 use crate::map::{BorderVersion, ColoringVersion, MapResource};
 use crate::memory::MemoryMonitor;
 use crate::state::AppState;
+#[cfg(target_arch = "wasm32")]
+use crate::web_io::fetch_bytes;
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
+#[cfg(target_arch = "wasm32")]
+use bevy::tasks::{AsyncComputeTaskPool, Task};
+#[cfg(target_arch = "wasm32")]
+use futures_lite::future;
 use serde::{Deserialize, Serialize};
 use shared::map::{RiverData, TerrainData};
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 use std::io;
 
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
 pub const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
 const TERRAIN_ADJACENCY_BIN_PATH: &str = "assets/terrain_adjacency.bin";
+#[cfg(not(target_arch = "wasm32"))]
 const TERRAIN_ADJACENCY_CACHE_VERSION: u32 = 3;
 const SURROUND_THRESHOLD: f32 = 0.8;
 /// Three copies of the 360°-wide world for seamless horizontal wrapping.
@@ -116,26 +124,45 @@ impl Default for TerrainMemoryDiagnostics {
 
 #[derive(Resource, Default)]
 struct TerrainAdjacencyBuildTask {
+    #[cfg(not(target_arch = "wasm32"))]
     handle: Option<std::thread::JoinHandle<TerrainAdjacencyData>>,
     province_count: u32,
     terrain_polygon_count: u32,
 }
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource, Default)]
+struct TerrainLoadTask(Option<Task<Result<LoadedTerrainAssets, String>>>);
+
+#[cfg(target_arch = "wasm32")]
+struct LoadedTerrainAssets {
+    terrain: TerrainData,
+    rivers: Option<RiverData>,
+}
+
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TerrainAdjacencyData>()
+        let app = app
+            .init_resource::<TerrainAdjacencyData>()
             .init_resource::<TerrainAdjacencyBuildTask>()
-            .add_systems(Startup, (load_terrain, spawn_rivers))
             .add_systems(
                 Update,
                 (compute_terrain_adjacency, update_terrain_visuals)
                     .chain()
                     .run_if(in_state(AppState::Editing)),
             );
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = app.add_systems(Startup, (load_terrain, spawn_rivers));
+        #[cfg(target_arch = "wasm32")]
+        let _ = app
+            .init_resource::<TerrainLoadTask>()
+            .add_systems(Startup, start_terrain_load)
+            .add_systems(Update, poll_terrain_load);
     }
 }
 
 /// Build a single merged mesh from all terrain polygons and spawn three copies.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_terrain(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -149,7 +176,15 @@ fn load_terrain(
             return;
         }
     };
+    spawn_terrain_from_data(&mut commands, &mut meshes, &mut materials, terrain);
+}
 
+fn spawn_terrain_from_data(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    terrain: TerrainData,
+) {
     // Count total vertices/indices up front for pre-allocation.
     let total_verts: usize = terrain.polygons.iter().map(|p| p.vertices.len()).sum();
     let total_idxs: usize = terrain.polygons.iter().map(|p| p.indices.len()).sum();
@@ -319,6 +354,7 @@ fn compute_terrain_adjacency(
     let province_count = map.0.provinces.len() as u32;
     let terrain_polygon_count = terrain_mesh.polygons.len() as u32;
 
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(handle) = build_task.handle.as_ref() {
         if !handle.is_finished() {
             return;
@@ -350,6 +386,7 @@ fn compute_terrain_adjacency(
         return;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     match load_cached_terrain_adjacency(province_count, terrain_polygon_count) {
         Ok(Some(cache)) => {
             bevy::log::info!(
@@ -393,9 +430,28 @@ fn compute_terrain_adjacency(
         .collect();
     build_task.province_count = province_count;
     build_task.terrain_polygon_count = terrain_polygon_count;
-    build_task.handle = Some(std::thread::spawn(move || {
-        build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water)
-    }));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        build_task.handle = Some(std::thread::spawn(move || {
+            build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water)
+        }));
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        *terrain_adjacency =
+            build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water);
+        build_task.province_count = 0;
+        build_task.terrain_polygon_count = 0;
+        if let Err(error) =
+            save_cached_terrain_adjacency(province_count, terrain_polygon_count, &terrain_adjacency)
+        {
+            eprintln!("Failed to save {TERRAIN_ADJACENCY_BIN_PATH}: {error}");
+        }
+        eprintln!(
+            "Terrain adjacency: ready ({} terrain borders)",
+            terrain_adjacency.borders.len()
+        );
+    }
 }
 
 fn build_terrain_adjacency(
@@ -470,29 +526,39 @@ fn build_terrain_adjacency(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_cached_terrain_adjacency(
     province_count: u32,
     terrain_polygon_count: u32,
 ) -> io::Result<Option<TerrainAdjacencyData>> {
-    let bytes = match fs::read(TERRAIN_ADJACENCY_BIN_PATH) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let cache: TerrainAdjacencyCache = bincode::deserialize(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if cache.version != TERRAIN_ADJACENCY_CACHE_VERSION
-        || cache.province_count != province_count
-        || cache.terrain_polygon_count != terrain_polygon_count
+    #[cfg(target_arch = "wasm32")]
     {
-        return Ok(None);
+        let _ = province_count;
+        let _ = terrain_polygon_count;
+        Ok(None)
     }
-    Ok(Some(TerrainAdjacencyData {
-        polygons: cache.polygons,
-        borders: cache.borders,
-        component_ids: cache.component_ids,
-        water_polygons: cache.water_polygons,
-    }))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes = match fs::read(TERRAIN_ADJACENCY_BIN_PATH) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let cache: TerrainAdjacencyCache = bincode::deserialize(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if cache.version != TERRAIN_ADJACENCY_CACHE_VERSION
+            || cache.province_count != province_count
+            || cache.terrain_polygon_count != terrain_polygon_count
+        {
+            return Ok(None);
+        }
+        Ok(Some(TerrainAdjacencyData {
+            polygons: cache.polygons,
+            borders: cache.borders,
+            component_ids: cache.component_ids,
+            water_polygons: cache.water_polygons,
+        }))
+    }
 }
 
 fn save_cached_terrain_adjacency(
@@ -500,17 +566,27 @@ fn save_cached_terrain_adjacency(
     terrain_polygon_count: u32,
     terrain_adjacency: &TerrainAdjacencyData,
 ) -> io::Result<()> {
-    let bytes = bincode::serialize(&TerrainAdjacencyCache {
-        version: TERRAIN_ADJACENCY_CACHE_VERSION,
-        province_count,
-        terrain_polygon_count,
-        polygons: terrain_adjacency.polygons.clone(),
-        borders: terrain_adjacency.borders.clone(),
-        component_ids: terrain_adjacency.component_ids.clone(),
-        water_polygons: terrain_adjacency.water_polygons.clone(),
-    })
-    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    fs::write(TERRAIN_ADJACENCY_BIN_PATH, bytes)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = province_count;
+        let _ = terrain_polygon_count;
+        let _ = terrain_adjacency;
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes = bincode::serialize(&TerrainAdjacencyCache {
+            version: TERRAIN_ADJACENCY_CACHE_VERSION,
+            province_count,
+            terrain_polygon_count,
+            polygons: terrain_adjacency.polygons.clone(),
+            borders: terrain_adjacency.borders.clone(),
+            component_ids: terrain_adjacency.component_ids.clone(),
+            water_polygons: terrain_adjacency.water_polygons.clone(),
+        })
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::write(TERRAIN_ADJACENCY_BIN_PATH, bytes)
+    }
 }
 
 fn update_terrain_visuals(
@@ -1182,6 +1258,7 @@ fn add_junction_fill(
 }
 
 /// Load rivers.bin and build a single triangle mesh for all river segments.
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_rivers(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1195,7 +1272,15 @@ fn spawn_rivers(
             return;
         }
     };
+    spawn_rivers_from_data(&mut commands, &mut meshes, &mut materials, river_data);
+}
 
+fn spawn_rivers_from_data(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    river_data: RiverData,
+) {
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -1317,6 +1402,59 @@ fn spawn_rivers(
         river_data.edges.len(),
         river_quad_count,
     );
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_terrain_load(mut task: ResMut<TerrainLoadTask>) {
+    if task.0.is_some() {
+        return;
+    }
+    task.0 = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let terrain_bytes = fetch_bytes(TERRAIN_BIN_PATH).await?;
+        let terrain = bincode::deserialize::<TerrainData>(&terrain_bytes)
+            .map_err(|error| format!("解析 {TERRAIN_BIN_PATH} 失败：{error}"))?;
+        let rivers = match fetch_bytes(RIVERS_BIN_PATH).await {
+            Ok(bytes) => Some(
+                bincode::deserialize::<RiverData>(&bytes)
+                    .map_err(|error| format!("解析 {RIVERS_BIN_PATH} 失败：{error}"))?,
+            ),
+            Err(error) => {
+                bevy::log::warn!(
+                    target: "daboyi::startup",
+                    "无法加载 {RIVERS_BIN_PATH}：{error}"
+                );
+                None
+            }
+        };
+        Ok(LoadedTerrainAssets { terrain, rivers })
+    }));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn poll_terrain_load(
+    mut commands: Commands,
+    mut terrain_load_task: ResMut<TerrainLoadTask>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let Some(task) = terrain_load_task.0.as_mut() else {
+        return;
+    };
+    let Some(result) = future::block_on(future::poll_once(task)) else {
+        return;
+    };
+    terrain_load_task.0 = None;
+    match result {
+        Ok(loaded) => {
+            spawn_terrain_from_data(&mut commands, &mut meshes, &mut materials, loaded.terrain);
+            if let Some(rivers) = loaded.rivers {
+                spawn_rivers_from_data(&mut commands, &mut meshes, &mut materials, rivers);
+            }
+        }
+        Err(error) => {
+            bevy::log::warn!(target: "daboyi::startup", "无法加载 terrain web 资源：{error}");
+        }
+    }
 }
 
 #[cfg(test)]

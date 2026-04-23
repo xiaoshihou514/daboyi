@@ -1,0 +1,8 @@
+[build]
+target = "index.html"
+dist = "dist"
+filehash = false
+release = true
+
+[watch]
+watch = ["../client/src", "../shared/src", "../assets", "../client/Cargo.toml"]

@@ -1,7 +1,6 @@
 //! 着色文件保存/加载
 
 use bevy::prelude::*;
-use std::fs;
 use std::path::Path;
 
 use crate::editor::{
@@ -11,6 +10,7 @@ use crate::map::BorderVersion;
 use crate::map::ColoringVersion;
 use shared::ColoringFile;
 
+#[cfg(not(target_arch = "wasm32"))]
 const COLORING_FILE: &str = "assets/coloring.json";
 
 #[derive(Event)]
@@ -20,8 +20,18 @@ pub struct LoadColoringEvent(pub String);
 pub struct SaveColoringEvent(pub String);
 
 fn load_coloring_from_path(path: &Path) -> Result<ColoringFile, String> {
-    let json = fs::read_to_string(path).map_err(|e| format!("读取着色文件失败：{e}"))?;
-    serde_json::from_str(&json).map_err(|e| format!("解析着色文件失败：{e}"))
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("浏览器版本暂不支持从任意本地路径读取着色文件".to_string())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::fs;
+
+        let json = fs::read_to_string(path).map_err(|e| format!("读取着色文件失败：{e}"))?;
+        serde_json::from_str(&json).map_err(|e| format!("解析着色文件失败：{e}"))
+    }
 }
 
 fn apply_coloring(commands: &mut Commands, file: ColoringFile) {
@@ -50,15 +60,27 @@ fn current_coloring_file(
 
 /// 从 JSON 文件加载着色数据
 pub fn load_coloring(commands: &mut Commands) {
-    let file = match load_coloring_from_path(Path::new(COLORING_FILE)) {
-        Ok(file) => file,
-        Err(error) => {
-            bevy::log::warn!(target: "daboyi::startup", "{error}；使用空数据");
-            return;
-        }
-    };
-    apply_coloring(commands, file);
-    bevy::log::info!(target: "daboyi::startup", "已加载着色数据从 {COLORING_FILE}");
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = commands;
+        bevy::log::info!(
+            target: "daboyi::startup",
+            "浏览器版本跳过启动时自动加载 coloring.json；请使用页面内编辑功能"
+        );
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let file = match load_coloring_from_path(Path::new(COLORING_FILE)) {
+            Ok(file) => file,
+            Err(error) => {
+                bevy::log::warn!(target: "daboyi::startup", "{error}；使用空数据");
+                return;
+            }
+        };
+        apply_coloring(commands, file);
+        bevy::log::info!(target: "daboyi::startup", "已加载着色数据从 {COLORING_FILE}");
+    }
 }
 
 pub fn handle_load_coloring(
@@ -104,7 +126,18 @@ pub fn handle_save_coloring(
                 continue;
             }
         };
-        match fs::write(path, json) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            let _ = json;
+            bevy::log::warn!(
+                target: "daboyi::editor",
+                "浏览器版本暂不支持直接写入本地着色文件"
+            );
+            continue;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        match std::fs::write(path, json) {
             Ok(()) => {
                 bevy::log::info!(target: "daboyi::editor", "已保存着色数据到 {}", path.display())
             }

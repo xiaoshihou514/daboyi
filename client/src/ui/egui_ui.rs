@@ -3,6 +3,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
+#[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 
 use crate::editor::{
@@ -274,26 +275,35 @@ pub fn egui_ui_system(
             ui.separator();
 
             // Save/Load
-            if ui.button("保存").clicked() {
-                if let Some(path) = FileDialog::new()
-                    .set_title("保存着色文件")
-                    .set_file_name("coloring.json")
-                    .add_filter("着色文件", &["json"])
-                    .save_file()
-                {
-                    save_coloring_events
-                        .send(SaveColoringEvent(path.to_string_lossy().to_string()));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if ui.button("保存").clicked() {
+                    if let Some(path) = FileDialog::new()
+                        .set_title("保存着色文件")
+                        .set_file_name("coloring.json")
+                        .add_filter("着色文件", &["json"])
+                        .save_file()
+                    {
+                        save_coloring_events
+                            .send(SaveColoringEvent(path.to_string_lossy().to_string()));
+                    }
+                }
+                if ui.button("加载").clicked() {
+                    if let Some(path) = FileDialog::new()
+                        .set_title("加载着色文件")
+                        .add_filter("着色文件", &["json"])
+                        .pick_file()
+                    {
+                        load_coloring_events
+                            .send(LoadColoringEvent(path.to_string_lossy().to_string()));
+                    }
                 }
             }
-            if ui.button("加载").clicked() {
-                if let Some(path) = FileDialog::new()
-                    .set_title("加载着色文件")
-                    .add_filter("着色文件", &["json"])
-                    .pick_file()
-                {
-                    load_coloring_events
-                        .send(LoadColoringEvent(path.to_string_lossy().to_string()));
-                }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = &mut load_coloring_events;
+                let _ = &mut save_coloring_events;
+                ui.label("浏览器版本暂不支持本地文件保存/加载");
             }
         });
     if let Some(pos) = pointer_pos {

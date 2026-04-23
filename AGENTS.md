@@ -82,6 +82,7 @@ daboyi/
 - Rust 工具链（stable，2021 edition 及以上）
 - `clang` / `clang++`（RocksDB 依赖）
 - `mold` 链接器（已配置在 `.cargo/config.toml`）
+- [Trunk](https://trunkrs.dev/)（用于浏览器 / WASM 本地调试）
 - EU5toGIS 数据集（参见 Paradox 论坛）
 - EU5 文本格式存档（`.eu5`，以 `SAV` 开头）
 
@@ -140,11 +141,26 @@ cargo run -p client
 | `cargo build` | 构建整个工作区 |
 | `cargo build -p server` | 仅构建服务端 |
 | `cargo build -p client` | 仅构建客户端 |
+| `cargo build --target wasm32-unknown-unknown -p client` | 构建浏览器版客户端 |
 | `cargo build -p mapgen` | 构建地图生成工具 |
 | `cargo build -p parse_save` | 构建存档解析工具 |
 | `cargo test` | 运行所有测试 |
 | `cargo clippy` | 运行 Clippy 检查 |
 | `cargo fmt` | 格式化代码 |
+
+### 浏览器版本地运行
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+cd web
+trunk serve
+```
+
+- `web/` 目录承载浏览器前端壳层
+- Trunk 会构建 `client` 的 wasm 产物并将 `assets/` 暴露给浏览器
+- 运行前仍需先准备 `assets/map.bin`、`assets/terrain.bin` 等离线生成资源
+- 浏览器版当前用于本地渲染/交互测试；本地文件保存与加载对话框仍以桌面版为主
 
 ## 游戏流程
 

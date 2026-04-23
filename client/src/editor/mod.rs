@@ -2,11 +2,10 @@
 
 use crate::memory::MemoryMonitor;
 use bevy::prelude::*;
-use shared::map::MapData;
 use shared::AdminArea;
 use std::collections::{HashMap, HashSet};
 
-use crate::map::{MapResource, MAP_BIN_PATH};
+use crate::map::MapResource;
 use crate::state::AppState;
 
 mod admin;
@@ -106,10 +105,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<SpatialHash>()
             .add_event::<LoadColoringEvent>()
             .add_event::<SaveColoringEvent>()
-            .add_systems(
-                Startup,
-                (load_coloring_on_startup, load_non_playable_provinces),
-            )
+            .add_systems(Startup, (load_coloring_on_startup,))
             .add_systems(
                 Update,
                 (build_spatial_hash,)
@@ -139,6 +135,10 @@ impl Plugin for EditorPlugin {
                 (handle_load_coloring, handle_save_coloring)
                     .run_if(in_state(AppState::Editing))
                     .after(crate::ui::UiPass),
+            )
+            .add_systems(
+                Update,
+                (populate_non_playable_provinces,).run_if(in_state(AppState::Editing)),
             );
     }
 }
@@ -150,19 +150,24 @@ fn load_coloring_on_startup(mut commands: Commands) {
     MemoryMonitor::log_memory_usage("After loading coloring");
 }
 
-fn load_non_playable_provinces(mut commands: Commands) {
-    let Ok(map) = MapData::load(MAP_BIN_PATH) else {
+fn populate_non_playable_provinces(
+    map: Option<Res<MapResource>>,
+    mut non_playable_provinces: ResMut<NonPlayableProvinces>,
+) {
+    let Some(map) = map else {
         return;
     };
+    if !map.is_added() {
+        return;
+    }
 
-    let province_ids = map
+    non_playable_provinces.0 = map
+        .0
         .provinces
         .iter()
         .filter(|province| province.topography.contains("wasteland"))
         .map(|province| province.id)
         .collect();
-
-    commands.insert_resource(NonPlayableProvinces(province_ids));
 }
 
 fn build_spatial_hash(map: Option<Res<MapResource>>, mut spatial_hash: ResMut<SpatialHash>) {
