@@ -304,6 +304,12 @@ pub enum ServerMsg {
   - `test:` 测试相关
   - `chore:` 构建/工具相关
 
+### 编译规范
+
+- 每次修改代码后，必须执行 `cargo build --release` 确保编译通过
+- 同时需要构建 WebAssembly 版本：`cargo build --target wasm32-unknown-unknown --release -p client`
+- **禁止使用 `cargo run`**：仅使用 `cargo build` 进行编译验证，避免运行时副作用
+
 ## 资产文件说明
 
 ### `assets/` 目录
@@ -417,4 +423,16 @@ futures-util = "0.3"
 
 ---
 
-**最后更新**：2026-03-13
+## Copilot Instructions
+
+### Rust coding rules
+
+- **No `unsafe` blocks.** All code must be safe Rust. No `unsafe fn`, no `unsafe impl`, no `unsafe {}`.
+
+### File deletion
+
+- **Never use `rm`.** To delete files, always use: `kioclient move "file://$the_file_to_delete" 'trash:/'`
+
+---
+
+**最后更新**：2026-04-24

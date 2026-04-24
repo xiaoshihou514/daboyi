@@ -93,6 +93,36 @@ impl TerrainData {
     }
 }
 
+// ── Province adjacency (pre-computed border chains) ────────────────────────────
+
+pub const ADJACENCY_CACHE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedBorder {
+    pub provinces: [u32; 2],
+    pub chains: Vec<Vec<[f32; 2]>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvinceAdjacencyCache {
+    pub version: u32,
+    pub province_count: u32,
+    pub borders: Vec<CachedBorder>,
+}
+
+impl ProvinceAdjacencyCache {
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let bytes = bincode::serialize(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(path, bytes)
+    }
+
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let bytes = fs::read(path)?;
+        bincode::deserialize(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
 // ── River geometry ────────────────────────────────────────────────────────────
 
 /// A river graph node shared by one or more river edges.

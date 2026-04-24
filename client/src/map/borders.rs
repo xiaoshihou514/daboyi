@@ -10,11 +10,8 @@ use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderRef, ShaderType, SpecializedMeshPipelineError,
     VertexFormat,
 };
-use serde::{Deserialize, Serialize};
+use shared::map::{CachedBorder, ProvinceAdjacencyCache, ADJACENCY_CACHE_VERSION};
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs;
-use std::io;
 
 use crate::editor::{
     province_country_tag, visible_admin_id_for_province, ActiveAdmin, ActiveCountry, AdminAreas,
@@ -33,7 +30,6 @@ use bevy::sprite::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin};
 use std::collections::HashSet;
 
 const ADJACENCY_BIN_PATH: &str = "assets/province_adjacency.bin";
-const ADJACENCY_CACHE_VERSION: u32 = 1;
 const BORDER_CHUNK_WIDTH: f32 = 30.0;
 const BORDER_CHUNK_HEIGHT: f32 = 15.0;
 const BORDER_CHUNK_COLS: u32 = 12;
@@ -43,19 +39,6 @@ const ATTRIBUTE_BORDER_OFFSET: MeshVertexAttribute =
     MeshVertexAttribute::new("BorderOffset", 983_541_201, VertexFormat::Float32x2);
 const ATTRIBUTE_BORDER_TIER: MeshVertexAttribute =
     MeshVertexAttribute::new("BorderTier", 983_541_202, VertexFormat::Float32);
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct CachedBorder {
-    pub(crate) provinces: [u32; 2],
-    chains: Vec<Vec<[f32; 2]>>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ProvinceAdjacencyCache {
-    version: u32,
-    province_count: u32,
-    borders: Vec<CachedBorder>,
-}
 
 /// Precomputed border chains keyed by adjacent province pairs.
 #[derive(Resource, Default)]
@@ -233,7 +216,7 @@ struct BorderState<'w, 's> {
     _marker: std::marker::PhantomData<&'w ()>,
 }
 
-/// Compute province adjacency and shared border chains once from province boundaries.
+/// Compute province adjacency from pre-computed cache file.
 pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<ProvinceAdjacency>) {
     if !adjacency.0.is_empty() {
         return;
@@ -241,148 +224,27 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
     let Some(map) = map else { return };
     let province_count = map.0.provinces.len() as u32;
 
-    if let Ok(Some(cached_borders)) = load_cached_adjacency(province_count) {
-        bevy::log::info!(
-            target: "daboyi::startup",
-            "Loaded province adjacency cache: {} pairs",
-            cached_borders.len()
-        );
-        adjacency.0 = cached_borders;
-        MemoryMonitor::log_estimated_allocation(
-            "Province adjacency cache",
-            cached_borders_bytes(&adjacency.0),
-            0,
-            "cached shared-border chains retained on the CPU",
-        );
-        return;
-    }
-
-    let cached_borders = build_adjacency(&map.0);
-    bevy::log::info!(
-        target: "daboyi::startup",
-        "Province adjacency: {} pairs",
-        cached_borders.len()
-    );
-    if let Err(error) = save_cached_adjacency(province_count, &cached_borders) {
-        bevy::log::warn!(
-            target: "daboyi::startup",
-            "Failed to save {ADJACENCY_BIN_PATH}: {error}"
-        );
-    }
-    adjacency.0 = cached_borders;
-    MemoryMonitor::log_estimated_allocation(
-        "Province adjacency cache",
-        cached_borders_bytes(&adjacency.0),
-        0,
-        "cached shared-border chains retained on the CPU",
-    );
-}
-
-fn build_adjacency(map: &shared::map::MapData) -> Vec<CachedBorder> {
-    let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
-    let mut edge_map: std::collections::HashMap<[(i32, i32); 2], u32> =
-        std::collections::HashMap::new();
-    let mut pairs: Vec<[u32; 2]> = Vec::new();
-
-    for province in &map.provinces {
-        let pid = province.id;
-        for ring in &province.boundary {
-            let n = ring.len();
-            for i in 0..n {
-                let a = ring[i];
-                let b = ring[(i + 1) % n];
-                let qa = (quantize(a[0]), quantize(a[1]));
-                let qb = (quantize(b[0]), quantize(b[1]));
-                let key = if qa <= qb { [qa, qb] } else { [qb, qa] };
-                if let Some(&other_pid) = edge_map.get(&key) {
-                    if other_pid != pid {
-                        pairs.push([other_pid.min(pid), other_pid.max(pid)]);
-                    }
-                } else {
-                    edge_map.insert(key, pid);
-                }
-            }
+    match ProvinceAdjacencyCache::load(ADJACENCY_BIN_PATH) {
+        Ok(cache) if cache.version == ADJACENCY_CACHE_VERSION && cache.province_count == province_count => {
+            bevy::log::info!(
+                target: "daboyi::startup",
+                "Loaded province adjacency cache: {} pairs",
+                cache.borders.len()
+            );
+            adjacency.0 = cache.borders;
+            MemoryMonitor::log_estimated_allocation(
+                "Province adjacency cache",
+                cached_borders_bytes(&adjacency.0),
+                0,
+                "cached shared-border chains retained on the CPU",
+            );
         }
-    }
-
-    pairs.sort_unstable();
-    pairs.dedup();
-
-    // Pass 1: compute merged chains for every adjacent pair.
-    let mut pair_data: Vec<([u32; 2], Vec<Vec<[f32; 2]>>)> = Vec::with_capacity(pairs.len());
-    for pair in pairs {
-        let ia = pair[0] as usize;
-        let ib = pair[1] as usize;
-        if ia >= map.provinces.len() || ib >= map.provinces.len() {
-            continue;
+        _ => {
+            bevy::log::error!(
+                target: "daboyi::startup",
+                "Failed to load {ADJACENCY_BIN_PATH}: run mapgen to generate it"
+            );
         }
-        let raw_chains = chain_polylines(shared_segments(&map.provinces[ia], &map.provinces[ib]));
-        if raw_chains.is_empty() {
-            continue;
-        }
-        let merged = merge_chains(raw_chains);
-        pair_data.push((pair, merged));
-    }
-
-    // Pass 2: globally weld chain endpoints within 0.05° to their centroid.
-    // This fixes junction gaps at T/X intersections where GIS data stores
-    // slightly different float values for the same geographic junction vertex
-    // depending on which neighbor is on the other side.
-    weld_endpoints_global(&mut pair_data);
-
-    // Pass 3: apply Chaikin smoothing and build CachedBorder entries.
-    let mut cached_borders = Vec::with_capacity(pair_data.len());
-    for (pair, chains) in pair_data {
-        let smoothed: Vec<Vec<[f32; 2]>> = chains
-            .iter()
-            .map(|c| chaikin_smooth(&chaikin_smooth(c)))
-            .collect();
-        cached_borders.push(CachedBorder {
-            provinces: pair,
-            chains: smoothed,
-        });
-    }
-    cached_borders
-}
-
-fn load_cached_adjacency(province_count: u32) -> io::Result<Option<Vec<CachedBorder>>> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = province_count;
-        Ok(None)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let bytes = match fs::read(ADJACENCY_BIN_PATH) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let cache: ProvinceAdjacencyCache = bincode::deserialize(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if cache.version != ADJACENCY_CACHE_VERSION || cache.province_count != province_count {
-            return Ok(None);
-        }
-        Ok(Some(cache.borders))
-    }
-}
-
-fn save_cached_adjacency(province_count: u32, borders: &[CachedBorder]) -> io::Result<()> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = province_count;
-        let _ = borders;
-        Ok(())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let bytes = bincode::serialize(&ProvinceAdjacencyCache {
-            version: ADJACENCY_CACHE_VERSION,
-            province_count,
-            borders: borders.to_vec(),
-        })
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        fs::write(ADJACENCY_BIN_PATH, bytes)
     }
 }
 

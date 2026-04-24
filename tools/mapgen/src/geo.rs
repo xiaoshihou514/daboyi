@@ -32,7 +32,7 @@ pub fn project(lon: f64, lat: f64) -> [f32; 2] {
 }
 
 /// Unwrap longitude jumps >180° within a ring to prevent giant antimeridian triangles.
-pub fn normalize_ring_longitudes(ring: &mut Vec<[f64; 2]>) {
+pub fn normalize_ring_longitudes(ring: &mut [[f64; 2]]) {
     for i in 1..ring.len() {
         let diff = ring[i][0] - ring[i - 1][0];
         if diff > 180.0 {

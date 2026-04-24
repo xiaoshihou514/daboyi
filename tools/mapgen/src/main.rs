@@ -1,8 +1,10 @@
+mod adjacency;
 mod geo;
 
+use adjacency::build_adjacency;
 use geo::{parse_gpb_geometry, process_polygons, process_terrain_polygon};
 use rusqlite::Connection;
-use shared::map::{MapData, TerrainData};
+use shared::map::{MapData, ProvinceAdjacencyCache, ADJACENCY_CACHE_VERSION, TerrainData};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -108,10 +110,8 @@ fn main() {
                 Ok((tag, sea_zone))
             })
             .expect("Failed to iterate ports");
-        for row in rows {
-            if let Ok((tag, sz)) = row {
-                port_sea_zones.insert(tag, sz);
-            }
+        for (tag, sz) in rows.flatten() {
+            port_sea_zones.insert(tag, sz);
         }
         println!("{} ports loaded", port_sea_zones.len());
     } else {
@@ -209,6 +209,32 @@ fn main() {
     let map_data = MapData {
         provinces: all_provinces,
     };
+
+    print!("Computing province adjacency ... ");
+    let borders = build_adjacency(&map_data);
+    println!("{} pairs", borders.len());
+
+    let province_count = map_data.provinces.len() as u32;
+    let adjacency_cache = ProvinceAdjacencyCache {
+        version: ADJACENCY_CACHE_VERSION,
+        province_count,
+        borders,
+    };
+
+    let adjacency_path = output_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("province_adjacency.bin");
+    adjacency_cache
+        .save(&adjacency_path)
+        .expect("Failed to write province_adjacency.bin");
+    let adj_size = fs::metadata(&adjacency_path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "Wrote {} ({:.1} MB)",
+        adjacency_path.display(),
+        adj_size as f64 / 1024.0 / 1024.0
+    );
+
     map_data
         .save(&output_path)
         .expect("Failed to write map.bin");

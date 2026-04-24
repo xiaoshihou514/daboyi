@@ -18,7 +18,7 @@ use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
 use material::{ProvinceMapMaterial, ProvinceMapParams};
-use shared::map::MapData;
+use shared::map::{MapData, ProvinceAdjacencyCache};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Arc, Mutex};
@@ -39,6 +39,8 @@ use interact::province_click;
 pub const MAP_BIN_PATH: &str = "assets/map.bin";
 /// Equal Earth x-range width: longitude ±180° maps exactly to x ∈ [-180, 180].
 pub const MAP_WIDTH: f32 = 360.0;
+/// Path to the province adjacency cache file.
+const ADJACENCY_BIN_PATH: &str = "assets/province_adjacency.bin";
 
 /// Province tag (lowercased) → Chinese display name.
 #[derive(Resource, Default)]
@@ -79,6 +81,15 @@ enum NativeMapLoadPhase {
     Done,
 }
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource, Default, PartialEq, Eq)]
+enum WasmMapBuildPhase {
+    #[default]
+    NotStarted,
+    Building,
+    Done,
+}
+
 /// Currently selected province.
 #[derive(Resource, Default)]
 pub struct SelectedProvince(pub Option<u32>);
@@ -93,6 +104,7 @@ pub enum MapMode {
 struct LoadedMapAssets {
     map_data: MapData,
     province_names: ProvinceNames,
+    adjacency: Option<ProvinceAdjacencyCache>,
 }
 
 impl std::fmt::Display for MapMode {
@@ -255,6 +267,7 @@ impl Plugin for MapPlugin {
         let app = app
             .init_resource::<MapLoadTask>()
             .init_resource::<PendingMapBuild>()
+            .init_resource::<WasmMapBuildPhase>()
             .add_systems(Startup, start_map_load)
             .add_systems(
                 Update,
@@ -297,9 +310,19 @@ fn load_map_assets_native() -> Result<LoadedMapAssets, String> {
     };
     let province_names =
         load_province_names_from_text(std::fs::read_to_string("assets/province_names.tsv").ok());
+    
+    let adjacency = match ProvinceAdjacencyCache::load(ADJACENCY_BIN_PATH) {
+        Ok(cache) => Some(cache),
+        Err(e) => {
+            bevy::log::warn!(target: "daboyi::startup", "Failed to load {ADJACENCY_BIN_PATH}: {e}");
+            None
+        }
+    };
+    
     Ok(LoadedMapAssets {
         map_data,
         province_names,
+        adjacency,
     })
 }
 
@@ -369,6 +392,7 @@ fn finalize_loaded_map(
     let LoadedMapAssets {
         map_data,
         province_names,
+        adjacency,
     } = loaded;
     missing_map_message.0 = None;
 
@@ -380,6 +404,28 @@ fn finalize_loaded_map(
     MemoryMonitor::log_memory_usage("After loading map data");
     MemoryMonitor::log_detailed_memory_usage("After loading map data");
     MemoryMonitor::log_collection_size("Map provinces", &map_data.provinces);
+
+    // Handle adjacency data
+    if let Some(cache) = adjacency {
+        let province_count = map_data.provinces.len() as u32;
+        if cache.province_count == province_count {
+            bevy::log::info!(
+                target: "daboyi::startup",
+                "Loaded province adjacency cache: {} pairs",
+                cache.borders.len()
+            );
+            commands.insert_resource(crate::map::borders::ProvinceAdjacency(cache.borders));
+        } else {
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "Adjacency cache province count mismatch: expected {}, got {}",
+                province_count,
+                cache.province_count
+            );
+        }
+    } else {
+        bevy::log::warn!(target: "daboyi::startup", "No adjacency cache loaded");
+    }
 
     let n = map_data.provinces.len();
     let tex_height = (n + TEX_WIDTH - 1) / TEX_WIDTH;
@@ -592,9 +638,23 @@ fn start_map_load(mut task: ResMut<MapLoadTask>, mut progress: ResMut<LoadingPro
                 .map_err(|error| format!("解析 {MAP_BIN_PATH} 失败：{error}"))?;
             let province_names =
                 load_province_names_from_text(fetch_text("assets/province_names.tsv").await.ok());
+            let adjacency = match fetch_bytes(ADJACENCY_BIN_PATH).await {
+                Ok(adj_bytes) => match bincode::deserialize::<ProvinceAdjacencyCache>(&adj_bytes) {
+                    Ok(cache) => Some(cache),
+                    Err(e) => {
+                        bevy::log::warn!(target: "daboyi::startup", "解析 {ADJACENCY_BIN_PATH} 失败：{e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    bevy::log::warn!(target: "daboyi::startup", "加载 {ADJACENCY_BIN_PATH} 失败：{e}");
+                    None
+                }
+            };
             Ok(LoadedMapAssets {
                 map_data,
                 province_names,
+                adjacency,
             })
         }
         .await;
@@ -607,8 +667,9 @@ fn start_map_load(mut task: ResMut<MapLoadTask>, mut progress: ResMut<LoadingPro
 fn poll_map_load(
     mut map_load_task: ResMut<MapLoadTask>,
     mut pending_build: ResMut<PendingMapBuild>,
-    mut progress: ResMut<LoadingProgress>,
     mut missing_map_message: ResMut<MissingMapMessage>,
+    mut progress: ResMut<LoadingProgress>,
+    mut build_phase: ResMut<WasmMapBuildPhase>,
 ) {
     let Some(slot) = map_load_task.0.as_ref() else {
         return;
@@ -619,11 +680,12 @@ fn poll_map_load(
     map_load_task.0 = None;
     match result {
         Ok(loaded) => {
+            pending_build.0 = Some(loaded);
             progress.map = LoadingStage::Working {
                 label: "正在构建省份网格".to_string(),
                 progress: 0.72,
             };
-            pending_build.0 = Some(loaded);
+            *build_phase = WasmMapBuildPhase::Building;
         }
         Err(error) => {
             bevy::log::error!(target: "daboyi::startup", "{error}");
@@ -635,6 +697,7 @@ fn poll_map_load(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn build_loaded_map(
     mut commands: Commands,
     mut pending_build: ResMut<PendingMapBuild>,
@@ -644,6 +707,34 @@ fn build_loaded_map(
     mut missing_map_message: ResMut<MissingMapMessage>,
     mut progress: ResMut<LoadingProgress>,
 ) {
+    let Some(loaded) = pending_build.0.take() else {
+        return;
+    };
+    finalize_loaded_map(
+        &mut commands,
+        &mut meshes,
+        &mut province_materials,
+        &mut images,
+        &mut missing_map_message,
+        loaded,
+    );
+    progress.map = LoadingStage::Ready;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn build_loaded_map(
+    mut commands: Commands,
+    mut pending_build: ResMut<PendingMapBuild>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut missing_map_message: ResMut<MissingMapMessage>,
+    mut progress: ResMut<LoadingProgress>,
+    build_phase: Res<WasmMapBuildPhase>,
+) {
+    if !matches!(*build_phase, WasmMapBuildPhase::Building) {
+        return;
+    }
     let Some(loaded) = pending_build.0.take() else {
         return;
     };

@@ -66,14 +66,15 @@ pub fn brush_input_system(
         brush.enabled = !brush.enabled;
         drag.is_dragging = false;
         drag.painted_provinces.clear();
-        eprintln!("刷子：{}", if brush.enabled { "开启" } else { "关闭" });
+        bevy::log::info!(target: "daboyi::editor", "刷子：{}", if brush.enabled { "开启" } else { "关闭" });
         return;
     }
 
     // 切换橡皮擦模式：E 键（仅当刷子已启用）
     if keys.just_pressed(KeyCode::KeyE) && brush.enabled {
         brush.eraser_mode = !brush.eraser_mode;
-        eprintln!(
+        bevy::log::info!(
+            target: "daboyi::editor",
             "橡皮擦：{}",
             if brush.eraser_mode {
                 "开启"

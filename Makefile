@@ -3,7 +3,7 @@
 .PHONY: help build test fmt clippy client client-build mapgen terrain-cache wasm-target trunk web-setup web-build web-serve
 
 help: ## Show available targets
-	@awk 'BEGIN {FS = ": ## "}; /^[a-zA-Z0-9_.-]+: ## / {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_.-]+:.*## / {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Build the workspace
 	cargo build

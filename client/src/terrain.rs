@@ -25,7 +25,6 @@ use wasm_bindgen_futures::spawn_local;
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
 pub const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
 const TERRAIN_ADJACENCY_BIN_PATH: &str = "assets/terrain_adjacency.bin";
-#[cfg(not(target_arch = "wasm32"))]
 const TERRAIN_ADJACENCY_CACHE_VERSION: u32 = 3;
 const SURROUND_THRESHOLD: f32 = 0.8;
 /// Three copies of the 360°-wide world for seamless horizontal wrapping.
@@ -135,6 +134,13 @@ struct TerrainAdjacencyBuildTask {
 #[derive(Resource, Default)]
 struct TerrainLoadTask(Option<Arc<Mutex<Option<Result<LoadedTerrainAssets, String>>>>>);
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Resource, Default)]
+struct TerrainAdjacencyLoadTask {
+    slot: Option<Arc<Mutex<Option<Result<TerrainAdjacencyData, String>>>>>,
+    load_attempted: bool,
+}
+
 struct LoadedTerrainAssets {
     terrain: TerrainData,
     rivers: Option<RiverData>,
@@ -163,7 +169,9 @@ impl Plugin for TerrainPlugin {
                 (compute_terrain_adjacency, update_terrain_visuals)
                     .chain()
                     .run_if(in_state(AppState::Editing)),
-            )
+            );
+        #[cfg(not(target_arch = "wasm32"))]
+        let app = app
             .add_systems(
                 Update,
                 (compute_terrain_adjacency, update_terrain_loading_progress)
@@ -186,11 +194,23 @@ impl Plugin for TerrainPlugin {
         #[cfg(target_arch = "wasm32")]
         let _ = app
             .init_resource::<TerrainLoadTask>()
+            .init_resource::<TerrainAdjacencyLoadTask>()
             .init_resource::<PendingTerrainBuild>()
             .add_systems(Startup, start_terrain_load)
             .add_systems(
                 Update,
                 (poll_terrain_load, build_loaded_terrain).run_if(in_state(AppState::Loading)),
+            )
+            .add_systems(
+                Update,
+                (
+                    start_terrain_adjacency_load,
+                    poll_terrain_adjacency_load,
+                    compute_terrain_adjacency,
+                    update_terrain_loading_progress,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::Loading)),
             );
     }
 }
@@ -385,8 +405,14 @@ fn load_terrain_native(
     let terrain = match TerrainData::load(TERRAIN_BIN_PATH) {
         Ok(terrain) => terrain,
         Err(error) => {
-            eprintln!("Failed to load {TERRAIN_BIN_PATH}: {error}");
-            eprintln!("Terrain will not be rendered. Run mapgen first.");
+            bevy::log::error!(
+                target: "daboyi::startup",
+                "Failed to load {TERRAIN_BIN_PATH}: {error}"
+            );
+            bevy::log::error!(
+                target: "daboyi::startup",
+                "Terrain will not be rendered. Run mapgen first."
+            );
             progress.terrain =
                 LoadingStage::Failed(format!("加载 {TERRAIN_BIN_PATH} 失败：{error}"));
             next_state.set(AppState::Editing);
@@ -411,11 +437,13 @@ fn load_terrain_native(
     commands.insert_resource(NativeTerrainLoadPhase::Building);
 }
 
+#[cfg(target_arch = "wasm32")]
 fn compute_terrain_adjacency(
     map: Option<Res<MapResource>>,
     terrain_mesh: Option<Res<TerrainMeshData>>,
     mut terrain_adjacency: ResMut<TerrainAdjacencyData>,
     mut build_task: ResMut<TerrainAdjacencyBuildTask>,
+    load_task: ResMut<TerrainAdjacencyLoadTask>,
 ) {
     if !terrain_adjacency.polygons.is_empty() {
         return;
@@ -426,61 +454,16 @@ fn compute_terrain_adjacency(
     let province_count = map.0.provinces.len() as u32;
     let terrain_polygon_count = terrain_mesh.polygons.len() as u32;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(handle) = build_task.handle.as_ref() {
-        if !handle.is_finished() {
-            return;
-        }
-        let handle = build_task.handle.take().unwrap();
-        let adjacency = match handle.join() {
-            Ok(adjacency) => adjacency,
-            Err(_) => {
-                eprintln!("Terrain adjacency: background build thread panicked");
-                build_task.province_count = 0;
-                build_task.terrain_polygon_count = 0;
-                return;
-            }
-        };
-        *terrain_adjacency = adjacency;
-        if let Err(error) = save_cached_terrain_adjacency(
-            build_task.province_count,
-            build_task.terrain_polygon_count,
-            &terrain_adjacency,
-        ) {
-            eprintln!("Failed to save {TERRAIN_ADJACENCY_BIN_PATH}: {error}");
-        }
-        build_task.province_count = 0;
-        build_task.terrain_polygon_count = 0;
-        eprintln!(
-            "Terrain adjacency: ready ({} terrain borders)",
-            terrain_adjacency.borders.len()
-        );
+    if !load_task.load_attempted {
         return;
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    match load_cached_terrain_adjacency(province_count, terrain_polygon_count) {
-        Ok(Some(cache)) => {
-            bevy::log::info!(
-                target: "daboyi::startup",
-                "Loaded terrain adjacency cache: {} polygons, {} borders",
-                cache.polygons.len(),
-                cache.borders.len()
-            );
-            *terrain_adjacency = cache;
-            return;
-        }
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!("Failed to load {TERRAIN_ADJACENCY_BIN_PATH}: {error}");
-        }
     }
 
     if build_task.province_count != 0 || build_task.terrain_polygon_count != 0 {
         return;
     }
 
-    eprintln!(
+    bevy::log::info!(
+        target: "daboyi::startup",
         "Terrain adjacency: building cache for {} polygons",
         terrain_mesh.polygons.len()
     );
@@ -502,28 +485,120 @@ fn compute_terrain_adjacency(
         .collect();
     build_task.province_count = province_count;
     build_task.terrain_polygon_count = terrain_polygon_count;
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        build_task.handle = Some(std::thread::spawn(move || {
-            build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water)
-        }));
+    *terrain_adjacency =
+        build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water);
+    build_task.province_count = 0;
+    build_task.terrain_polygon_count = 0;
+    bevy::log::info!(
+        target: "daboyi::startup",
+        "Terrain adjacency: ready ({} terrain borders)",
+        terrain_adjacency.borders.len()
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compute_terrain_adjacency(
+    map: Option<Res<MapResource>>,
+    terrain_mesh: Option<Res<TerrainMeshData>>,
+    mut terrain_adjacency: ResMut<TerrainAdjacencyData>,
+    mut build_task: ResMut<TerrainAdjacencyBuildTask>,
+) {
+    if !terrain_adjacency.polygons.is_empty() {
+        return;
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        *terrain_adjacency =
-            build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water);
+    let (Some(map), Some(terrain_mesh)) = (map, terrain_mesh) else {
+        return;
+    };
+    let province_count = map.0.provinces.len() as u32;
+    let terrain_polygon_count = terrain_mesh.polygons.len() as u32;
+
+    if let Some(handle) = build_task.handle.as_ref() {
+        if !handle.is_finished() {
+            return;
+        }
+        let handle = build_task.handle.take().unwrap();
+        let adjacency = match handle.join() {
+            Ok(adjacency) => adjacency,
+            Err(_) => {
+                bevy::log::error!(
+                    target: "daboyi::startup",
+                    "Terrain adjacency: background build thread panicked"
+                );
+                build_task.province_count = 0;
+                build_task.terrain_polygon_count = 0;
+                return;
+            }
+        };
+        *terrain_adjacency = adjacency;
+        if let Err(error) = save_cached_terrain_adjacency(
+            build_task.province_count,
+            build_task.terrain_polygon_count,
+            &terrain_adjacency,
+        ) {
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "Failed to save {TERRAIN_ADJACENCY_BIN_PATH}: {error}"
+            );
+        }
         build_task.province_count = 0;
         build_task.terrain_polygon_count = 0;
-        if let Err(error) =
-            save_cached_terrain_adjacency(province_count, terrain_polygon_count, &terrain_adjacency)
-        {
-            eprintln!("Failed to save {TERRAIN_ADJACENCY_BIN_PATH}: {error}");
-        }
         eprintln!(
             "Terrain adjacency: ready ({} terrain borders)",
             terrain_adjacency.borders.len()
         );
+        return;
     }
+
+    match load_cached_terrain_adjacency(province_count, terrain_polygon_count) {
+        Ok(Some(cache)) => {
+            bevy::log::info!(
+                target: "daboyi::startup",
+                "Loaded terrain adjacency cache: {} polygons, {} borders",
+                cache.polygons.len(),
+                cache.borders.len()
+            );
+            *terrain_adjacency = cache;
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "Failed to load {TERRAIN_ADJACENCY_BIN_PATH}: {error}"
+            );
+        }
+    }
+
+    if build_task.province_count != 0 || build_task.terrain_polygon_count != 0 {
+        return;
+    }
+
+    bevy::log::info!(
+        target: "daboyi::startup",
+        "Terrain adjacency: building cache for {} polygons",
+        terrain_mesh.polygons.len()
+    );
+    let province_boundaries: Vec<(u32, Vec<Vec<[f32; 2]>>)> = map
+        .0
+        .provinces
+        .iter()
+        .map(|province| (province.id, province.boundary.clone()))
+        .collect();
+    let terrain_boundaries: Vec<Vec<[[f32; 2]; 2]>> = terrain_mesh
+        .polygons
+        .iter()
+        .map(|polygon| polygon.boundary_segments.clone())
+        .collect();
+    let terrain_is_water: Vec<bool> = terrain_mesh
+        .polygons
+        .iter()
+        .map(|polygon| is_water_terrain_color(polygon.original_color))
+        .collect();
+    build_task.province_count = province_count;
+    build_task.terrain_polygon_count = terrain_polygon_count;
+    build_task.handle = Some(std::thread::spawn(move || {
+        build_terrain_adjacency(&province_boundaries, &terrain_boundaries, &terrain_is_water)
+    }));
 }
 
 fn update_terrain_loading_progress(
@@ -1563,6 +1638,101 @@ fn build_loaded_terrain(
         spawn_rivers_from_data(&mut commands, &mut meshes, &mut materials, rivers);
     }
     progress.terrain = LoadingStage::Ready;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_terrain_adjacency_load(
+    mut task: ResMut<TerrainAdjacencyLoadTask>,
+    terrain_mesh: Option<Res<TerrainMeshData>>,
+    map: Option<Res<MapResource>>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    if task.slot.is_some() {
+        return;
+    }
+    let Some(terrain_mesh) = terrain_mesh else {
+        return;
+    };
+    let Some(map) = map else {
+        return;
+    };
+    let province_count = map.0.provinces.len() as u32;
+    let terrain_polygon_count = terrain_mesh.polygons.len() as u32;
+    progress.terrain_adjacency = LoadingStage::Working {
+        label: "正在下载地形邻接缓存".to_string(),
+        progress: 0.5,
+    };
+
+    let slot = Arc::new(Mutex::new(None));
+    let slot_for_task = slot.clone();
+    spawn_local(async move {
+        let result = async {
+            let bytes = fetch_bytes(TERRAIN_ADJACENCY_BIN_PATH).await?;
+            let cache: TerrainAdjacencyCache = bincode::deserialize(&bytes)
+                .map_err(|error| format!("解析 {TERRAIN_ADJACENCY_BIN_PATH} 失败：{error}"))?;
+            if cache.version != TERRAIN_ADJACENCY_CACHE_VERSION
+                || cache.province_count != province_count
+                || cache.terrain_polygon_count != terrain_polygon_count
+            {
+                return Err(format!(
+                    "地形邻接缓存版本不匹配：expected version={}, prov={}, terr={}, got version={}, prov={}, terr={}",
+                    TERRAIN_ADJACENCY_CACHE_VERSION,
+                    province_count,
+                    terrain_polygon_count,
+                    cache.version,
+                    cache.province_count,
+                    cache.terrain_polygon_count
+                ));
+            }
+            Ok(TerrainAdjacencyData {
+                polygons: cache.polygons,
+                borders: cache.borders,
+                component_ids: cache.component_ids,
+                water_polygons: cache.water_polygons,
+            })
+        }
+        .await;
+        *slot_for_task.lock().unwrap() = Some(result);
+    });
+    task.slot = Some(slot);
+    task.load_attempted = true;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn poll_terrain_adjacency_load(
+    mut task: ResMut<TerrainAdjacencyLoadTask>,
+    mut terrain_adjacency: ResMut<TerrainAdjacencyData>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    let Some(slot) = task.slot.as_ref() else {
+        return;
+    };
+    let Some(result) = slot.lock().unwrap().take() else {
+        return;
+    };
+    task.slot = None;
+    match result {
+        Ok(adjacency) => {
+            bevy::log::info!(
+                target: "daboyi::startup",
+                "Loaded terrain adjacency cache: {} polygons, {} borders",
+                adjacency.polygons.len(),
+                adjacency.borders.len()
+            );
+            *terrain_adjacency = adjacency;
+            progress.terrain_adjacency = LoadingStage::Ready;
+        }
+        Err(error) => {
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "无法加载地形邻接缓存：{error}，将实时计算"
+            );
+            progress.terrain_adjacency = LoadingStage::Working {
+                label: "正在构建地形邻接缓存".to_string(),
+                progress: 0.5,
+            };
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

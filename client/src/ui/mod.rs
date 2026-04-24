@@ -11,8 +11,8 @@ pub struct UiPlugin;
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub struct UiPass;
 
-const FONT_PATH: &str = "NotoSansCJKsc-Regular.otf";
-const PROVINCE_FONT_PATH: &str = "演示秋鸿楷.ttf";
+const FONT_PATH: &str = "fonts/NotoSansCJKsc-Regular.otf";
+const PROVINCE_FONT_PATH: &str = "fonts/LXGWWenKai-Bold.ttf";
 const CJK_FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/NotoSansCJKsc-Regular.otf");
 const LOADING_BACKGROUND_BYTES: &[u8] = include_bytes!("../../../assets/loading.jpg");
 const INITIAL_CAMERA_SCALE: f32 = 0.15;
@@ -108,7 +108,7 @@ impl LoadingProgress {
                 return format!("{name}：{}", stage.label("等待开始"));
             }
         }
-        "编辑器：已完成".to_string()
+        "加载完毕".to_string()
     }
 
     fn has_error(&self) -> bool {
@@ -235,7 +235,6 @@ fn loading_ui_system(
 
     let total_progress = progress.overall_progress();
     let has_error = progress.has_error();
-    let screen_rect = ctx.screen_rect();
 
     egui::CentralPanel::default()
         .frame(egui::Frame::none().fill(egui::Color32::BLACK))
@@ -261,7 +260,6 @@ fn loading_ui_system(
                 .inner_margin(egui::Margin::same(18.0)),
         )
         .show(ctx, |ui| {
-            ui.set_width(screen_rect.width().max(360.0));
             ui.heading("加载地图资源");
             ui.add_space(6.0);
             ui.label(progress.status_text());
@@ -274,7 +272,7 @@ fn loading_ui_system(
             ui.add_space(8.0);
             ui.add(
                 egui::ProgressBar::new(total_progress)
-                    .desired_width(f32::INFINITY)
+                    .desired_width(ui.available_width() - 8.0)
                     .text(format!("{:.0}%", total_progress * 100.0)),
             );
         });
