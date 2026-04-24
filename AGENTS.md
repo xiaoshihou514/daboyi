@@ -304,6 +304,22 @@ pub enum ServerMsg {
   - `test:` 测试相关
   - `chore:` 构建/工具相关
 
+### 智能体 coauthor 规范
+
+当智能体（如 TRAE）参与代码贡献时，应在提交消息中添加 coauthor 信息：
+
+```
+Co-authored-by: TRAE <trae@example.com>
+```
+
+示例完整提交消息：
+
+```
+feat: add new feature
+
+Co-authored-by: TRAE <trae@example.com>
+```
+
 ### 编译规范
 
 - 每次修改代码后，必须执行 `cargo build --release` 确保编译通过
