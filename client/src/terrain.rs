@@ -4,22 +4,23 @@ use crate::editor::{
 use crate::map::{BorderVersion, ColoringVersion, MapResource};
 use crate::memory::MemoryMonitor;
 use crate::state::AppState;
+use crate::ui::{LoadingProgress, LoadingStage};
 #[cfg(target_arch = "wasm32")]
 use crate::web_io::fetch_bytes;
 use bevy::log::info;
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
-#[cfg(target_arch = "wasm32")]
-use bevy::tasks::{AsyncComputeTaskPool, Task};
-#[cfg(target_arch = "wasm32")]
-use futures_lite::future;
 use serde::{Deserialize, Serialize};
 use shared::map::{RiverData, TerrainData};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 use std::io;
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Arc, Mutex};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
 
 const TERRAIN_BIN_PATH: &str = "assets/terrain.bin";
 pub const RIVERS_BIN_PATH: &str = "assets/rivers.bin";
@@ -132,12 +133,24 @@ struct TerrainAdjacencyBuildTask {
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Resource, Default)]
-struct TerrainLoadTask(Option<Task<Result<LoadedTerrainAssets, String>>>);
+struct TerrainLoadTask(Option<Arc<Mutex<Option<Result<LoadedTerrainAssets, String>>>>>);
 
-#[cfg(target_arch = "wasm32")]
 struct LoadedTerrainAssets {
     terrain: TerrainData,
     rivers: Option<RiverData>,
+}
+
+#[derive(Resource, Default)]
+struct PendingTerrainBuild(Option<LoadedTerrainAssets>);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource, Default, PartialEq, Eq)]
+enum NativeTerrainLoadPhase {
+    #[default]
+    NotStarted,
+    Loading,
+    Building,
+    Done,
 }
 
 impl Plugin for TerrainPlugin {
@@ -150,33 +163,52 @@ impl Plugin for TerrainPlugin {
                 (compute_terrain_adjacency, update_terrain_visuals)
                     .chain()
                     .run_if(in_state(AppState::Editing)),
+            )
+            .add_systems(
+                Update,
+                (compute_terrain_adjacency, update_terrain_loading_progress)
+                    .chain()
+                    .run_if(in_state(AppState::Loading)),
             );
         #[cfg(not(target_arch = "wasm32"))]
-        let _ = app.add_systems(Startup, (load_terrain, spawn_rivers));
+        let _ = app
+            .init_resource::<PendingTerrainBuild>()
+            .init_resource::<NativeTerrainLoadPhase>()
+            .add_systems(
+                Update,
+                (
+                    queue_native_terrain_load,
+                    load_terrain_native,
+                    build_loaded_terrain_native,
+                )
+                    .run_if(in_state(AppState::Loading)),
+            );
         #[cfg(target_arch = "wasm32")]
         let _ = app
             .init_resource::<TerrainLoadTask>()
+            .init_resource::<PendingTerrainBuild>()
             .add_systems(Startup, start_terrain_load)
-            .add_systems(Update, poll_terrain_load);
+            .add_systems(
+                Update,
+                (poll_terrain_load, build_loaded_terrain).run_if(in_state(AppState::Loading)),
+            );
     }
 }
 
-/// Build a single merged mesh from all terrain polygons and spawn three copies.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_terrain(
+fn queue_native_terrain_load(
+    phase: Res<NativeTerrainLoadPhase>,
+    mut progress: ResMut<LoadingProgress>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let terrain = match TerrainData::load(TERRAIN_BIN_PATH) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to load {TERRAIN_BIN_PATH}: {e}");
-            eprintln!("Terrain will not be rendered. Run mapgen first.");
-            return;
-        }
+    if !matches!(*phase, NativeTerrainLoadPhase::NotStarted) {
+        return;
+    }
+    progress.terrain = LoadingStage::Working {
+        label: "正在读取地形与河流".to_string(),
+        progress: 0.2,
     };
-    spawn_terrain_from_data(&mut commands, &mut meshes, &mut materials, terrain);
+    commands.insert_resource(NativeTerrainLoadPhase::Loading);
 }
 
 fn spawn_terrain_from_data(
@@ -339,6 +371,46 @@ fn spawn_terrain_from_data(
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn load_terrain_native(
+    phase: Res<NativeTerrainLoadPhase>,
+    mut pending_build: ResMut<PendingTerrainBuild>,
+    mut progress: ResMut<LoadingProgress>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut commands: Commands,
+) {
+    if !matches!(*phase, NativeTerrainLoadPhase::Loading) {
+        return;
+    }
+    let terrain = match TerrainData::load(TERRAIN_BIN_PATH) {
+        Ok(terrain) => terrain,
+        Err(error) => {
+            eprintln!("Failed to load {TERRAIN_BIN_PATH}: {error}");
+            eprintln!("Terrain will not be rendered. Run mapgen first.");
+            progress.terrain =
+                LoadingStage::Failed(format!("加载 {TERRAIN_BIN_PATH} 失败：{error}"));
+            next_state.set(AppState::Editing);
+            return;
+        }
+    };
+    let rivers = match RiverData::load(RIVERS_BIN_PATH) {
+        Ok(rivers) => Some(rivers),
+        Err(error) => {
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "无法加载 {RIVERS_BIN_PATH}：{error}"
+            );
+            None
+        }
+    };
+    pending_build.0 = Some(LoadedTerrainAssets { terrain, rivers });
+    progress.terrain = LoadingStage::Working {
+        label: "正在构建地形与河流网格".to_string(),
+        progress: 0.72,
+    };
+    commands.insert_resource(NativeTerrainLoadPhase::Building);
+}
+
 fn compute_terrain_adjacency(
     map: Option<Res<MapResource>>,
     terrain_mesh: Option<Res<TerrainMeshData>>,
@@ -452,6 +524,30 @@ fn compute_terrain_adjacency(
             terrain_adjacency.borders.len()
         );
     }
+}
+
+fn update_terrain_loading_progress(
+    map: Option<Res<MapResource>>,
+    terrain_mesh: Option<Res<TerrainMeshData>>,
+    terrain_adjacency: Res<TerrainAdjacencyData>,
+    build_task: Res<TerrainAdjacencyBuildTask>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    if terrain_adjacency.polygons.is_empty() {
+        if map.is_some() && terrain_mesh.is_some() {
+            let label = if build_task.province_count != 0 || build_task.terrain_polygon_count != 0 {
+                "正在构建地形邻接缓存"
+            } else {
+                "等待地形邻接构建"
+            };
+            progress.terrain_adjacency = LoadingStage::Working {
+                label: label.to_string(),
+                progress: 0.6,
+            };
+        }
+        return;
+    }
+    progress.terrain_adjacency = LoadingStage::Ready;
 }
 
 fn build_terrain_adjacency(
@@ -1257,24 +1353,6 @@ fn add_junction_fill(
     }
 }
 
-/// Load rivers.bin and build a single triangle mesh for all river segments.
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn_rivers(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    let river_data = match RiverData::load(RIVERS_BIN_PATH) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Failed to load {RIVERS_BIN_PATH}: {e}");
-            eprintln!("Rivers will not be rendered. Run tools/extract_rivers_vector.py first.");
-            return;
-        }
-    };
-    spawn_rivers_from_data(&mut commands, &mut meshes, &mut materials, river_data);
-}
-
 fn spawn_rivers_from_data(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -1405,56 +1483,108 @@ fn spawn_rivers_from_data(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn start_terrain_load(mut task: ResMut<TerrainLoadTask>) {
+fn start_terrain_load(mut task: ResMut<TerrainLoadTask>, mut progress: ResMut<LoadingProgress>) {
     if task.0.is_some() {
         return;
     }
-    task.0 = Some(AsyncComputeTaskPool::get().spawn(async move {
-        let terrain_bytes = fetch_bytes(TERRAIN_BIN_PATH).await?;
-        let terrain = bincode::deserialize::<TerrainData>(&terrain_bytes)
-            .map_err(|error| format!("解析 {TERRAIN_BIN_PATH} 失败：{error}"))?;
-        let rivers = match fetch_bytes(RIVERS_BIN_PATH).await {
-            Ok(bytes) => Some(
-                bincode::deserialize::<RiverData>(&bytes)
-                    .map_err(|error| format!("解析 {RIVERS_BIN_PATH} 失败：{error}"))?,
-            ),
-            Err(error) => {
-                bevy::log::warn!(
-                    target: "daboyi::startup",
-                    "无法加载 {RIVERS_BIN_PATH}：{error}"
-                );
-                None
-            }
-        };
-        Ok(LoadedTerrainAssets { terrain, rivers })
-    }));
+    progress.terrain = LoadingStage::Working {
+        label: "正在下载地形与河流".to_string(),
+        progress: 0.2,
+    };
+
+    let slot = Arc::new(Mutex::new(None));
+    let slot_for_task = slot.clone();
+    spawn_local(async move {
+        let result = async {
+            let terrain_bytes = fetch_bytes(TERRAIN_BIN_PATH).await?;
+            let terrain = bincode::deserialize::<TerrainData>(&terrain_bytes)
+                .map_err(|error| format!("解析 {TERRAIN_BIN_PATH} 失败：{error}"))?;
+            let rivers = match fetch_bytes(RIVERS_BIN_PATH).await {
+                Ok(bytes) => Some(
+                    bincode::deserialize::<RiverData>(&bytes)
+                        .map_err(|error| format!("解析 {RIVERS_BIN_PATH} 失败：{error}"))?,
+                ),
+                Err(error) => {
+                    bevy::log::warn!(
+                        target: "daboyi::startup",
+                        "无法加载 {RIVERS_BIN_PATH}：{error}"
+                    );
+                    None
+                }
+            };
+            Ok(LoadedTerrainAssets { terrain, rivers })
+        }
+        .await;
+        *slot_for_task.lock().unwrap() = Some(result);
+    });
+    task.0 = Some(slot);
 }
 
 #[cfg(target_arch = "wasm32")]
 fn poll_terrain_load(
-    mut commands: Commands,
     mut terrain_load_task: ResMut<TerrainLoadTask>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut pending_build: ResMut<PendingTerrainBuild>,
+    mut progress: ResMut<LoadingProgress>,
 ) {
-    let Some(task) = terrain_load_task.0.as_mut() else {
+    let Some(slot) = terrain_load_task.0.as_ref() else {
         return;
     };
-    let Some(result) = future::block_on(future::poll_once(task)) else {
+    let Some(result) = slot.lock().unwrap().take() else {
         return;
     };
     terrain_load_task.0 = None;
     match result {
         Ok(loaded) => {
-            spawn_terrain_from_data(&mut commands, &mut meshes, &mut materials, loaded.terrain);
-            if let Some(rivers) = loaded.rivers {
-                spawn_rivers_from_data(&mut commands, &mut meshes, &mut materials, rivers);
-            }
+            progress.terrain = LoadingStage::Working {
+                label: "正在构建地形与河流网格".to_string(),
+                progress: 0.72,
+            };
+            pending_build.0 = Some(loaded);
         }
         Err(error) => {
             bevy::log::warn!(target: "daboyi::startup", "无法加载 terrain web 资源：{error}");
+            progress.terrain = LoadingStage::Failed(error);
         }
     }
+}
+
+fn build_loaded_terrain(
+    mut commands: Commands,
+    mut pending_build: ResMut<PendingTerrainBuild>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    let Some(loaded) = pending_build.0.take() else {
+        return;
+    };
+    spawn_terrain_from_data(&mut commands, &mut meshes, &mut materials, loaded.terrain);
+    if let Some(rivers) = loaded.rivers {
+        spawn_rivers_from_data(&mut commands, &mut meshes, &mut materials, rivers);
+    }
+    progress.terrain = LoadingStage::Ready;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_loaded_terrain_native(
+    phase: Res<NativeTerrainLoadPhase>,
+    mut commands: Commands,
+    pending_build: ResMut<PendingTerrainBuild>,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<ColorMaterial>>,
+    progress: ResMut<LoadingProgress>,
+) {
+    if !matches!(*phase, NativeTerrainLoadPhase::Building) {
+        return;
+    }
+    build_loaded_terrain(
+        commands.reborrow(),
+        pending_build,
+        meshes,
+        materials,
+        progress,
+    );
+    commands.insert_resource(NativeTerrainLoadPhase::Done);
 }
 
 #[cfg(test)]

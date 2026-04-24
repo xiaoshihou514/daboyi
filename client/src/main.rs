@@ -1,3 +1,4 @@
+use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 
@@ -20,10 +21,14 @@ fn app_plugins() -> impl PluginGroup {
         ..Default::default()
     };
     #[cfg(target_arch = "wasm32")]
-    let plugins = DefaultPlugins.set(window_plugin);
+    let plugins = DefaultPlugins.set(window_plugin).set(AssetPlugin {
+        meta_check: AssetMetaCheck::Never,
+        ..Default::default()
+    });
     #[cfg(not(target_arch = "wasm32"))]
     let plugins = DefaultPlugins.set(window_plugin).set(AssetPlugin {
         file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../assets").to_string(),
+        meta_check: AssetMetaCheck::Never,
         ..Default::default()
     });
     plugins

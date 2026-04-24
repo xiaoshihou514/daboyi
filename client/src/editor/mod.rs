@@ -87,6 +87,12 @@ pub struct DragState {
 #[derive(Resource, Default)]
 pub struct NonPlayableProvinces(pub HashSet<ProvinceId>);
 
+#[derive(Resource, Default)]
+struct EditorStartupState {
+    non_playable_ready: bool,
+    spatial_ready: bool,
+}
+
 /// 编辑器插件
 pub struct EditorPlugin;
 
@@ -102,6 +108,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<BrushTool>()
             .init_resource::<DragState>()
             .init_resource::<NonPlayableProvinces>()
+            .init_resource::<EditorStartupState>()
             .init_resource::<SpatialHash>()
             .add_event::<LoadColoringEvent>()
             .add_event::<SaveColoringEvent>()
@@ -139,6 +146,16 @@ impl Plugin for EditorPlugin {
             .add_systems(
                 Update,
                 (populate_non_playable_provinces,).run_if(in_state(AppState::Editing)),
+            )
+            .add_systems(
+                Update,
+                (
+                    populate_non_playable_provinces,
+                    build_spatial_hash,
+                    update_editor_loading_progress,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::Loading)),
             );
     }
 }
@@ -153,11 +170,12 @@ fn load_coloring_on_startup(mut commands: Commands) {
 fn populate_non_playable_provinces(
     map: Option<Res<MapResource>>,
     mut non_playable_provinces: ResMut<NonPlayableProvinces>,
+    mut startup_state: ResMut<EditorStartupState>,
 ) {
     let Some(map) = map else {
         return;
     };
-    if !map.is_added() {
+    if startup_state.non_playable_ready && !map.is_added() {
         return;
     }
 
@@ -168,9 +186,14 @@ fn populate_non_playable_provinces(
         .filter(|province| province.topography.contains("wasteland"))
         .map(|province| province.id)
         .collect();
+    startup_state.non_playable_ready = true;
 }
 
-fn build_spatial_hash(map: Option<Res<MapResource>>, mut spatial_hash: ResMut<SpatialHash>) {
+fn build_spatial_hash(
+    map: Option<Res<MapResource>>,
+    mut spatial_hash: ResMut<SpatialHash>,
+    mut startup_state: ResMut<EditorStartupState>,
+) {
     let Some(map) = map else { return };
     if !map.is_changed() && !spatial_hash.is_added() {
         return;
@@ -178,4 +201,19 @@ fn build_spatial_hash(map: Option<Res<MapResource>>, mut spatial_hash: ResMut<Sp
     MemoryMonitor::log_memory_usage("Before building spatial hash");
     *spatial_hash = SpatialHash::build(&map.0.provinces);
     MemoryMonitor::log_memory_usage("After building spatial hash");
+    startup_state.spatial_ready = true;
+}
+
+fn update_editor_loading_progress(
+    startup_state: Res<EditorStartupState>,
+    mut progress: ResMut<crate::ui::LoadingProgress>,
+) {
+    if startup_state.non_playable_ready && startup_state.spatial_ready {
+        progress.editor = crate::ui::LoadingStage::Ready;
+    } else {
+        progress.editor = crate::ui::LoadingStage::Working {
+            label: "正在准备编辑器".to_string(),
+            progress: 0.6,
+        };
+    }
 }

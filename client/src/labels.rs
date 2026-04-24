@@ -6,6 +6,7 @@ use crate::map::borders::ProvinceAdjacency;
 use crate::map::{MapResource, ProvinceNames, MAP_WIDTH};
 use crate::state::AppState;
 use crate::ui::ProvinceLabelFont;
+use crate::ui::{LoadingProgress, LoadingStage};
 
 const LABEL_FONT_BASE_SIZE: f32 = 48.0;
 const NEARBY_COMPONENT_GAP: f32 = 2.0;
@@ -31,15 +32,27 @@ impl Plugin for LabelsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ProvinceLabelCache>()
             .init_resource::<OwnershipLabelCache>()
+            .init_resource::<LabelStartupState>()
             .init_resource::<ActiveLabelEntities>()
             .add_systems(
                 Update,
                 (
                     build_province_label_cache,
-                    rebuild_ownership_label_cache.after(crate::map::borders::compute_adjacency),
+                    rebuild_ownership_label_cache.after(crate::map::borders::BorderAdjacencyPass),
                     update_world_labels.after(crate::map::camera_controls),
                 )
                     .run_if(in_state(AppState::Editing)),
+            )
+            .add_systems(
+                Update,
+                (
+                    build_province_label_cache,
+                    rebuild_ownership_label_cache.after(crate::map::borders::BorderAdjacencyPass),
+                    update_world_labels,
+                    update_label_loading_progress,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::Loading)),
             );
     }
 }
@@ -102,6 +115,12 @@ struct OwnershipLabelCache {
     admins: Vec<RegionLabelEntry>,
 }
 
+#[derive(Resource, Default)]
+struct LabelStartupState {
+    province_ready: bool,
+    ownership_ready: bool,
+}
+
 #[derive(Clone)]
 struct VisibleLabel {
     key: LabelKey,
@@ -130,9 +149,14 @@ fn build_province_label_cache(
     province_names: Res<ProvinceNames>,
     non_playable_provinces: Res<NonPlayableProvinces>,
     mut cache: ResMut<ProvinceLabelCache>,
+    mut startup_state: ResMut<LabelStartupState>,
 ) {
     let Some(map) = map else { return };
-    if !cache.entries.is_empty() {
+    if startup_state.province_ready
+        && !map.is_changed()
+        && !province_names.is_changed()
+        && !non_playable_provinces.is_changed()
+    {
         return;
     }
 
@@ -158,6 +182,7 @@ fn build_province_label_cache(
         });
     }
     cache.entries = entries;
+    startup_state.province_ready = true;
 }
 
 fn rebuild_ownership_label_cache(
@@ -169,6 +194,7 @@ fn rebuild_ownership_label_cache(
     admin_map: Res<AdminMap>,
     non_playable_provinces: Res<NonPlayableProvinces>,
     mut cache: ResMut<OwnershipLabelCache>,
+    mut startup_state: ResMut<LabelStartupState>,
 ) {
     let Some(map) = map else { return };
     let changed = cache.countries.is_empty()
@@ -214,6 +240,7 @@ fn rebuild_ownership_label_cache(
         &admin_name_by_id,
         &non_playable_provinces.0,
     );
+    startup_state.ownership_ready = true;
 }
 
 fn update_world_labels(
@@ -368,6 +395,20 @@ fn update_world_labels(
                 .id();
             entities.0.insert(label.key, entity);
         }
+    }
+}
+
+fn update_label_loading_progress(
+    startup_state: Res<LabelStartupState>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    if startup_state.province_ready && startup_state.ownership_ready {
+        progress.labels = LoadingStage::Ready;
+    } else {
+        progress.labels = LoadingStage::Working {
+            label: "正在构建标签缓存".to_string(),
+            progress: 0.6,
+        };
     }
 }
 

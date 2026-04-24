@@ -160,7 +160,8 @@ trunk serve
 - `web/` 目录承载浏览器前端壳层
 - Trunk 会构建 `client` 的 wasm 产物并将 `assets/` 暴露给浏览器
 - 运行前仍需先准备 `assets/map.bin`、`assets/terrain.bin` 等离线生成资源
-- 浏览器版当前用于本地渲染/交互测试；本地文件保存与加载对话框仍以桌面版为主
+- 浏览器版启动时会显示加载进度界面
+- 浏览器版使用浏览器原生上传/下载完成 `ColoringFile` JSON 的加载与保存，而不是桌面路径对话框
 
 ## 游戏流程
 

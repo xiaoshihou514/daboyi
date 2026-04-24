@@ -17,19 +17,20 @@ use bevy::render::renderer::RenderQueue;
 use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
-#[cfg(target_arch = "wasm32")]
-use bevy::tasks::{AsyncComputeTaskPool, Task};
-#[cfg(target_arch = "wasm32")]
-use futures_lite::future;
 use material::{ProvinceMapMaterial, ProvinceMapParams};
 use shared::map::MapData;
 use std::collections::{HashMap, HashSet};
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Arc, Mutex};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
 
 use crate::editor::{
     province_country_tag, visible_admin_id_for_province, ActiveAdmin, ActiveCountry, AdminAreas,
     AdminMap, Countries, CountryMap, NonPlayableProvinces,
 };
 use crate::state::AppState;
+use crate::ui::{LoadingProgress, LoadingStage};
 pub use borders::BordersPlugin;
 use color::{brighten, owner_color_rgba, terrain_province_color};
 pub use interact::camera_controls;
@@ -63,7 +64,20 @@ pub struct MissingMapMessage(pub Option<String>);
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Resource, Default)]
-struct MapLoadTask(pub Option<Task<Result<LoadedMapAssets, String>>>);
+struct MapLoadTask(pub Option<Arc<Mutex<Option<Result<LoadedMapAssets, String>>>>>);
+
+#[derive(Resource, Default)]
+struct PendingMapBuild(pub Option<LoadedMapAssets>);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Resource, Default, PartialEq, Eq)]
+enum NativeMapLoadPhase {
+    #[default]
+    NotStarted,
+    Loading,
+    Building,
+    Done,
+}
 
 /// Currently selected province.
 #[derive(Resource, Default)]
@@ -225,12 +239,27 @@ impl Plugin for MapPlugin {
                     .after(crate::ui::UiPass),
             );
         #[cfg(not(target_arch = "wasm32"))]
-        let app = app.add_systems(Startup, load_map);
+        let app = app
+            .init_resource::<PendingMapBuild>()
+            .init_resource::<NativeMapLoadPhase>()
+            .add_systems(
+                Update,
+                (
+                    queue_native_map_load,
+                    load_map_native,
+                    build_loaded_map_native,
+                )
+                    .run_if(in_state(AppState::Loading)),
+            );
         #[cfg(target_arch = "wasm32")]
         let app = app
             .init_resource::<MapLoadTask>()
+            .init_resource::<PendingMapBuild>()
             .add_systems(Startup, start_map_load)
-            .add_systems(Update, poll_map_load.run_if(in_state(AppState::Loading)));
+            .add_systems(
+                Update,
+                (poll_map_load, build_loaded_map).run_if(in_state(AppState::Loading)),
+            );
 
         // Register the render-world system that writes the province colour buffer
         // directly onto the existing GPU texture via `write_texture`.
@@ -242,41 +271,20 @@ impl Plugin for MapPlugin {
     }
 }
 
-/// Build a single merged mesh for ALL provinces.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_map(
+fn queue_native_map_load(
+    phase: Res<NativeMapLoadPhase>,
+    mut progress: ResMut<LoadingProgress>,
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut missing_map_message: ResMut<MissingMapMessage>,
 ) {
-    let loaded = match load_map_assets_native() {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            bevy::log::error!(target: "daboyi::startup", "{error}");
-            bevy::log::warn!(
-                target: "daboyi::startup",
-                "Map will not be rendered. Run mapgen first."
-            );
-            missing_map_message.0 = Some(
-                "未找到 assets/map.bin。请先运行 mapgen 生成基础地图，然后再加载着色文件。"
-                    .to_string(),
-            );
-            next_state.set(AppState::Editing);
-            return;
-        }
+    if !matches!(*phase, NativeMapLoadPhase::NotStarted) {
+        return;
+    }
+    progress.map = LoadingStage::Working {
+        label: "正在读取省份地图与名称".to_string(),
+        progress: 0.2,
     };
-    finalize_loaded_map(
-        &mut commands,
-        &mut meshes,
-        &mut province_materials,
-        &mut images,
-        &mut next_state,
-        &mut missing_map_message,
-        loaded,
-    );
+    commands.insert_resource(NativeMapLoadPhase::Loading);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -293,6 +301,43 @@ fn load_map_assets_native() -> Result<LoadedMapAssets, String> {
         map_data,
         province_names,
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_map_native(
+    phase: Res<NativeMapLoadPhase>,
+    mut pending_build: ResMut<PendingMapBuild>,
+    mut progress: ResMut<LoadingProgress>,
+    mut missing_map_message: ResMut<MissingMapMessage>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut commands: Commands,
+) {
+    if !matches!(*phase, NativeMapLoadPhase::Loading) {
+        return;
+    }
+    match load_map_assets_native() {
+        Ok(loaded) => {
+            progress.map = LoadingStage::Working {
+                label: "正在构建省份网格".to_string(),
+                progress: 0.72,
+            };
+            pending_build.0 = Some(loaded);
+            commands.insert_resource(NativeMapLoadPhase::Building);
+        }
+        Err(error) => {
+            bevy::log::error!(target: "daboyi::startup", "{error}");
+            bevy::log::warn!(
+                target: "daboyi::startup",
+                "Map will not be rendered. Run mapgen first."
+            );
+            missing_map_message.0 = Some(
+                "未找到 assets/map.bin。请先运行 mapgen 生成基础地图，然后再加载着色文件。"
+                    .to_string(),
+            );
+            progress.map = LoadingStage::Failed(error);
+            next_state.set(AppState::Editing);
+        }
+    }
 }
 
 fn load_province_names_from_text(content: Option<String>) -> ProvinceNames {
@@ -318,7 +363,6 @@ fn finalize_loaded_map(
     meshes: &mut Assets<Mesh>,
     province_materials: &mut Assets<ProvinceMapMaterial>,
     images: &mut Assets<Image>,
-    next_state: &mut NextState<AppState>,
     missing_map_message: &mut MissingMapMessage,
     loaded: LoadedMapAssets,
 ) {
@@ -527,62 +571,117 @@ fn finalize_loaded_map(
     commands.insert_resource(province_names);
 
     MemoryMonitor::log_memory_usage("After loading province names");
-    next_state.set(AppState::Editing);
 }
 
 #[cfg(target_arch = "wasm32")]
-fn start_map_load(mut task: ResMut<MapLoadTask>) {
+fn start_map_load(mut task: ResMut<MapLoadTask>, mut progress: ResMut<LoadingProgress>) {
     if task.0.is_some() {
         return;
     }
-    task.0 = Some(AsyncComputeTaskPool::get().spawn(async move {
-        let map_bytes = fetch_bytes(MAP_BIN_PATH).await?;
-        let map_data = bincode::deserialize::<MapData>(&map_bytes)
-            .map_err(|error| format!("解析 {MAP_BIN_PATH} 失败：{error}"))?;
-        let province_names =
-            load_province_names_from_text(fetch_text("assets/province_names.tsv").await.ok());
-        Ok(LoadedMapAssets {
-            map_data,
-            province_names,
-        })
-    }));
+    progress.map = LoadingStage::Working {
+        label: "正在下载省份地图与名称".to_string(),
+        progress: 0.2,
+    };
+
+    let slot = Arc::new(Mutex::new(None));
+    let slot_for_task = slot.clone();
+    spawn_local(async move {
+        let result = async {
+            let map_bytes = fetch_bytes(MAP_BIN_PATH).await?;
+            let map_data = bincode::deserialize::<MapData>(&map_bytes)
+                .map_err(|error| format!("解析 {MAP_BIN_PATH} 失败：{error}"))?;
+            let province_names =
+                load_province_names_from_text(fetch_text("assets/province_names.tsv").await.ok());
+            Ok(LoadedMapAssets {
+                map_data,
+                province_names,
+            })
+        }
+        .await;
+        *slot_for_task.lock().unwrap() = Some(result);
+    });
+    task.0 = Some(slot);
 }
 
 #[cfg(target_arch = "wasm32")]
 fn poll_map_load(
-    mut commands: Commands,
     mut map_load_task: ResMut<MapLoadTask>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    mut next_state: ResMut<NextState<AppState>>,
+    mut pending_build: ResMut<PendingMapBuild>,
+    mut progress: ResMut<LoadingProgress>,
     mut missing_map_message: ResMut<MissingMapMessage>,
 ) {
-    let Some(task) = map_load_task.0.as_mut() else {
+    let Some(slot) = map_load_task.0.as_ref() else {
         return;
     };
-    let Some(result) = future::block_on(future::poll_once(task)) else {
+    let Some(result) = slot.lock().unwrap().take() else {
         return;
     };
     map_load_task.0 = None;
     match result {
-        Ok(loaded) => finalize_loaded_map(
-            &mut commands,
-            &mut meshes,
-            &mut province_materials,
-            &mut images,
-            &mut next_state,
-            &mut missing_map_message,
-            loaded,
-        ),
+        Ok(loaded) => {
+            progress.map = LoadingStage::Working {
+                label: "正在构建省份网格".to_string(),
+                progress: 0.72,
+            };
+            pending_build.0 = Some(loaded);
+        }
         Err(error) => {
             bevy::log::error!(target: "daboyi::startup", "{error}");
+            progress.map = LoadingStage::Failed(error.clone());
             missing_map_message.0 = Some(format!(
                 "浏览器版本无法加载基础地图：{error}。请确认 web 服务器正在提供 assets/map.bin。"
             ));
-            next_state.set(AppState::Editing);
         }
     }
+}
+
+fn build_loaded_map(
+    mut commands: Commands,
+    mut pending_build: ResMut<PendingMapBuild>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut province_materials: ResMut<Assets<ProvinceMapMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut missing_map_message: ResMut<MissingMapMessage>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    let Some(loaded) = pending_build.0.take() else {
+        return;
+    };
+    finalize_loaded_map(
+        &mut commands,
+        &mut meshes,
+        &mut province_materials,
+        &mut images,
+        &mut missing_map_message,
+        loaded,
+    );
+    progress.map = LoadingStage::Ready;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_loaded_map_native(
+    phase: Res<NativeMapLoadPhase>,
+    mut commands: Commands,
+    pending_build: ResMut<PendingMapBuild>,
+    meshes: ResMut<Assets<Mesh>>,
+    province_materials: ResMut<Assets<ProvinceMapMaterial>>,
+    images: ResMut<Assets<Image>>,
+    missing_map_message: ResMut<MissingMapMessage>,
+    progress: ResMut<LoadingProgress>,
+) {
+    if !matches!(*phase, NativeMapLoadPhase::Building) {
+        return;
+    }
+    build_loaded_map(
+        commands.reborrow(),
+        pending_build,
+        meshes,
+        province_materials,
+        images,
+        missing_map_message,
+        progress,
+    );
+    commands.insert_resource(NativeMapLoadPhase::Done);
 }
 
 fn update_zoom_visuals(

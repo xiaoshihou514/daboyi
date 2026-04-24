@@ -152,7 +152,7 @@ Countries support an unlimited hierarchy of sub-areas (ADM1 → ADM2 → ADM3 �
 
 **Browser build note:**
 
-The web build renders the same map data and uses the same wasm client binary, but local file save/load dialogs are currently desktop-only. Browser testing is intended for rendering and editor interaction against served `assets/`.
+The web build now shows a dedicated loading screen while browser-side map resources are being fetched and prepared. On wasm, **保存** downloads `coloring.json` through the browser and **加载** imports a local JSON file through the browser file picker instead of using desktop path dialogs.
 
 ## Coloring File Format
 

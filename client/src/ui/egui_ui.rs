@@ -6,6 +6,8 @@ use bevy_egui::{egui, EguiContexts};
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 
+#[cfg(target_arch = "wasm32")]
+use crate::editor::current_coloring_json;
 use crate::editor::{
     child_admin_ids_in_tree, should_show_admin_children, ActiveAdmin, ActiveCountry, AdminAreas,
     AdminMap, BrushTool, Countries, CountryMap, LoadColoringEvent, NextAdminId, SaveColoringEvent,
@@ -15,6 +17,8 @@ use crate::map::{
     SelectedProvince,
 };
 use crate::ui::UiInputBlock;
+#[cfg(target_arch = "wasm32")]
+use crate::web_io;
 use shared::{AdminArea, EditorCountry};
 
 /// UI state stored in Local
@@ -23,6 +27,7 @@ pub struct UiState {
     pub show_rename_dialog: bool,
     pub rename_target: RenameTarget,
     pub rename_buffer: String,
+    pub focus_rename_name: bool,
     pub show_new_country_dialog: bool,
     pub focus_new_country_name: bool,
     pub new_country_name: String,
@@ -44,6 +49,30 @@ pub enum RenameTarget {
 pub enum DeleteTarget {
     Country(String),
     Admin(u32),
+}
+
+#[cfg(target_arch = "wasm32")]
+fn show_wasm_modal_text_input(
+    ui: &mut egui::Ui,
+    field_id: &str,
+    value: &mut String,
+    request_focus: bool,
+) -> bool {
+    let desired_width = ui.available_width().max(180.0);
+    let height = (ui.spacing().interact_size.y + 6.0).max(28.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(desired_width, height), egui::Sense::hover());
+
+    match web_io::sync_modal_text_input(
+        field_id,
+        value,
+        [rect.left(), rect.top(), rect.width(), rect.height()],
+        request_focus,
+    ) {
+        Ok(updated_value) => *value = updated_value,
+        Err(error) => bevy::log::error!(target: "daboyi::web_input", "{error}"),
+    }
+
+    false
 }
 
 #[derive(SystemParam)]
@@ -89,6 +118,8 @@ pub fn egui_ui_system(
     };
     let pointer_pos = ctx.pointer_latest_pos();
     let mut ui_blocks_pointer = false;
+    #[cfg(target_arch = "wasm32")]
+    let mut active_web_text_input = false;
 
     if !ctx.wants_keyboard_input() && keys.just_pressed(KeyCode::KeyA) {
         if editor.active_country.0.is_some() {
@@ -140,6 +171,7 @@ pub fn egui_ui_system(
                                     ui_state.rename_target =
                                         RenameTarget::Country(rename_tag.clone());
                                     ui_state.rename_buffer = rename_name.clone();
+                                    ui_state.focus_rename_name = true;
                                     ui.close_menu();
                                 }
                                 if ui.button("删除").clicked() {
@@ -301,9 +333,30 @@ pub fn egui_ui_system(
             }
             #[cfg(target_arch = "wasm32")]
             {
-                let _ = &mut load_coloring_events;
                 let _ = &mut save_coloring_events;
-                ui.label("浏览器版本暂不支持本地文件保存/加载");
+                if ui.button("保存").clicked() {
+                    match current_coloring_json(
+                        &editor.countries,
+                        &editor.admin_areas,
+                        &editor.country_map,
+                        &editor.admin_map,
+                    ) {
+                        Ok(json) => {
+                            if let Err(error) = web_io::download_text_file("coloring.json", &json) {
+                                bevy::log::error!(target: "daboyi::editor", "{error}");
+                            }
+                        }
+                        Err(error) => {
+                            bevy::log::error!(target: "daboyi::editor", "{error}");
+                        }
+                    }
+                }
+                if ui.button("加载").clicked() {
+                    if let Err(error) = web_io::begin_coloring_upload() {
+                        bevy::log::error!(target: "daboyi::editor", "{error}");
+                    }
+                }
+                let _ = &mut load_coloring_events;
             }
         });
     if let Some(pos) = pointer_pos {
@@ -393,7 +446,25 @@ pub fn egui_ui_system(
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label("请输入新名称:");
-                ui.text_edit_singleline(&mut ui_state.rename_buffer);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let response = ui.text_edit_singleline(&mut ui_state.rename_buffer);
+                    if ui_state.focus_rename_name {
+                        response.request_focus();
+                        ui_state.focus_rename_name = false;
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    active_web_text_input = true;
+                    let focus_rename_name = ui_state.focus_rename_name;
+                    ui_state.focus_rename_name = show_wasm_modal_text_input(
+                        ui,
+                        "rename-name",
+                        &mut ui_state.rename_buffer,
+                        focus_rename_name,
+                    );
+                }
 
                 ui.horizontal(|ui| {
                     if ui.button("确定").clicked() {
@@ -416,10 +487,12 @@ pub fn egui_ui_system(
                         }
                         ui_state.show_rename_dialog = false;
                         ui_state.rename_target = RenameTarget::None;
+                        ui_state.focus_rename_name = false;
                     }
                     if ui.button("取消").clicked() {
                         ui_state.show_rename_dialog = false;
                         ui_state.rename_target = RenameTarget::None;
+                        ui_state.focus_rename_name = false;
                     }
                 });
             });
@@ -436,10 +509,24 @@ pub fn egui_ui_system(
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.label("国家名称:");
-                let response = ui.text_edit_singleline(&mut ui_state.new_country_name);
-                if ui_state.focus_new_country_name {
-                    response.request_focus();
-                    ui_state.focus_new_country_name = false;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let response = ui.text_edit_singleline(&mut ui_state.new_country_name);
+                    if ui_state.focus_new_country_name {
+                        response.request_focus();
+                        ui_state.focus_new_country_name = false;
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    active_web_text_input = true;
+                    let focus_new_country_name = ui_state.focus_new_country_name;
+                    ui_state.focus_new_country_name = show_wasm_modal_text_input(
+                        ui,
+                        "new-country-name",
+                        &mut ui_state.new_country_name,
+                        focus_new_country_name,
+                    );
                 }
 
                 ui.horizontal(|ui| {
@@ -490,10 +577,24 @@ pub fn egui_ui_system(
                     ui.label("将创建为顶级行政区");
                 }
                 ui.label("行政区名称:");
-                let response = ui.text_edit_singleline(&mut ui_state.new_admin_name);
-                if ui_state.focus_new_admin_name {
-                    response.request_focus();
-                    ui_state.focus_new_admin_name = false;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let response = ui.text_edit_singleline(&mut ui_state.new_admin_name);
+                    if ui_state.focus_new_admin_name {
+                        response.request_focus();
+                        ui_state.focus_new_admin_name = false;
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    active_web_text_input = true;
+                    let focus_new_admin_name = ui_state.focus_new_admin_name;
+                    ui_state.focus_new_admin_name = show_wasm_modal_text_input(
+                        ui,
+                        "new-admin-name",
+                        &mut ui_state.new_admin_name,
+                        focus_new_admin_name,
+                    );
                 }
 
                 ui.horizontal(|ui| {
@@ -616,6 +717,13 @@ pub fn egui_ui_system(
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    if !active_web_text_input {
+        if let Err(error) = web_io::hide_modal_text_input() {
+            bevy::log::error!(target: "daboyi::web_input", "{error}");
+        }
+    }
+
     runtime.ui_input_block.0 =
         ui_blocks_pointer || ctx.is_using_pointer() || ctx.wants_keyboard_input();
 }
@@ -659,6 +767,7 @@ fn show_admin_area_tree(
                 ui_state.show_rename_dialog = true;
                 ui_state.rename_target = RenameTarget::Admin(area_id);
                 ui_state.rename_buffer = area_name.clone();
+                ui_state.focus_rename_name = true;
                 ui.close_menu();
             }
             if ui.button("删除").clicked() {

@@ -26,6 +26,7 @@ use crate::state::AppState;
 use crate::terrain::{
     terrain_polygon_is_water, terrain_polygon_surrounding_tag, TerrainAdjacencyData,
 };
+use crate::ui::{LoadingProgress, LoadingStage};
 use bevy::log::info;
 use bevy::sprite::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin};
 
@@ -171,6 +172,9 @@ enum BorderTier {
 
 pub struct BordersPlugin;
 
+#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+pub struct BorderAdjacencyPass;
+
 impl Plugin for BordersPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(Material2dPlugin::<BorderMaterial>::default())
@@ -182,12 +186,22 @@ impl Plugin for BordersPlugin {
             .add_systems(
                 Update,
                 (
-                    compute_adjacency,
+                    compute_adjacency.in_set(BorderAdjacencyPass),
                     rebuild_borders,
                     update_border_material_params,
                 )
                     .chain()
                     .run_if(in_state(AppState::Editing)),
+            )
+            .add_systems(
+                Update,
+                (
+                    compute_adjacency.in_set(BorderAdjacencyPass),
+                    rebuild_borders,
+                    update_border_loading_progress,
+                )
+                    .chain()
+                    .run_if(in_state(AppState::Loading)),
             );
     }
 }
@@ -597,6 +611,27 @@ fn rebuild_borders(
         MemoryMonitor::bytes_to_mib(total_uploaded_bytes),
     );
     MemoryMonitor::log_memory_usage("After border rebuild");
+}
+
+fn update_border_loading_progress(
+    map: Option<Res<MapResource>>,
+    terrain_adjacency: Res<TerrainAdjacencyData>,
+    adjacency: Res<ProvinceAdjacency>,
+    border_data: Res<BorderData>,
+    existing: Query<Entity, With<BorderMesh>>,
+    mut progress: ResMut<LoadingProgress>,
+) {
+    if map.is_none() || terrain_adjacency.polygons.is_empty() {
+        return;
+    }
+    if adjacency.0.is_empty() || border_data.is_computing || existing.is_empty() {
+        progress.borders = LoadingStage::Working {
+            label: "正在构建边界网格".to_string(),
+            progress: 0.6,
+        };
+        return;
+    }
+    progress.borders = LoadingStage::Ready;
 }
 
 fn province_border_tier(

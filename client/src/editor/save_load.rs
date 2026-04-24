@@ -8,6 +8,8 @@ use crate::editor::{
 };
 use crate::map::BorderVersion;
 use crate::map::ColoringVersion;
+#[cfg(target_arch = "wasm32")]
+use crate::web_io;
 use shared::ColoringFile;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,6 +46,21 @@ fn apply_coloring(commands: &mut Commands, file: ColoringFile) {
     commands.insert_resource(NextAdminId(max_id + 1));
 }
 
+fn apply_loaded_coloring(
+    commands: &mut Commands,
+    file: ColoringFile,
+    active_country: &mut ActiveCountry,
+    active_admin: &mut ActiveAdmin,
+    coloring_version: &mut ColoringVersion,
+    border_version: &mut BorderVersion,
+) {
+    apply_coloring(commands, file);
+    active_country.0 = None;
+    active_admin.0 = None;
+    coloring_version.0 += 1;
+    border_version.0 += 1;
+}
+
 fn current_coloring_file(
     countries: &Countries,
     admin_areas: &AdminAreas,
@@ -56,6 +73,16 @@ fn current_coloring_file(
         admin_areas: admin_areas.0.clone(),
         admin_assignments: admin_map.0.clone(),
     }
+}
+
+pub(crate) fn current_coloring_json(
+    countries: &Countries,
+    admin_areas: &AdminAreas,
+    country_map: &CountryMap,
+    admin_map: &AdminMap,
+) -> Result<String, String> {
+    let file = current_coloring_file(countries, admin_areas, country_map, admin_map);
+    serde_json::to_string_pretty(&file).map_err(|error| format!("序列化着色文件失败：{error}"))
 }
 
 /// 从 JSON 文件加载着色数据
@@ -91,6 +118,26 @@ pub fn handle_load_coloring(
     mut coloring_version: ResMut<ColoringVersion>,
     mut border_version: ResMut<BorderVersion>,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(result) = web_io::take_uploaded_coloring() {
+        match result {
+            Ok(file) => {
+                apply_loaded_coloring(
+                    &mut commands,
+                    file,
+                    &mut active_country,
+                    &mut active_admin,
+                    &mut coloring_version,
+                    &mut border_version,
+                );
+                bevy::log::info!(target: "daboyi::editor", "已从浏览器上传文件加载着色数据");
+            }
+            Err(error) => {
+                bevy::log::error!(target: "daboyi::editor", "{error}");
+            }
+        }
+    }
+
     for event in events.read() {
         let path = Path::new(&event.0);
         let file = match load_coloring_from_path(path) {
@@ -100,11 +147,14 @@ pub fn handle_load_coloring(
                 continue;
             }
         };
-        apply_coloring(&mut commands, file);
-        active_country.0 = None;
-        active_admin.0 = None;
-        coloring_version.0 += 1;
-        border_version.0 += 1;
+        apply_loaded_coloring(
+            &mut commands,
+            file,
+            &mut active_country,
+            &mut active_admin,
+            &mut coloring_version,
+            &mut border_version,
+        );
         bevy::log::info!(target: "daboyi::editor", "已加载着色数据从 {}", path.display());
     }
 }
@@ -118,11 +168,10 @@ pub fn handle_save_coloring(
 ) {
     for event in events.read() {
         let path = Path::new(&event.0);
-        let file = current_coloring_file(&countries, &admin_areas, &country_map, &admin_map);
-        let json = match serde_json::to_string_pretty(&file) {
+        let json = match current_coloring_json(&countries, &admin_areas, &country_map, &admin_map) {
             Ok(json) => json,
             Err(error) => {
-                bevy::log::error!(target: "daboyi::editor", "序列化着色文件失败：{}", error);
+                bevy::log::error!(target: "daboyi::editor", "{error}");
                 continue;
             }
         };
