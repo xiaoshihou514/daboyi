@@ -682,7 +682,7 @@ fn poll_map_load(
         Ok(loaded) => {
             pending_build.0 = Some(loaded);
             progress.map = LoadingStage::Working {
-                label: "正在构建省份网格".to_string(),
+                label: "正在构建省份网格（由于网页端性能限制，这可能需要数分钟，请耐心等待）".to_string(),
                 progress: 0.72,
             };
             *build_phase = WasmMapBuildPhase::Building;
