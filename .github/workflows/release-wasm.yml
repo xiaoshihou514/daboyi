@@ -28,8 +28,7 @@ jobs:
       - name: Setup wasm-bindgen
         uses: taiki-e/install-action@v2
         with:
-          tool: wasm-bindgen
-          version: 0.2.118
+          tool: wasm-bindgen@0.2.113
 
       - name: Setup Trunk
         uses: taiki-e/install-action@v2
@@ -46,9 +45,6 @@ jobs:
 
       - name: Build web assets with Trunk
         run: trunk build --release --config web/Trunk.toml
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v4
 
       - name: Upload to GitHub Pages
         uses: actions/upload-pages-artifact@v3
