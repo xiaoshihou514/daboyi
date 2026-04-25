@@ -10,7 +10,7 @@
 
 本项目是欧陆风云5架空地图编辑器，允许玩家创建、编辑和定制自己的架空世界地图。支持自定义国家内行政区（参考十字军之王3）。
 
-如果觉得有用给个星标吧～
+给我个星标吧，我什么都会做的😭
 
 <img width="1920" height="1080" alt="屏幕截图_20260425_103000" src="https://github.com/user-attachments/assets/76af8806-aaa7-4bb9-a930-3b08e3e5fcf4" />
 <img width="1920" height="1080" alt="屏幕截图_20260425_102857" src="https://github.com/user-attachments/assets/35bee5e5-4f9f-47d6-85e2-ff9565309180" />
