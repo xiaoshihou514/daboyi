@@ -4,13 +4,12 @@
 //! holds the RGBA colour for one province.  The mesh's UV_0 attribute stores
 //! raw texel coordinates `[col, row]` so the fragment shader can do a direct
 //! `textureLoad` — no sampler, no normalisation.
-#![allow(dead_code)]
 
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
 use bevy::sprite::{AlphaMode2d, Material2d};
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Used in shader code
 #[derive(Clone, Copy, ShaderType)]
 pub struct ProvinceMapParams {
     pub terrain_focus: f32,

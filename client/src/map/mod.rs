@@ -87,7 +87,6 @@ enum WasmMapBuildPhase {
     #[default]
     NotStarted,
     Building,
-    Done,
 }
 
 /// Currently selected province.

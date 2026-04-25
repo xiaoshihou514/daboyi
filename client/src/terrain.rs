@@ -16,6 +16,7 @@ use shared::map::{RiverData, TerrainData};
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io;
 #[cfg(target_arch = "wasm32")]
 use std::sync::{Arc, Mutex};
@@ -732,6 +733,7 @@ fn load_cached_terrain_adjacency(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn save_cached_terrain_adjacency(
     province_count: u32,
     terrain_polygon_count: u32,

@@ -327,32 +327,6 @@ fn get_mouse_world_pos(
     Some(([world_pos.x, world_pos.y], world_radius))
 }
 
-/// 查找半径内的所有省份（旧版本，保留备用）
-#[allow(dead_code)]
-fn find_provinces_in_radius(pos: [f32; 2], radius: f32, map: &MapResource) -> Vec<u32> {
-    let mut result = Vec::new();
-    let radius_sq = radius * radius;
-
-    for prov in &map.0.provinces {
-        // 处理环绕：检查多个副本
-        for x_off in &[-MAP_WIDTH, 0.0, MAP_WIDTH] {
-            let cx = prov.centroid[0] + x_off;
-            let dx = cx - pos[0];
-            let dy = prov.centroid[1] - pos[1];
-            let dist_sq = dx * dx + dy * dy;
-
-            if dist_sq <= radius_sq {
-                if !result.contains(&prov.id) {
-                    result.push(prov.id);
-                }
-                break;
-            }
-        }
-    }
-
-    result
-}
-
 /// 使用空间哈希快速查找半径内的所有省份
 fn find_provinces_in_radius_fast(
     pos: [f32; 2],

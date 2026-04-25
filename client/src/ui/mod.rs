@@ -29,7 +29,6 @@ pub struct ProvinceLabelFont(pub Handle<Font>);
 #[derive(Resource, Default)]
 pub struct UiInputBlock(pub bool);
 
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 #[derive(Clone)]
 pub enum LoadingStage {
     Pending,
