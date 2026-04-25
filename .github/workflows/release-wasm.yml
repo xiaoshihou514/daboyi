@@ -23,11 +23,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install mold
-        run: |
-          wget -q https://github.com/rui314/mold/releases/download/v2.4.0/mold-2.4.0-x86_64-linux.tar.gz
-          tar -xf mold-2.4.0-x86_64-linux.tar.gz
-          sudo cp mold-2.4.0-x86_64-linux/bin/mold /usr/local/bin/
-          sudo ldconfig
+        uses: rui314/setup-mold@v1
 
       - name: Setup wasm-bindgen
         uses: taiki-e/install-action@v2
