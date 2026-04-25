@@ -12,6 +12,16 @@ use std::path::PathBuf;
 /// Path to the EU5toGIS datasets directory.
 const DEFAULT_GPKG_DIR: &str = "/home/xiaoshihou/Playground/github/EU5toGIS/datasets";
 
+/// Get the path to the EU5toGIS datasets directory.
+/// First checks for EU5TOGIS_DIR environment variable, then uses default path.
+fn get_gpkg_dir() -> String {
+    if let Ok(dir) = std::env::var("EU5TOGIS_DIR") {
+        format!("{}/datasets", dir)
+    } else {
+        DEFAULT_GPKG_DIR.to_string()
+    }
+}
+
 /// Topography values that indicate water only (go to terrain.bin, not map.bin).
 fn is_water(topography: &str) -> bool {
     matches!(
@@ -75,7 +85,7 @@ fn main() {
     let gpkg_dir = PathBuf::from(
         std::env::args()
             .nth(1)
-            .unwrap_or_else(|| DEFAULT_GPKG_DIR.to_string()),
+            .unwrap_or_else(|| get_gpkg_dir()),
     );
     let output_path = PathBuf::from(
         std::env::args()
@@ -90,7 +100,7 @@ fn main() {
         eprintln!(
             "Error: {} not found.\nExpected EU5toGIS datasets at {}",
             locations_path.display(),
-            DEFAULT_GPKG_DIR
+            get_gpkg_dir()
         );
         std::process::exit(1);
     }

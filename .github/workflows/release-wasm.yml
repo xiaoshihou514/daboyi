@@ -35,16 +35,57 @@ jobs:
         with:
           tool: trunk
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Download and extract EU5toGIS dataset
+        run: |
+          wget "https://github.com/xiaoshihou514/daboyi/releases/download/v1.0.0/shujvji.zip"
+          unzip shujvji.zip -d /home/runner/work/daboyi/
+          ls -la /home/runner/work/daboyi/EU5toGIS/
+          echo "Downloaded and extracted EU5toGIS dataset"
+
+      - name: Generate map assets
+        run: |
+          export EU5TOGIS_DIR="/home/runner/work/daboyi/EU5toGIS"
+          cargo run --release -p mapgen
+          ls -la assets/*.bin
+          echo "Generated map assets"
+
+      - name: Generate rivers data
+        run: |
+          cd tools
+          uv run extract_rivers_vector.py
+          cd ..
+          ls -la assets/rivers.bin
+          echo "Generated rivers data"
+
+      - name: Generate terrain adjacency cache
+        run: |
+          cargo run --release -p terrain_cache
+          ls -la assets/terrain_adjacency.bin
+          echo "Generated terrain adjacency cache"
+
+      - name: Copy all assets to web/dist
+        run: |
+          mkdir -p web/dist/assets
+          cp -rf assets/* web/dist/assets/
+          ls -la web/dist/assets/
+          echo "Copied all assets to web/dist/assets/"
+
+      - name: Build web assets with Trunk
+        run: trunk build --release --config web/Trunk.toml
 
       - name: Build wasm bundle
         run: |
           cargo build --target wasm32-unknown-unknown --release -p client
           wasm-bindgen --out-dir ./web/dist --target web target/wasm32-unknown-unknown/release/client.wasm
-
-      - name: Build web assets with Trunk
-        run: trunk build --release --config web/Trunk.toml
+          ls -aR web/dist
 
       - name: Upload to GitHub Pages
         uses: actions/upload-pages-artifact@v3

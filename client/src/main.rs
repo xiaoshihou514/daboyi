@@ -22,6 +22,7 @@ fn app_plugins() -> impl PluginGroup {
     };
     #[cfg(target_arch = "wasm32")]
     let plugins = DefaultPlugins.set(window_plugin).set(AssetPlugin {
+        file_path: "/daboyi/assets".to_string(),
         meta_check: AssetMetaCheck::Never,
         ..Default::default()
     });
@@ -34,6 +35,26 @@ fn app_plugins() -> impl PluginGroup {
     plugins
 }
 
+#[cfg(target_arch = "wasm32")]
+#[bevy_main]
+fn main() {
+    memory::MemoryMonitor::log_memory_usage("Application start");
+    App::new()
+        .insert_resource(ClearColor(Color::srgb(0.1, 0.26, 0.55)))
+        .add_plugins(app_plugins())
+        .add_plugins(EguiPlugin)
+        .init_state::<state::AppState>()
+        .add_plugins(editor::EditorPlugin)
+        .add_plugins(terrain::TerrainPlugin)
+        .add_plugins(map::MapPlugin)
+        .add_plugins(map::BordersPlugin)
+        .add_plugins(capitals::CapitalsPlugin)
+        .add_plugins(labels::LabelsPlugin)
+        .add_plugins(ui::UiPlugin)
+        .run();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     memory::MemoryMonitor::log_memory_usage("Application start");
     App::new()

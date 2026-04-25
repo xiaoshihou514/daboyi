@@ -207,17 +207,10 @@ function initEventListeners() {
 // 动态加载WASM应用
 async function loadWasmApp() {
   try {
-    const script = document.createElement('script');
-    script.src = 'client.js';
-    script.type = 'module';
-    script.defer = true;
-
-    await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = reject;
-      document.head.appendChild(script);
-    });
-
+    console.log('Loading client.js...');
+    const { default: init } = await import('./client.js');
+    console.log('client.js loaded, initializing WASM...');
+    await init();
     console.log('WASM application loading started');
   } catch (error) {
     console.error('Error loading WASM application:', error);
