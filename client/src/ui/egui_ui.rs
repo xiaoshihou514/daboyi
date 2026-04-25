@@ -1,4 +1,5 @@
 //! egui-based UI implementation for the map editor
+#![allow(clippy::too_many_arguments)]
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;

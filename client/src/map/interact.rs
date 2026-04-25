@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 /// Camera controls and province click detection.
 use bevy::prelude::*;
 

@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
 use crate::editor::{
     province_country_tag, AdminAreas, AdminMap, Countries, CountryMap, NonPlayableProvinces,
 };

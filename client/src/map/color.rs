@@ -12,7 +12,7 @@ pub fn owner_color_rgba(tag: &str) -> [f32; 4] {
         h = h.wrapping_mul(FNV_PRIME);
     }
     // Map hash bytes to visually distinct mid-range colors (avoid very dark/light).
-    let r = f32::from(u8::try_from((h >> 0) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
+    let r = f32::from(u8::try_from(h & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
     let g = f32::from(u8::try_from((h >> 8) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
     let b = f32::from(u8::try_from((h >> 16) & 0xFF).unwrap()) / 255.0 * 0.55 + 0.20;
     [r, g, b, 1.0]

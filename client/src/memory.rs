@@ -67,7 +67,7 @@ impl MemoryMonitor {
                 }
             }
 
-            return Some(memory_stats);
+            Some(memory_stats)
         }
         #[cfg(not(target_os = "linux"))]
         {

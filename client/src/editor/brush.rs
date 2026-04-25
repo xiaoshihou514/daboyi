@@ -1,4 +1,5 @@
 //! 刷子工具实现
+#![allow(clippy::too_many_arguments)]
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;

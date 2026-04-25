@@ -5,8 +5,7 @@ use bevy::render::mesh::{
 };
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderRef, ShaderType, SpecializedMeshPipelineError,
-    VertexFormat,
+    AsBindGroup, RenderPipelineDescriptor, ShaderRef, SpecializedMeshPipelineError, VertexFormat,
 };
 use shared::map::{CachedBorder, ProvinceAdjacencyCache, ADJACENCY_CACHE_VERSION};
 use std::collections::HashMap;
@@ -37,6 +36,10 @@ const ATTRIBUTE_BORDER_OFFSET: MeshVertexAttribute =
 const ATTRIBUTE_BORDER_TIER: MeshVertexAttribute =
     MeshVertexAttribute::new("BorderTier", 983_541_202, VertexFormat::Float32);
 
+type Pt = [f32; 2];
+type Junction = (Pt, Vec<Pt>);
+type JunctionKey = (i32, i32);
+
 /// Precomputed border chains keyed by adjacent province pairs.
 #[derive(Resource, Default)]
 pub struct ProvinceAdjacency(pub Vec<CachedBorder>);
@@ -45,22 +48,27 @@ pub struct ProvinceAdjacency(pub Vec<CachedBorder>);
 #[derive(Component)]
 pub struct BorderMesh;
 
-#[allow(dead_code)] // Used in shader code
-#[derive(Clone, Copy, ShaderType)]
-struct BorderMaterialParams {
-    proj_scale: f32,
-    _padding: Vec3,
-}
+mod this {
+    #![allow(dead_code)]
+    use bevy::{math::Vec3, render::render_resource::ShaderType};
 
-impl Default for BorderMaterialParams {
-    fn default() -> Self {
-        Self {
-            proj_scale: 0.05,
-            _padding: Vec3::ZERO,
+    #[derive(Clone, Copy, ShaderType)]
+    pub struct BorderMaterialParams {
+        pub proj_scale: f32,
+        _padding: Vec3,
+    }
+
+    impl Default for BorderMaterialParams {
+        fn default() -> Self {
+            Self {
+                proj_scale: 0.05,
+                _padding: Vec3::ZERO,
+            }
         }
     }
 }
 
+use crate::map::borders::this::BorderMaterialParams;
 #[derive(Asset, TypePath, AsBindGroup, Clone, Default)]
 struct BorderMaterial {
     #[uniform(0)]
@@ -220,7 +228,10 @@ pub fn compute_adjacency(map: Option<Res<MapResource>>, mut adjacency: ResMut<Pr
     let province_count = map.0.provinces.len() as u32;
 
     match ProvinceAdjacencyCache::load(ADJACENCY_BIN_PATH) {
-        Ok(cache) if cache.version == ADJACENCY_CACHE_VERSION && cache.province_count == province_count => {
+        Ok(cache)
+            if cache.version == ADJACENCY_CACHE_VERSION
+                && cache.province_count == province_count =>
+        {
             bevy::log::info!(
                 target: "daboyi::startup",
                 "Loaded province adjacency cache: {} pairs",
@@ -512,7 +523,7 @@ fn province_border_tier(
 }
 
 fn collect_country_junction_rims(
-    junction_rims: &mut HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)>,
+    junction_rims: &mut HashMap<JunctionKey, Junction>,
     chain: &[[f32; 2]],
 ) {
     if let Some(span) = endpoint_cap_span(chain, 1.0, true) {
@@ -593,20 +604,14 @@ fn build_border_chunk_index(
     let mut adjacency_by_chunk: HashMap<u16, Vec<usize>> = HashMap::new();
     for (index, border) in adjacency.iter().enumerate() {
         for chunk in chunks_for_chains(&border.chains) {
-            adjacency_by_chunk
-                .entry(chunk)
-                .or_insert_with(Vec::new)
-                .push(index);
+            adjacency_by_chunk.entry(chunk).or_default().push(index);
         }
     }
 
     let mut terrain_by_chunk: HashMap<u16, Vec<usize>> = HashMap::new();
     for (index, border) in terrain_adjacency.borders.iter().enumerate() {
         for chunk in chunks_for_chains(&border.chains) {
-            terrain_by_chunk
-                .entry(chunk)
-                .or_insert_with(Vec::new)
-                .push(index);
+            terrain_by_chunk.entry(chunk).or_default().push(index);
         }
     }
 
@@ -682,7 +687,7 @@ fn build_chunk_geometry(
     tiers: &mut Vec<f32>,
     indices: &mut Vec<u32>,
 ) {
-    let mut junction_rims: HashMap<(i32, i32), ([f32; 2], Vec<[f32; 2]>)> = HashMap::new();
+    let mut junction_rims: HashMap<JunctionKey, Junction> = HashMap::new();
 
     if let Some(border_indexes) = chunk_index.adjacency_by_chunk.get(&chunk_id) {
         for &border_index in border_indexes {
@@ -890,7 +895,7 @@ fn border_quantize(v: f32) -> i32 {
     (v * 100.0).round() as i32
 }
 
-fn border_qpt(p: [f32; 2]) -> (i32, i32) {
+fn border_qpt(p: [f32; 2]) -> JunctionKey {
     (border_quantize(p[0]), border_quantize(p[1]))
 }
 

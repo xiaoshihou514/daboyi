@@ -6,24 +6,30 @@
 //! `textureLoad` — no sampler, no normalisation.
 
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
+use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 use bevy::sprite::{AlphaMode2d, Material2d};
 
-#[allow(dead_code)] // Used in shader code
-#[derive(Clone, Copy, ShaderType)]
-pub struct ProvinceMapParams {
-    pub terrain_focus: f32,
-    pub _padding: Vec3,
-}
+pub mod this {
+    #![allow(dead_code)]
+    use bevy::{math::Vec3, render::render_resource::ShaderType};
 
-impl Default for ProvinceMapParams {
-    fn default() -> Self {
-        Self {
-            terrain_focus: 0.0,
-            _padding: Vec3::ZERO,
+    #[derive(Clone, Copy, ShaderType)]
+    pub struct ProvinceMapParams {
+        pub terrain_focus: f32,
+        pub _padding: Vec3,
+    }
+
+    impl Default for ProvinceMapParams {
+        fn default() -> Self {
+            Self {
+                terrain_focus: 0.0,
+                _padding: Vec3::ZERO,
+            }
         }
     }
 }
+
+use crate::map::material::this::ProvinceMapParams;
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub struct ProvinceMapMaterial {

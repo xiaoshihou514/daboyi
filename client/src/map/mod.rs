@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 pub mod borders;
 mod color;
 mod interact;
@@ -17,7 +18,7 @@ use bevy::render::renderer::RenderQueue;
 use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSet};
 use bevy::sprite::Material2dPlugin;
-use material::{ProvinceMapMaterial, ProvinceMapParams};
+use material::{this::ProvinceMapParams, ProvinceMapMaterial};
 use shared::map::{MapData, ProvinceAdjacencyCache};
 use std::collections::{HashMap, HashSet};
 #[cfg(target_arch = "wasm32")]
@@ -309,7 +310,7 @@ fn load_map_assets_native() -> Result<LoadedMapAssets, String> {
     };
     let province_names =
         load_province_names_from_text(std::fs::read_to_string("assets/province_names.tsv").ok());
-    
+
     let adjacency = match ProvinceAdjacencyCache::load(ADJACENCY_BIN_PATH) {
         Ok(cache) => Some(cache),
         Err(e) => {
@@ -317,7 +318,7 @@ fn load_map_assets_native() -> Result<LoadedMapAssets, String> {
             None
         }
     };
-    
+
     Ok(LoadedMapAssets {
         map_data,
         province_names,
@@ -427,7 +428,7 @@ fn finalize_loaded_map(
     }
 
     let n = map_data.provinces.len();
-    let tex_height = (n + TEX_WIDTH - 1) / TEX_WIDTH;
+    let tex_height = n.div_ceil(TEX_WIDTH);
 
     let mut all_positions: Vec<[f32; 3]> = Vec::new();
     let mut all_normals: Vec<[f32; 3]> = Vec::new();

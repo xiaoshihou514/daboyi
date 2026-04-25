@@ -1,6 +1,8 @@
 use shared::map::{CachedBorder, MapData, MapProvince};
 use std::collections::HashMap;
 
+type PairData = ([u32; 2], Vec<Vec<[f32; 2]>>);
+
 pub fn build_adjacency(map: &MapData) -> Vec<CachedBorder> {
     let quantize = |v: f32| -> i32 { (v * 100.0).round() as i32 };
     let mut edge_map: HashMap<[(i32, i32); 2], u32> = HashMap::new();
@@ -30,7 +32,7 @@ pub fn build_adjacency(map: &MapData) -> Vec<CachedBorder> {
     pairs.sort_unstable();
     pairs.dedup();
 
-    let mut pair_data: Vec<([u32; 2], Vec<Vec<[f32; 2]>>)> = Vec::with_capacity(pairs.len());
+    let mut pair_data: Vec<PairData> = Vec::with_capacity(pairs.len());
     for pair in pairs {
         let ia = pair[0] as usize;
         let ib = pair[1] as usize;
@@ -104,10 +106,7 @@ fn segment_midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
 
-fn shared_segments(
-    a: &MapProvince,
-    b: &MapProvince,
-) -> Vec<[[f32; 2]; 2]> {
+fn shared_segments(a: &MapProvince, b: &MapProvince) -> Vec<[[f32; 2]; 2]> {
     const SPLIT_EPS: f32 = 0.01;
 
     let mut b_points: Vec<[f32; 2]> = Vec::new();
@@ -250,7 +249,7 @@ fn merge_chains(mut chains: Vec<Vec<[f32; 2]>>) -> Vec<Vec<[f32; 2]>> {
     chains
 }
 
-fn weld_endpoints_global(pair_data: &mut Vec<([u32; 2], Vec<Vec<[f32; 2]>>)>) {
+fn weld_endpoints_global(pair_data: &mut [PairData]) {
     let quantize = |v: f32| -> i32 { (v * 10.0).round() as i32 };
     let qpt = |p: [f32; 2]| -> (i32, i32) { (quantize(p[0]), quantize(p[1])) };
 
