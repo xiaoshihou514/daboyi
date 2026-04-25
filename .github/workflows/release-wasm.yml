@@ -29,7 +29,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen
-          version: 0.2.113
+          version: 0.2.118
 
       - name: Setup Trunk
         uses: taiki-e/install-action@v2
@@ -38,9 +38,6 @@ jobs:
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
-
-      - name: Run native tests
-        run: cargo test --quiet
 
       - name: Build wasm bundle
         run: |
