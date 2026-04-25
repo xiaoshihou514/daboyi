@@ -38,13 +38,14 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Build web assets with Trunk
+        run: trunk build --release --config web/Trunk.toml
+
       - name: Build wasm bundle
         run: |
           cargo build --target wasm32-unknown-unknown --release -p client
           wasm-bindgen --out-dir ./web/dist --target web target/wasm32-unknown-unknown/release/client.wasm
-
-      - name: Build web assets with Trunk
-        run: trunk build --release --config web/Trunk.toml
+          ls -aR web/dist
 
       - name: Upload to GitHub Pages
         uses: actions/upload-pages-artifact@v3

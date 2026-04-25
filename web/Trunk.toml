@@ -2,6 +2,12 @@
 target = "index.html"
 dist = "dist"
 release = true
+public_url = "/daboyi"
 
 [watch]
 watch = ["../client/src", "../shared/src", "../assets", "../client/Cargo.toml"]
+
+[[packages]]
+name = "client"
+path = "../client"
+

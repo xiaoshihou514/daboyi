@@ -7,7 +7,8 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <title>大博弈 地图编辑器（Web）</title>
-    <base data-trunk-public-url />
+    <base data-trunk-public-url="/daboyi/" />
+    <link rel="icon" href="data:,">
     <link data-trunk rel="copy-dir" href="../assets" />
     <link data-trunk rel="copy-file" href="login.js" />
     <link data-trunk rel="css" href="styles.css" />
@@ -45,7 +46,7 @@
       </div>
     </main>
     <script src="login.js"></script>
-    <!-- 客户端JS脚本，由Trunk自动生成 -->
-    <!-- <script id="client-script" src="client-87da4c94fce2581d.js" type="module" defer></script> -->
+    <!-- 客户端JS脚本，由wasm-bindgen生成 -->
+    <script type="module" src="/daboyi/client.js"></script>
   </body>
 </html>
