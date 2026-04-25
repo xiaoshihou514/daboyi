@@ -9,15 +9,43 @@
     <title>大博弈 地图编辑器（Web）</title>
     <base data-trunk-public-url />
     <link data-trunk rel="copy-dir" href="../assets" />
-    <link data-trunk rel="rust" href="../client/Cargo.toml" data-bin="client" />
+    <link data-trunk rel="copy-file" href="login.js" />
     <link data-trunk rel="css" href="styles.css" />
   </head>
   <body>
     <main class="app-shell">
-      <div class="loading-card">
+      <!-- 登录界面 -->
+      <div id="login-container" class="login-container">
+        <div class="login-card">
+          <h1>大博弈 地图编辑器</h1>
+          <p>求你了！给我一个星标吧！</p>
+          <button id="github-login-btn" class="github-login-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            使用 GitHub 登录
+          </button>
+          <div id="status-message" class="status-message"></div>
+          <div id="star-prompt" class="star-prompt">
+            <p>求你了！给我一个星标吧！然后点击重试按钮</p>
+            <a href="https://github.com/xiaoshihou514/daboyi" target="_blank" class="repo-link">
+              前往仓库
+            </a>
+          </div>
+          <button id="retry-btn" class="retry-btn">
+            重试
+          </button>
+        </div>
+      </div>
+      
+      <!-- 加载界面 -->
+      <div id="loading-container" class="loading-card">
         <h1>大博弈 地图编辑器</h1>
         <p>正在启动WASM。由于需要下载地图数据以及网页端性能限制，网页端加载时间较长，可能达到数分钟，请耐心等待。</p>
       </div>
     </main>
+    <script src="login.js"></script>
+    <!-- 客户端JS脚本，由Trunk自动生成 -->
+    <!-- <script id="client-script" src="client-87da4c94fce2581d.js" type="module" defer></script> -->
   </body>
 </html>
