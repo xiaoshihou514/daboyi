@@ -902,11 +902,6 @@ fn color_provinces(
         return;
     }
 
-    MemoryMonitor::log_memory_usage("Before color_provinces");
-    MemoryMonitor::track_memory_growth("Before color_provinces");
-    MemoryMonitor::log_hashset_lower_bound("PendingProvinceRecolor", &pending_province_recolor.0);
-    MemoryMonitor::log_hashset_lower_bound("ColorUpdateQueue", &color_update_queue.queue);
-
     // Check if we have queue-based updates
     let needs_full_recolor = mode_changed
         || coloring_changed
@@ -1031,8 +1026,6 @@ fn color_provinces(
         guard.last.selected = selected.0;
         guard.last.active_country = active_country.0.clone();
     }
-
-    MemoryMonitor::log_memory_usage("After color_provinces");
 }
 
 #[cfg(test)]

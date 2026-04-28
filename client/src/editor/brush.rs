@@ -17,6 +17,11 @@ use crate::map::{
 use crate::memory::MemoryMonitor;
 use crate::ui::UiInputBlock;
 
+#[derive(Resource, Default)]
+pub struct BrushScratch {
+    candidates: Vec<u32>,
+}
+
 #[derive(SystemParam)]
 pub(crate) struct BrushAssignments<'w, 's> {
     admin_map: ResMut<'w, AdminMap>,
@@ -46,10 +51,10 @@ pub fn brush_input_system(
     mut drag: ResMut<DragState>,
     keys: Res<ButtonInput<KeyCode>>,
     mut assignments: BrushAssignments,
+    mut scratch: ResMut<BrushScratch>,
 ) {
     let Some(map) = map else { return };
 
-    // 仅在开始拖拽时记录内存使用
     if mouse_input.just_pressed(MouseButton::Left) {
         MemoryMonitor::log_memory_usage("Before brush drag start");
     }
@@ -61,7 +66,6 @@ pub fn brush_input_system(
         return;
     }
 
-    // 切换刷子：B 键
     if keys.just_pressed(KeyCode::KeyB) {
         flush_immediately(&mut assignments, &drag);
         brush.enabled = !brush.enabled;
@@ -71,7 +75,6 @@ pub fn brush_input_system(
         return;
     }
 
-    // 切换橡皮擦模式：E 键（仅当刷子已启用）
     if keys.just_pressed(KeyCode::KeyE) && brush.enabled {
         brush.eraser_mode = !brush.eraser_mode;
         bevy::log::info!(
@@ -85,7 +88,6 @@ pub fn brush_input_system(
         );
     }
 
-    // 调整刷子大小：Shift + 滚轮（普通滚轮仍用于缩放视角）
     for ev in mouse_wheel.read() {
         let adjusting_brush = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         if brush.enabled && adjusting_brush {
@@ -100,7 +102,6 @@ pub fn brush_input_system(
         return;
     }
 
-    // 获取鼠标世界坐标
     let Ok(window) = windows.get_single() else {
         return;
     };
@@ -112,15 +113,11 @@ pub fn brush_input_system(
         return;
     };
 
-    // 左键按下开始拖拽
     if mouse_input.just_pressed(MouseButton::Left) {
         drag.is_dragging = true;
         drag.painted_provinces.clear();
     }
     if mouse_input.just_released(MouseButton::Left) {
-        // Instead of triggering an immediate GPU rebuild, kick the debounce timer.
-        // Rapid successive strokes will keep resetting the timer so that only one
-        // border rebuild happens after the user pauses painting (≥150 ms).
         if assignments.border_dirty.0 {
             assignments.border_dirty.0 = false;
             assignments.debounce.pending_border = true;
@@ -137,20 +134,20 @@ pub fn brush_input_system(
         return;
     }
 
-    // 使用空间哈希查找半径内的所有省份（快速）
-    let provinces_in_brush = find_provinces_in_radius_fast(
+    scratch.candidates.clear();
+    find_provinces_in_radius_fast(
         world_pos,
         world_radius,
         &map,
         &spatial_hash,
         &non_playable_provinces,
+        &mut scratch.candidates,
     );
 
-    if provinces_in_brush.is_empty() {
+    if scratch.candidates.is_empty() {
         return;
     }
 
-    // 获取目标行政区
     let target_admin = assignments.active_admin.0;
     let target_country = &assignments.active_country.0;
 
@@ -158,8 +155,7 @@ pub fn brush_input_system(
     let mut changed_any = false;
 
     if brush.eraser_mode {
-        // 橡皮擦：仅移除当前选中节点作用域内的归属
-        for &prov_id in &provinces_in_brush {
+        for &prov_id in &scratch.candidates {
             if drag.painted_provinces.contains(&prov_id) {
                 continue;
             }
@@ -201,10 +197,9 @@ pub fn brush_input_system(
             processed_provinces.push(prov_id);
         }
     } else {
-        // 分配省份到目标
-        for &prov_id in &provinces_in_brush {
+        for &prov_id in &scratch.candidates {
             if drag.painted_provinces.contains(&prov_id) {
-                continue; // 跳过已处理的省份
+                continue;
             }
 
             let old_country = assignments.country_map.0.get(&prov_id).cloned();
@@ -264,8 +259,6 @@ pub fn brush_input_system(
     }
 }
 
-/// Immediately apply any pending border rebuild, bypassing the debounce.
-/// Used when the brush is disabled or UI captures input.
 fn flush_immediately(assignments: &mut BrushAssignments, drag: &DragState) {
     let needs_border =
         assignments.border_dirty.0 || (drag.is_dragging && assignments.debounce.pending_border);
@@ -276,7 +269,6 @@ fn flush_immediately(assignments: &mut BrushAssignments, drag: &DragState) {
     }
 }
 
-/// 刷子光标渲染系统
 pub fn brush_cursor_system(
     brush: Res<BrushTool>,
     windows: Query<&Window>,
@@ -299,7 +291,6 @@ pub fn brush_cursor_system(
         return;
     };
 
-    // 绘制刷子范围圆圈（橡皮擦模式为红色，分配模式为白色）
     let outer_color = if brush.eraser_mode {
         Color::srgba(1.0, 0.2, 0.2, 0.7)
     } else {
@@ -312,7 +303,6 @@ pub fn brush_cursor_system(
     );
 }
 
-/// 获取鼠标世界坐标
 fn get_mouse_world_pos(
     cursor_pos: Vec2,
     camera_q: &Query<(&Camera, &GlobalTransform, &OrthographicProjection), With<Camera2d>>,
@@ -328,18 +318,18 @@ fn get_mouse_world_pos(
     Some(([world_pos.x, world_pos.y], world_radius))
 }
 
-/// 使用空间哈希快速查找半径内的所有省份
 fn find_provinces_in_radius_fast(
     pos: [f32; 2],
     radius: f32,
     map: &MapResource,
     spatial_hash: &SpatialHash,
     non_playable_provinces: &NonPlayableProvinces,
-) -> Vec<u32> {
-    let mut result = Vec::new();
+    result: &mut Vec<u32>,
+) {
+    result.clear();
 
-    // 使用空间哈希获取候选省份
-    let candidates = spatial_hash.find_in_radius(pos, radius);
+    let mut candidates = Vec::new();
+    spatial_hash.find_in_radius_into(pos, radius, &mut candidates);
 
     let center_over_playable = candidates.iter().any(|&prov_id| {
         !non_playable_provinces.0.contains(&prov_id)
@@ -355,15 +345,13 @@ fn find_provinces_in_radius_fast(
                 .unwrap_or(false)
     });
     if !center_over_playable {
-        return result;
+        return;
     }
 
-    // 精确距离过滤
     for &prov_id in &candidates {
         if non_playable_provinces.0.contains(&prov_id) {
             continue;
         }
-        // 找到对应的省份
         let prov_index = prov_id as usize;
         let Some(prov) = map.0.provinces.get(prov_index) else {
             continue;
@@ -373,8 +361,6 @@ fn find_provinces_in_radius_fast(
             result.push(prov_id);
         }
     }
-
-    result
 }
 
 fn province_intersects_brush(center: [f32; 2], radius: f32, province: &MapProvince) -> bool {

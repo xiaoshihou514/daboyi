@@ -6,19 +6,20 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-/// 空间哈希资源
+thread_local! {
+    static SEEN_CACHE: std::cell::RefCell<std::collections::HashSet<u32>> = 
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
 #[derive(Resource, Default)]
 pub struct SpatialHash {
-    /// 网格大小（度数）
     cell_size: f32,
-    /// 网格坐标 → 省份 ID 列表
     cells: HashMap<(i32, i32), Vec<u32>>,
 }
 
 impl SpatialHash {
-    /// 构建空间哈希
     pub fn build(provinces: &[shared::map::MapProvince]) -> Self {
-        let cell_size = 2.0; // 2 度一个网格
+        let cell_size = 2.0;
         let mut cells: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
 
         for prov in provinces {
@@ -40,7 +41,6 @@ impl SpatialHash {
         Self { cell_size, cells }
     }
 
-    /// 获取坐标所在的网格
     fn grid_coords(x: f32, y: f32, cell_size: f32) -> (i32, i32) {
         (
             (x / cell_size).floor() as i32,
@@ -48,32 +48,34 @@ impl SpatialHash {
         )
     }
 
-    /// 查找半径内的所有省份 ID
     pub fn find_in_radius(&self, pos: [f32; 2], radius: f32) -> Vec<u32> {
-        use std::collections::HashSet;
-
-        let mut seen: HashSet<u32> = HashSet::new();
         let mut result = Vec::new();
+        self.find_in_radius_into(pos, radius, &mut result);
+        result
+    }
 
-        // 计算需要检查的网格范围
-        let min_gx = ((pos[0] - radius) / self.cell_size).floor() as i32;
-        let max_gx = ((pos[0] + radius) / self.cell_size).floor() as i32;
-        let min_gy = ((pos[1] - radius) / self.cell_size).floor() as i32;
-        let max_gy = ((pos[1] + radius) / self.cell_size).floor() as i32;
+    pub fn find_in_radius_into(&self, pos: [f32; 2], radius: f32, result: &mut Vec<u32>) {
+        SEEN_CACHE.with(|cache| {
+            let mut seen = cache.borrow_mut();
+            seen.clear();
+            result.clear();
 
-        // 检查范围内的所有网格
-        for gx in min_gx..=max_gx {
-            for gy in min_gy..=max_gy {
-                if let Some(prov_ids) = self.cells.get(&(gx, gy)) {
-                    for &prov_id in prov_ids {
-                        if seen.insert(prov_id) {
-                            result.push(prov_id);
+            let min_gx = ((pos[0] - radius) / self.cell_size).floor() as i32;
+            let max_gx = ((pos[0] + radius) / self.cell_size).floor() as i32;
+            let min_gy = ((pos[1] - radius) / self.cell_size).floor() as i32;
+            let max_gy = ((pos[1] + radius) / self.cell_size).floor() as i32;
+
+            for gx in min_gx..=max_gx {
+                for gy in min_gy..=max_gy {
+                    if let Some(prov_ids) = self.cells.get(&(gx, gy)) {
+                        for &prov_id in prov_ids {
+                            if seen.insert(prov_id) {
+                                result.push(prov_id);
+                            }
                         }
                     }
                 }
             }
-        }
-
-        result
+        });
     }
 }

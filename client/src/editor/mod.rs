@@ -106,6 +106,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<ActiveAdmin>()
             .init_resource::<NextAdminId>()
             .init_resource::<BrushTool>()
+            .init_resource::<BrushScratch>()
             .init_resource::<DragState>()
             .init_resource::<NonPlayableProvinces>()
             .init_resource::<EditorStartupState>()

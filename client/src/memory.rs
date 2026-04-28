@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::mem::{size_of, size_of_val};
 use std::sync::{Mutex, OnceLock};
 
@@ -151,25 +151,6 @@ impl MemoryMonitor {
         );
     }
 
-    pub fn log_hashset_lower_bound<T>(context: &str, items: &HashSet<T>) {
-        let elem_size = size_of::<T>();
-        let lower_bound_bytes = items.capacity().saturating_mul(elem_size);
-        let mut cache = allocation_cache().lock().unwrap();
-        let key = format!("{context}::hashset");
-        let snapshot = (items.len(), lower_bound_bytes);
-        if cache.get(&key) == Some(&snapshot) {
-            return;
-        }
-        cache.insert(key, snapshot);
-        bevy::log::info!(
-            target: "daboyi::memory",
-            "{context}: len={} cap={} lower_bound={:.2} MiB (table overhead not included)",
-            items.len(),
-            items.capacity(),
-            Self::bytes_to_mib(lower_bound_bytes),
-        );
-    }
-
     pub fn log_estimated_allocation(context: &str, cpu_bytes: usize, gpu_bytes: usize, note: &str) {
         let mut cache = allocation_cache().lock().unwrap();
         let key = context.to_string();
@@ -185,29 +166,5 @@ impl MemoryMonitor {
             Self::bytes_to_mib(gpu_bytes),
             Self::bytes_to_mib(cpu_bytes.saturating_add(gpu_bytes)),
         );
-    }
-
-    /// 跟踪内存增长
-    pub fn track_memory_growth(context: &str) {
-        use lazy_static::lazy_static;
-        use std::sync::Mutex;
-
-        lazy_static! {
-            static ref MEMORY_HISTORY: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
-        }
-
-        if let Some(current) = Self::get_memory_usage() {
-            let mut history = MEMORY_HISTORY.lock().unwrap();
-            // 检查是否有历史记录
-            if let Some((_, previous)) = history.last() {
-                let growth = current - previous;
-                bevy::log::info!(
-                    target: "daboyi::memory",
-                    "Memory growth from previous: {:.2} MB",
-                    growth
-                );
-            }
-            history.push((context.to_string(), current));
-        }
     }
 }

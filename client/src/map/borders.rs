@@ -284,7 +284,6 @@ fn rebuild_borders(
     }
 
     MemoryMonitor::log_memory_usage("Before border rebuild");
-    MemoryMonitor::log_detailed_memory_usage("Before border rebuild");
     *border_state.last_mode = Some(*border_inputs.mode);
     *border_state.last_border_version = border_inputs.border_version.0;
     *border_state.last_active_admin = border_inputs.active_admin.0;
@@ -314,14 +313,18 @@ fn rebuild_borders(
     });
 
     let full_rebuild = mode_changed
-        || active_admin_changed
         || active_country_changed
-        || existing_chunk_entities.is_empty()
-        || border_inputs.border_changes.changed_provinces.is_empty();
+        || existing_chunk_entities.is_empty();
+
     let dirty_chunks = if full_rebuild {
         chunk_index.all_chunks.clone()
-    } else {
+    } else if !border_inputs.border_changes.changed_provinces.is_empty() {
         dirty_chunks_from_provinces(chunk_index, &border_inputs.border_changes.changed_provinces)
+    } else {
+        // No actual province changes, skip rebuild
+        border_data.is_computing = false;
+        border_inputs.border_changes.changed_provinces.clear();
+        return;
     };
 
     if dirty_chunks.is_empty() {
@@ -457,6 +460,14 @@ fn rebuild_borders(
             &material_handle,
             chunk_entities,
         );
+    }
+
+    let max_scratch_capacity = 1_000_000;
+    if border_inputs.scratch.positions.capacity() > max_scratch_capacity {
+        border_inputs.scratch.positions.shrink_to_fit();
+        border_inputs.scratch.offsets.shrink_to_fit();
+        border_inputs.scratch.tiers.shrink_to_fit();
+        border_inputs.scratch.indices.shrink_to_fit();
     }
 
     MemoryMonitor::log_estimated_allocation(
@@ -807,20 +818,22 @@ fn upsert_chunk_mesh(
                 commands.entity(entity).despawn();
             }
         }
-        border_assets.meshes.remove(&chunk_id);
+        if let Some(old_handle) = border_assets.meshes.remove(&chunk_id) {
+            meshes.remove(old_handle.id());
+        }
         return;
     }
 
-    let mesh_handle = border_assets
-        .meshes
-        .entry(chunk_id)
-        .or_insert_with(|| {
-            meshes.add(Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-            ))
-        })
-        .clone();
+    let mesh_handle = if let Some(existing_handle) = border_assets.meshes.get(&chunk_id) {
+        existing_handle.clone()
+    } else {
+        let new_handle = meshes.add(Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        ));
+        border_assets.meshes.insert(chunk_id, new_handle.clone());
+        new_handle
+    };
 
     if let Some(mesh) = meshes.get_mut(&mesh_handle) {
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, std::mem::take(positions));

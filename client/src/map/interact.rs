@@ -68,20 +68,23 @@ pub fn camera_controls(
 /// Runs on initial left-click, and also on every frame during a drag (brush mode).
 pub fn province_click(
     mouse_input: Res<ButtonInput<MouseButton>>,
-    cursor_moved: EventReader<CursorMoved>,
+    mut cursor_moved: EventReader<CursorMoved>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     map: Option<Res<MapResource>>,
     brush: Res<BrushTool>,
     mut selected: ResMut<SelectedProvince>,
     ui_input_block: Res<UiInputBlock>,
+    spatial_hash: Res<crate::editor::SpatialHash>,
 ) {
     if brush.enabled || ui_input_block.0 {
+        cursor_moved.clear();
         return;
     }
-    // Run on initial press, or while held and cursor has moved (brush drag).
+    let has_motion = !cursor_moved.is_empty();
     let should_run = mouse_input.just_pressed(MouseButton::Left)
-        || (mouse_input.pressed(MouseButton::Left) && !cursor_moved.is_empty());
+        || (mouse_input.pressed(MouseButton::Left) && has_motion);
+    cursor_moved.clear();
     if !should_run {
         return;
     }
@@ -100,34 +103,85 @@ pub fn province_click(
     };
 
     let py = world_pos.y;
-    // Wrap x into map coordinate range [-180, 180) to hit-test any copy.
     let px = world_pos.x - (((world_pos.x + 180.0) / MAP_WIDTH).floor() * MAP_WIDTH);
 
-    // Iterate in reverse so CN provinces (higher z, appended later) take priority.
-    for mp in map.0.provinces.iter().rev() {
-        if mp.boundary.is_empty() {
-            continue;
+    let candidates = spatial_hash.find_in_radius([px, py], 2.0);
+    
+    bevy::log::debug!(
+        target: "daboyi::province_click",
+        "Clicked at ({:.2}, {:.2}), candidates found: {}",
+        px, py, candidates.len()
+    );
+
+    let mut found: Option<u32> = None;
+    let mut checked = 0;
+    
+    if candidates.is_empty() {
+        bevy::log::warn!(
+            target: "daboyi::province_click",
+            "SpatialHash returned no candidates, falling back to full scan"
+        );
+        
+        for mp in map.0.provinces.iter().rev() {
+            if mp.boundary.is_empty() {
+                continue;
+            }
+            let ring = &mp.boundary[0];
+            let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+            let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+            for pt in ring {
+                min_x = min_x.min(pt[0]);
+                max_x = max_x.max(pt[0]);
+                min_y = min_y.min(pt[1]);
+                max_y = max_y.max(pt[1]);
+            }
+            if px < min_x || px > max_x || py < min_y || py > max_y {
+                continue;
+            }
+            checked += 1;
+            if point_in_province(px, py, mp) {
+                found = Some(mp.id);
+                break;
+            }
         }
-        // Bounding box pre-filter.
-        let ring = &mp.boundary[0];
-        let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
-        let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
-        for pt in ring {
-            min_x = min_x.min(pt[0]);
-            max_x = max_x.max(pt[0]);
-            min_y = min_y.min(pt[1]);
-            max_y = max_y.max(pt[1]);
-        }
-        if px < min_x || px > max_x || py < min_y || py > max_y {
-            continue;
-        }
-        if point_in_province(px, py, mp) {
-            selected.0 = Some(mp.id);
-            return;
+    } else {
+        for &prov_id in &candidates {
+            let idx = prov_id as usize;
+            if idx >= map.0.provinces.len() {
+                continue;
+            }
+            let mp = &map.0.provinces[idx];
+            if mp.boundary.is_empty() {
+                continue;
+            }
+            let ring = &mp.boundary[0];
+            let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
+            let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
+            for pt in ring {
+                min_x = min_x.min(pt[0]);
+                max_x = max_x.max(pt[0]);
+                min_y = min_y.min(pt[1]);
+                max_y = max_y.max(pt[1]);
+            }
+            if px < min_x || px > max_x || py < min_y || py > max_y {
+                continue;
+            }
+            checked += 1;
+            if point_in_province(px, py, mp) {
+                found = Some(mp.id);
+                break;
+            }
         }
     }
-    // Only clear selection on fresh click, not on drag (keeps last valid selection).
-    if mouse_input.just_pressed(MouseButton::Left) {
+
+    bevy::log::debug!(
+        target: "daboyi::province_click",
+        "Checked {} candidates, found province: {:?}",
+        checked, found
+    );
+
+    selected.0 = found;
+    if mouse_input.just_pressed(MouseButton::Left) && found.is_none() {
         selected.0 = None;
     }
 }
