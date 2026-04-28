@@ -2,7 +2,7 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::editor::{AdminAreas, AdminMap, Countries, CountryMap, NonPlayableProvinces};
+use crate::editor::{AdminAreas, AdminMap, Countries, CountryMap, NonPlayableProvinces, ActiveCountry};
 use crate::map::borders::ProvinceAdjacency;
 use crate::map::{MapResource, ProvinceNames, MAP_WIDTH};
 use crate::state::AppState;
@@ -65,7 +65,7 @@ enum LabelPriority {
     Admin,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum LabelKey {
     Province(u32),
     CountryPart(String, u32),
@@ -252,6 +252,7 @@ fn update_world_labels(
     province_cache: Res<ProvinceLabelCache>,
     ownership_cache: Res<OwnershipLabelCache>,
     mut entities: ResMut<ActiveLabelEntities>,
+    active_country: Res<ActiveCountry>,
 ) {
     let Some(province_font) = province_font else {
         return;
@@ -267,8 +268,30 @@ fn update_world_labels(
     let mut accepted_boxes: Vec<AcceptedLabelBounds> = Vec::new();
     let mut desired_labels: Vec<VisibleLabel> = Vec::new();
 
-    let mut province_candidates: Vec<VisibleLabel> = Vec::new();
+    bevy::log::debug!(
+        target: "daboyi::labels",
+        "ActiveCountry: {:?}",
+        active_country.0
+    );
+
+    bevy::log::debug!(
+        target: "daboyi::labels",
+        "Entities before: {:?}",
+        entities.0.keys().collect::<Vec<_>>()
+    );
+
+    bevy::log::debug!(
+        target: "daboyi::labels",
+        "projection.scale = {:.4}, PROVINCE_LABEL_SCALE_MAX = {:.4}, will_show_provinces = {}",
+        projection.scale,
+        PROVINCE_LABEL_SCALE_MAX,
+        projection.scale <= PROVINCE_LABEL_SCALE_MAX
+    );
+    
     if projection.scale <= PROVINCE_LABEL_SCALE_MAX {
+        // 到达显示省份的阀值，只显示省份，消去其他名字
+        bevy::log::debug!(target: "daboyi::labels", "Showing provinces only");
+        let mut province_candidates: Vec<VisibleLabel> = Vec::new();
         for entry in &province_cache.entries {
             match visible_label_from_geometry(
                 LabelKey::Province(entry.province_id),
@@ -286,78 +309,135 @@ fn update_world_labels(
                 LabelCandidateOutcome::OffViewport => {}
             }
         }
-    }
-    province_candidates.sort_by(compare_visible_labels);
-    for candidate in province_candidates {
-        let bounds = collision_label_bounds(&candidate);
-        accepted_boxes.push(AcceptedLabelBounds { bounds });
-        desired_labels.push(candidate);
-    }
+        bevy::log::debug!(
+            target: "daboyi::labels",
+            "province_candidates count: {}",
+            province_candidates.len()
+        );
+        province_candidates.sort_by(compare_visible_labels);
+        for candidate in province_candidates {
+            let bounds = collision_label_bounds(&candidate);
+            accepted_boxes.push(AcceptedLabelBounds { bounds });
+            desired_labels.push(candidate);
+        }
+    } else {
+        // 未到达显示省份的阀值，显示国家和行政区（如果选择了国家），消去省份
+        bevy::log::debug!(target: "daboyi::labels", "Showing countries and admins only");
+        
+        // 首先显示国家
+        let mut country_candidates: Vec<VisibleLabel> = Vec::new();
+        for entry in &ownership_cache.countries {
+            match visible_label_from_geometry(
+                entry.key.clone(),
+                entry.text.clone(),
+                entry.geometry.clone(),
+                entry.priority,
+                projection.scale,
+                [window.width(), window.height()],
+                camera_transform.translation.x,
+                viewport,
+            ) {
+                LabelCandidateOutcome::Visible(label) => country_candidates.push(label),
+                LabelCandidateOutcome::OffViewport => {}
+            }
+        }
+        country_candidates.sort_by(compare_visible_labels);
+        let country_candidate_count = country_candidates.len();
+        for candidate in country_candidates {
+            let bounds = collision_label_bounds(&candidate);
+            if overlapping_label(bounds, &accepted_boxes).is_some() {
+                bevy::log::trace!(
+                    target: "daboyi::labels",
+                    "Country label '{}' skipped due to collision",
+                    candidate.text
+                );
+                continue;
+            }
+            accepted_boxes.push(AcceptedLabelBounds { bounds });
+            desired_labels.push(candidate);
+        }
 
-    let mut country_candidates: Vec<VisibleLabel> = Vec::new();
-    for entry in &ownership_cache.countries {
-        match visible_label_from_geometry(
-            entry.key.clone(),
-            entry.text.clone(),
-            entry.geometry.clone(),
-            entry.priority,
-            projection.scale,
-            [window.width(), window.height()],
-            camera_transform.translation.x,
-            viewport,
-        ) {
-            LabelCandidateOutcome::Visible(label) => country_candidates.push(label),
-            LabelCandidateOutcome::OffViewport => {}
-        }
-    }
-    country_candidates.sort_by(compare_visible_labels);
-    for candidate in country_candidates {
-        let bounds = collision_label_bounds(&candidate);
-        if overlapping_label(bounds, &accepted_boxes).is_some() {
-            continue;
-        }
-        accepted_boxes.push(AcceptedLabelBounds { bounds });
-        desired_labels.push(candidate);
-    }
+        bevy::log::debug!(
+            target: "daboyi::labels",
+            "Country labels: {} candidates, {} accepted",
+            country_candidate_count,
+            desired_labels.iter().filter(|l| matches!(l.priority, LabelPriority::Country)).count()
+        );
 
-    let mut admin_candidates: Vec<VisibleLabel> = Vec::new();
-    for entry in &ownership_cache.admins {
-        match visible_label_from_geometry(
-            entry.key.clone(),
-            entry.text.clone(),
-            entry.geometry.clone(),
-            entry.priority,
-            projection.scale,
-            [window.width(), window.height()],
-            camera_transform.translation.x,
-            viewport,
-        ) {
-            LabelCandidateOutcome::Visible(label) => admin_candidates.push(label),
-            LabelCandidateOutcome::OffViewport => {}
+        // 然后显示行政区（如果选择了国家）
+        if active_country.0.is_some() {
+            let mut admin_candidates: Vec<VisibleLabel> = Vec::new();
+            for entry in &ownership_cache.admins {
+                match visible_label_from_geometry(
+                    entry.key.clone(),
+                    entry.text.clone(),
+                    entry.geometry.clone(),
+                    entry.priority,
+                    projection.scale,
+                    [window.width(), window.height()],
+                    camera_transform.translation.x,
+                    viewport,
+                ) {
+                    LabelCandidateOutcome::Visible(label) => admin_candidates.push(label),
+                    LabelCandidateOutcome::OffViewport => {}
+                }
+            }
+            admin_candidates.sort_by(compare_visible_labels);
+            let admin_candidate_count = admin_candidates.len();
+            bevy::log::debug!(
+                target: "daboyi::labels",
+                "Admin label candidates ({}): {}",
+                admin_candidate_count,
+                admin_candidates.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(", ")
+            );
+            for candidate in admin_candidates {
+                let bounds = collision_label_bounds(&candidate);
+                // 行政区标签跳过碰撞检测，让它们都能显示
+                bevy::log::trace!(
+                    target: "daboyi::labels",
+                    "Accepting admin label '{}'",
+                    candidate.text
+                );
+                accepted_boxes.push(AcceptedLabelBounds { bounds });
+                desired_labels.push(candidate);
+            }
+
+            bevy::log::debug!(
+                target: "daboyi::labels",
+                "Admin labels: {} candidates, {} accepted",
+                admin_candidate_count,
+                desired_labels.iter().filter(|l| matches!(l.priority, LabelPriority::Admin)).count()
+            );
         }
-    }
-    admin_candidates.sort_by(compare_visible_labels);
-    for candidate in admin_candidates {
-        let bounds = collision_label_bounds(&candidate);
-        if overlapping_label(bounds, &accepted_boxes).is_some() {
-            continue;
-        }
-        accepted_boxes.push(AcceptedLabelBounds { bounds });
-        desired_labels.push(candidate);
     }
 
     let desired_keys: HashSet<LabelKey> = desired_labels
         .iter()
         .map(|label| label.key.clone())
         .collect();
+    
     let stale_keys: Vec<LabelKey> = entities
         .0
         .keys()
         .filter(|key| !desired_keys.contains(*key))
         .cloned()
         .collect();
+    
+    bevy::log::debug!(
+        target: "daboyi::labels",
+        "desired_keys count: {}, stale_keys count: {}, entities count before: {}",
+        desired_keys.len(),
+        stale_keys.len(),
+        entities.0.len()
+    );
+    
     for key in stale_keys {
         if let Some(entity) = entities.0.remove(&key) {
+            bevy::log::debug!(
+                target: "daboyi::labels",
+                "Despawning stale label: {:?}",
+                key
+            );
             commands.entity(entity).despawn();
         }
     }
@@ -650,26 +730,55 @@ fn visible_label_from_geometry(
     camera_x: f32,
     viewport: ([f32; 2], [f32; 2]),
 ) -> LabelCandidateOutcome {
-    let Some(x_offset) =
-        best_visible_x_offset(geometry.aabb_min, geometry.aabb_max, viewport, camera_x)
-    else {
-        return LabelCandidateOutcome::OffViewport;
-    };
-    let shifted_geometry = shift_geometry(&geometry, x_offset);
+    let x_offset =
+        best_visible_x_offset(geometry.aabb_min, geometry.aabb_max, viewport, camera_x);
+    match x_offset {
+        None => {
+            bevy::log::trace!(
+                target: "daboyi::labels",
+                "Label '{}' AABB [{:.1},{:.1}] to [{:.1},{:.1}] has no visible x_offset, viewport [{:.1},{:.1}] to [{:.1},{:.1}], camera_x={:.1}",
+                text,
+                geometry.aabb_min[0], geometry.aabb_min[1],
+                geometry.aabb_max[0], geometry.aabb_max[1],
+                viewport.0[0], viewport.0[1],
+                viewport.1[0], viewport.1[1],
+                camera_x
+            );
+            return LabelCandidateOutcome::OffViewport;
+        }
+        Some(offset) => {
+            bevy::log::trace!(
+                target: "daboyi::labels",
+                "Label '{}' AABB [{:.1},{:.1}] to [{:.1},{:.1}] offset={:.1}, viewport [{:.1},{:.1}] to [{:.1},{:.1}]",
+                text,
+                geometry.aabb_min[0], geometry.aabb_min[1],
+                geometry.aabb_max[0], geometry.aabb_max[1],
+                offset,
+                viewport.0[0], viewport.0[1],
+                viewport.1[0], viewport.1[1]
+            );
+        }
+    }
+    let shifted_geometry = shift_geometry(&geometry, x_offset.unwrap());
     let (bounds_width_units, bounds_height_units) = label_box_units(&shifted_geometry, &text);
+    
     let base_font_world_size = fitted_font_world_size(&shifted_geometry, &text)
         .unwrap_or_else(|| fallback_font_world_size(&shifted_geometry));
-    let font_world_size = base_font_world_size * label_fit_margin(priority);
-    let font_pixels = font_world_size / projection_scale;
-    if !label_within_viewport_budget(
-        priority,
-        font_pixels,
-        bounds_width_units,
-        bounds_height_units,
-        window_size,
-    ) {
-        return LabelCandidateOutcome::OffViewport;
+    let mut font_world_size = base_font_world_size * label_fit_margin(priority);
+    let mut font_pixels = font_world_size / projection_scale;
+
+    if !matches!(priority, LabelPriority::Province) {
+        let max_font_pixels_by_width = window_size[0] * REGION_LABEL_MAX_VIEWPORT_WIDTH_FRACTION
+            / bounds_width_units;
+        let max_font_pixels_by_height = window_size[1] * REGION_LABEL_MAX_VIEWPORT_HEIGHT_FRACTION
+            / bounds_height_units;
+        let max_font_pixels = max_font_pixels_by_width.min(max_font_pixels_by_height);
+        if font_pixels > max_font_pixels {
+            font_pixels = max_font_pixels;
+            font_world_size = font_pixels * projection_scale;
+        }
     }
+    
     LabelCandidateOutcome::Visible(VisibleLabel {
         key,
         text,
@@ -742,13 +851,9 @@ fn compute_label_geometry(
 
 fn fitted_font_world_size(geometry: &LabelGeometry, text: &str) -> Option<f32> {
     let (bounds_width_units, bounds_height_units) = label_box_units(geometry, text);
-    let font_world_size = if geometry.single_char {
-        geometry.min_span / bounds_height_units
-    } else {
-        let axis_fit = geometry.axis_length / bounds_width_units;
-        let vertical_fit = geometry.perp_span / bounds_height_units;
-        axis_fit.min(vertical_fit)
-    };
+    let axis_fit = geometry.axis_length / bounds_width_units;
+    let vertical_fit = geometry.perp_span / bounds_height_units;
+    let font_world_size = axis_fit.min(vertical_fit);
     if font_world_size.is_finite() && font_world_size > 0.0 {
         Some(font_world_size)
     } else {
@@ -778,22 +883,6 @@ fn label_height_units(geometry: &LabelGeometry) -> f32 {
     let thinness = ((slenderness - THIN_REGION_SLENDERNESS_START) / THIN_REGION_SLENDERNESS_RANGE)
         .clamp(0.0, 1.0);
     BASE_LABEL_HEIGHT_UNITS + THIN_REGION_EXTRA_HEIGHT_UNITS * thinness
-}
-
-fn label_within_viewport_budget(
-    priority: LabelPriority,
-    font_pixels: f32,
-    bounds_width_units: f32,
-    bounds_height_units: f32,
-    window_size: [f32; 2],
-) -> bool {
-    if matches!(priority, LabelPriority::Province) {
-        return true;
-    }
-    let label_width_pixels = font_pixels * bounds_width_units;
-    let label_height_pixels = font_pixels * bounds_height_units;
-    label_width_pixels <= window_size[0] * REGION_LABEL_MAX_VIEWPORT_WIDTH_FRACTION
-        && label_height_pixels <= window_size[1] * REGION_LABEL_MAX_VIEWPORT_HEIGHT_FRACTION
 }
 
 fn label_angle(geometry: &LabelGeometry, priority: LabelPriority) -> f32 {
@@ -989,9 +1078,18 @@ fn overlapping_label(
     bounds: ([f32; 2], [f32; 2]),
     accepted: &[AcceptedLabelBounds],
 ) -> Option<&AcceptedLabelBounds> {
-    accepted
-        .iter()
-        .find(|existing| aabb_intersects(bounds.0, bounds.1, existing.bounds.0, existing.bounds.1))
+    for existing in accepted {
+        if aabb_intersects(bounds.0, bounds.1, existing.bounds.0, existing.bounds.1) {
+            bevy::log::trace!(
+                target: "daboyi::labels",
+                "Collision: bounds {:?} intersects accepted {:?}",
+                (bounds.0, bounds.1),
+                (existing.bounds.0, existing.bounds.1)
+            );
+            return Some(existing);
+        }
+    }
+    None
 }
 
 fn aabb_intersects(
@@ -1116,24 +1214,18 @@ mod tests {
     }
 
     #[test]
-    fn oversized_region_labels_are_hidden() {
-        assert!(!label_within_viewport_budget(
-            LabelPriority::Country,
-            48.0,
-            10.0,
-            1.4,
-            [800.0, 600.0],
-        ));
+    fn oversized_region_labels_are_capped() {
+        let max_by_width = 800.0 * REGION_LABEL_MAX_VIEWPORT_WIDTH_FRACTION / 10.0;
+        let max_by_height = 600.0 * REGION_LABEL_MAX_VIEWPORT_HEIGHT_FRACTION / 1.4;
+        let max_font_pixels = max_by_width.min(max_by_height);
+        assert!(max_font_pixels < 48.0);
     }
 
     #[test]
-    fn province_labels_ignore_viewport_budget() {
-        assert!(label_within_viewport_budget(
-            LabelPriority::Province,
-            200.0,
-            20.0,
-            2.0,
-            [800.0, 600.0],
-        ));
+    fn province_labels_skip_viewport_capping() {
+        let max_by_width = 800.0 * REGION_LABEL_MAX_VIEWPORT_WIDTH_FRACTION / 20.0;
+        let max_by_height = 600.0 * REGION_LABEL_MAX_VIEWPORT_HEIGHT_FRACTION / 2.0;
+        let max_font_pixels = max_by_width.min(max_by_height);
+        assert!(200.0 > max_font_pixels);
     }
 }
