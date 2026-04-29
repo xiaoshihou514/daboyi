@@ -172,7 +172,15 @@ pub fn brush_input_system(
 
             let mut erased_any = false;
             if let Some(admin_id) = target_admin {
-                erased_any = assignments.admin_map.0.remove(&prov_id) == Some(admin_id);
+                if assignments.admin_map.0.remove(&prov_id) == Some(admin_id) {
+                    if let Some(area) = admin_area_by_id(&assignments.admin_areas.0, admin_id) {
+                        assignments
+                            .country_map
+                            .0
+                            .insert(prov_id, area.country_tag.clone());
+                    }
+                    erased_any = true;
+                }
             } else if let Some(country_tag) = target_country.as_deref() {
                 if assignments.country_map.0.remove(&prov_id).is_some() {
                     erased_any = true;
