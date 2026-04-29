@@ -8,6 +8,6 @@ mkdir $tmp/bin
 cp target/release/client $tmp/bin
 cp -r assets $tmp
 pushd $tmp
-zip $out assets bin
+zip $out -r assets bin
 popd
 mv $tmp/$out .
