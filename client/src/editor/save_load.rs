@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use std::path::Path;
 
 use crate::editor::{
-    ActiveAdmin, ActiveCountry, AdminAreas, AdminMap, Countries, CountryMap, NextAdminId,
+    ActiveAdmin, ActiveCountry, AdminAreas, AdminMap, Countries, CountryMap, NextAdminId, UndoStack,
 };
 use crate::map::BorderVersion;
 use crate::map::ColoringVersion;
@@ -53,12 +53,15 @@ fn apply_loaded_coloring(
     active_admin: &mut ActiveAdmin,
     coloring_version: &mut ColoringVersion,
     border_version: &mut BorderVersion,
+    undo_stack: &mut UndoStack,
 ) {
     apply_coloring(commands, file);
     active_country.0 = None;
     active_admin.0 = None;
     coloring_version.0 += 1;
     border_version.0 += 1;
+    undo_stack.undo.clear();
+    undo_stack.redo.clear();
 }
 
 fn current_coloring_file(
@@ -117,6 +120,7 @@ pub fn handle_load_coloring(
     mut active_admin: ResMut<ActiveAdmin>,
     mut coloring_version: ResMut<ColoringVersion>,
     mut border_version: ResMut<BorderVersion>,
+    mut undo_stack: ResMut<UndoStack>,
 ) {
     #[cfg(target_arch = "wasm32")]
     if let Some(result) = web_io::take_uploaded_coloring() {
@@ -129,6 +133,7 @@ pub fn handle_load_coloring(
                     &mut active_admin,
                     &mut coloring_version,
                     &mut border_version,
+                    &mut undo_stack,
                 );
                 bevy::log::info!(target: "daboyi::editor", "已从浏览器上传文件加载着色数据");
             }
@@ -154,6 +159,7 @@ pub fn handle_load_coloring(
             &mut active_admin,
             &mut coloring_version,
             &mut border_version,
+            &mut undo_stack,
         );
         bevy::log::info!(target: "daboyi::editor", "已加载着色数据从 {}", path.display());
     }

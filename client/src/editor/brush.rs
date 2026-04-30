@@ -8,7 +8,7 @@ use shared::map::MapProvince;
 use crate::editor::{
     admin_area_by_id, can_assign_province_to_active_admin, can_assign_province_to_active_country,
     can_erase_province_from_active_selection, ActiveAdmin, ActiveCountry, AdminMap, BrushTool,
-    CountryMap, DragState, NonPlayableProvinces, SpatialHash,
+    CountryMap, DragState, NonPlayableProvinces, ProvinceOwnership, SpatialHash, UndoStack,
 };
 use crate::map::borders::BorderChanges;
 use crate::map::{
@@ -52,6 +52,7 @@ pub fn brush_input_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut assignments: BrushAssignments,
     mut scratch: ResMut<BrushScratch>,
+    mut undo_stack: ResMut<UndoStack>,
 ) {
     let Some(map) = map else { return };
 
@@ -61,6 +62,9 @@ pub fn brush_input_system(
 
     if assignments.ui_input_block.0 {
         flush_immediately(&mut assignments, &drag);
+        if drag.is_dragging {
+            undo_stack.commit_action();
+        }
         drag.is_dragging = false;
         drag.painted_provinces.clear();
         return;
@@ -68,6 +72,9 @@ pub fn brush_input_system(
 
     if keys.just_pressed(KeyCode::KeyB) {
         flush_immediately(&mut assignments, &drag);
+        if drag.is_dragging {
+            undo_stack.commit_action();
+        }
         brush.enabled = !brush.enabled;
         drag.is_dragging = false;
         drag.painted_provinces.clear();
@@ -97,6 +104,9 @@ pub fn brush_input_system(
 
     if !brush.enabled {
         flush_immediately(&mut assignments, &drag);
+        if drag.is_dragging {
+            undo_stack.commit_action();
+        }
         drag.is_dragging = false;
         drag.painted_provinces.clear();
         return;
@@ -116,6 +126,7 @@ pub fn brush_input_system(
     if mouse_input.just_pressed(MouseButton::Left) {
         drag.is_dragging = true;
         drag.painted_provinces.clear();
+        undo_stack.begin_action();
     }
     if mouse_input.just_released(MouseButton::Left) {
         if assignments.border_dirty.0 {
@@ -125,6 +136,7 @@ pub fn brush_input_system(
         if assignments.debounce.pending_border {
             assignments.debounce.kick();
         }
+        undo_stack.commit_action();
         drag.is_dragging = false;
         drag.painted_provinces.clear();
         MemoryMonitor::log_memory_usage("After brush drag end");
@@ -168,6 +180,18 @@ pub fn brush_input_system(
                 prov_id,
             ) {
                 continue;
+            }
+
+            if let Some(action) = undo_stack.current_action_mut() {
+                if !action.changes.contains_key(&prov_id) {
+                    action.changes.insert(
+                        prov_id,
+                        ProvinceOwnership {
+                            country: assignments.country_map.0.get(&prov_id).cloned(),
+                            admin: assignments.admin_map.0.get(&prov_id).copied(),
+                        },
+                    );
+                }
             }
 
             let mut erased_any = false;
@@ -226,6 +250,17 @@ pub fn brush_input_system(
                 let admin_changed = old_admin != Some(admin_id);
                 let owner_replaced = old_country.is_some() || old_admin.is_some();
                 if admin_changed || owner_replaced {
+                    if let Some(action) = undo_stack.current_action_mut() {
+                        if !action.changes.contains_key(&prov_id) {
+                            action.changes.insert(
+                                prov_id,
+                                ProvinceOwnership {
+                                    country: old_country.clone(),
+                                    admin: old_admin,
+                                },
+                            );
+                        }
+                    }
                     assignments.admin_map.0.insert(prov_id, admin_id);
                     assignments.country_map.0.remove(&prov_id);
                     assignments.pending_province_recolor.0.insert(prov_id);
@@ -245,6 +280,17 @@ pub fn brush_input_system(
                 }
                 let country_changed = old_country.as_ref() != Some(country_tag);
                 if country_changed {
+                    if let Some(action) = undo_stack.current_action_mut() {
+                        if !action.changes.contains_key(&prov_id) {
+                            action.changes.insert(
+                                prov_id,
+                                ProvinceOwnership {
+                                    country: old_country.clone(),
+                                    admin: old_admin,
+                                },
+                            );
+                        }
+                    }
                     assignments
                         .country_map
                         .0

@@ -12,11 +12,13 @@ mod admin;
 mod brush;
 mod save_load;
 mod spatial;
+mod undo;
 
 pub use admin::*;
 pub use brush::*;
 pub use save_load::*;
 pub use spatial::*;
+pub use undo::*;
 // 类型别名
 pub type AdminId = u32;
 pub type CountryTag = String;
@@ -108,6 +110,7 @@ impl Plugin for EditorPlugin {
             .init_resource::<BrushTool>()
             .init_resource::<BrushScratch>()
             .init_resource::<DragState>()
+            .init_resource::<UndoStack>()
             .init_resource::<NonPlayableProvinces>()
             .init_resource::<EditorStartupState>()
             .init_resource::<SpatialHash>()
@@ -122,7 +125,7 @@ impl Plugin for EditorPlugin {
             )
             .add_systems(
                 Update,
-                (brush_input_system,)
+                (brush_input_system, undo_redo_system)
                     .run_if(in_state(AppState::Editing))
                     .after(crate::ui::UiPass),
             )
