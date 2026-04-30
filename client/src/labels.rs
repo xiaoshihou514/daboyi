@@ -27,6 +27,9 @@ const PROVINCE_LABEL_FIT_MARGIN: f32 = 0.84;
 const REGION_LABEL_FIT_MARGIN: f32 = 0.9;
 const PROVINCE_COLLISION_PADDING_UNITS: f32 = 0.18;
 const REGION_COLLISION_PADDING_UNITS: f32 = 0.08;
+const ADMIN_LABEL_SCALE_FACTOR: f32 = 0.9;
+const ADMIN_LABEL_FIT_MARGIN: f32 = 0.65;
+const MAX_ADVANCE_TO_CHAR_WIDTH_RATIO: f32 = 1.5;
 pub struct LabelsPlugin;
 
 impl Plugin for LabelsPlugin {
@@ -76,7 +79,7 @@ enum LabelKey {
 struct MapLabelMarker;
 
 #[derive(Resource, Default)]
-struct ActiveLabelEntities(pub HashMap<LabelKey, Entity>);
+struct ActiveLabelEntities(pub HashMap<LabelKey, Vec<Entity>>);
 
 #[derive(Clone)]
 struct LabelGeometry {
@@ -132,8 +135,10 @@ struct VisibleLabel {
     font_pixels: f32,
     bounds_width_units: f32,
     bounds_height_units: f32,
+    extra_width_units: f32,
     collision_padding_units: f32,
     priority: LabelPriority,
+    char_offsets: Vec<f32>,
 }
 
 enum LabelCandidateOutcome {
@@ -244,6 +249,262 @@ fn rebuild_ownership_label_cache(
     startup_state.ownership_ready = true;
 }
 
+fn collect_province_candidates(
+    cache: &ProvinceLabelCache,
+    projection_scale: f32,
+    window_size: [f32; 2],
+    camera_x: f32,
+    viewport: ([f32; 2], [f32; 2]),
+) -> Vec<VisibleLabel> {
+    let mut candidates = Vec::new();
+    for entry in &cache.entries {
+        match visible_label_from_geometry(
+            LabelKey::Province(entry.province_id),
+            entry.text.clone(),
+            entry.geometry.clone(),
+            LabelPriority::Province,
+            projection_scale,
+            window_size,
+            camera_x,
+            viewport,
+        ) {
+            LabelCandidateOutcome::Visible(label) => candidates.push(label),
+            LabelCandidateOutcome::OffViewport => {}
+        }
+    }
+    candidates
+}
+
+fn collect_region_candidates(
+    entries: &[RegionLabelEntry],
+    projection_scale: f32,
+    window_size: [f32; 2],
+    camera_x: f32,
+    viewport: ([f32; 2], [f32; 2]),
+) -> Vec<VisibleLabel> {
+    let mut candidates = Vec::new();
+    for entry in entries {
+        match visible_label_from_geometry(
+            entry.key.clone(),
+            entry.text.clone(),
+            entry.geometry.clone(),
+            entry.priority,
+            projection_scale,
+            window_size,
+            camera_x,
+            viewport,
+        ) {
+            LabelCandidateOutcome::Visible(label) => candidates.push(label),
+            LabelCandidateOutcome::OffViewport => {}
+        }
+    }
+    candidates
+}
+
+fn filter_labels_by_collision(
+    candidates: Vec<VisibleLabel>,
+    accepted_boxes: &mut Vec<AcceptedLabelBounds>,
+    skip_collision: bool,
+) -> Vec<VisibleLabel> {
+    let mut filtered = Vec::new();
+    for candidate in candidates {
+        let bounds = collision_label_bounds(&candidate);
+        if !skip_collision && overlapping_label(bounds, accepted_boxes).is_some() {
+            continue;
+        }
+        accepted_boxes.push(AcceptedLabelBounds { bounds });
+        filtered.push(candidate);
+    }
+    filtered
+}
+
+fn collect_desired_labels(
+    province_cache: &ProvinceLabelCache,
+    ownership_cache: &OwnershipLabelCache,
+    active_country: &ActiveCountry,
+    projection_scale: f32,
+    window_size: [f32; 2],
+    camera_x: f32,
+    viewport: ([f32; 2], [f32; 2]),
+) -> Vec<VisibleLabel> {
+    if projection_scale <= PROVINCE_LABEL_SCALE_MAX {
+        let mut candidates = collect_province_candidates(
+            province_cache,
+            projection_scale,
+            window_size,
+            camera_x,
+            viewport,
+        );
+        candidates.sort_by(compare_visible_labels);
+        let mut accepted_boxes = Vec::new();
+        filter_labels_by_collision(candidates, &mut accepted_boxes, true)
+    } else {
+        let mut accepted_boxes: Vec<AcceptedLabelBounds> = Vec::new();
+        let mut labels = Vec::new();
+
+        let mut country_candidates = collect_region_candidates(
+            &ownership_cache.countries,
+            projection_scale,
+            window_size,
+            camera_x,
+            viewport,
+        );
+        country_candidates.sort_by(compare_visible_labels);
+        let country_labels =
+            filter_labels_by_collision(country_candidates, &mut accepted_boxes, false);
+        labels.extend(country_labels);
+
+        if active_country.0.is_some() {
+            let mut admin_candidates = collect_region_candidates(
+                &ownership_cache.admins,
+                projection_scale,
+                window_size,
+                camera_x,
+                viewport,
+            );
+            admin_candidates.sort_by(compare_visible_labels);
+            let admin_labels =
+                filter_labels_by_collision(admin_candidates, &mut accepted_boxes, true);
+            labels.extend(admin_labels);
+        }
+
+        labels
+    }
+}
+
+fn sync_label_entities(
+    commands: &mut Commands,
+    desired_labels: &[VisibleLabel],
+    entities: &mut HashMap<LabelKey, Vec<Entity>>,
+    font: Handle<Font>,
+) {
+    let desired_keys: HashSet<LabelKey> = desired_labels
+        .iter()
+        .map(|label| label.key.clone())
+        .collect();
+
+    let stale_keys: Vec<LabelKey> = entities
+        .keys()
+        .filter(|key| !desired_keys.contains(*key))
+        .cloned()
+        .collect();
+
+    for key in stale_keys {
+        if let Some(entity_list) = entities.remove(&key) {
+            for entity in entity_list {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+
+    for label in desired_labels {
+        if !label.char_offsets.is_empty() && matches!(label.priority, LabelPriority::Admin) {
+            sync_spaced_admin_label(commands, label, entities, &font);
+        } else {
+            sync_single_label(commands, label, entities, &font);
+        }
+    }
+}
+
+fn sync_single_label(
+    commands: &mut Commands,
+    label: &VisibleLabel,
+    entities: &mut HashMap<LabelKey, Vec<Entity>>,
+    font: &Handle<Font>,
+) {
+    let transform = Transform {
+        translation: Vec3::new(label.center[0], label.center[1], label_z(label.priority)),
+        rotation: Quat::from_rotation_z(label.angle),
+        scale: Vec3::splat(label.font_world_size / LABEL_FONT_BASE_SIZE),
+    };
+    let text_component = Text2d::new(label.text.clone());
+    let text_font = TextFont {
+        font: font.clone(),
+        font_size: LABEL_FONT_BASE_SIZE,
+        ..default()
+    };
+    let text_color = TextColor(Color::srgba(0.05, 0.05, 0.05, 0.92));
+    if let Some(entity_list) = entities.get(&label.key) {
+        if let Some(&entity) = entity_list.first() {
+            commands.entity(entity).insert((
+                text_component,
+                text_font,
+                text_color,
+                transform,
+                Visibility::Visible,
+            ));
+        }
+        for &extra in &entity_list[1..] {
+            commands.entity(extra).despawn();
+        }
+        if entity_list.len() > 1 {
+            let kept = entity_list[0];
+            entities.insert(label.key.clone(), vec![kept]);
+        }
+    } else {
+        let entity = commands
+            .spawn((
+                text_component,
+                text_font,
+                text_color,
+                transform,
+                Visibility::Visible,
+                MapLabelMarker,
+            ))
+            .id();
+        entities.insert(label.key.clone(), vec![entity]);
+    }
+}
+
+fn sync_spaced_admin_label(
+    commands: &mut Commands,
+    label: &VisibleLabel,
+    entities: &mut HashMap<LabelKey, Vec<Entity>>,
+    font: &Handle<Font>,
+) {
+    let chars: Vec<char> = label.text.chars().collect();
+    let cos_a = label.angle.cos();
+    let sin_a = label.angle.sin();
+    let scale = label.font_world_size / LABEL_FONT_BASE_SIZE;
+    let half_span = label.char_offsets.last().copied().unwrap_or(0.0) * 0.5;
+
+    let mut new_entities = Vec::new();
+    for (i, ch) in chars.iter().enumerate() {
+        let offset_along_axis = -half_span + label.char_offsets[i];
+        let char_x = label.center[0] + cos_a * offset_along_axis;
+        let char_y = label.center[1] + sin_a * offset_along_axis;
+        let transform = Transform {
+            translation: Vec3::new(char_x, char_y, label_z(label.priority)),
+            rotation: Quat::from_rotation_z(label.angle),
+            scale: Vec3::splat(scale),
+        };
+        let text_component = Text2d::new(ch.to_string());
+        let text_font = TextFont {
+            font: font.clone(),
+            font_size: LABEL_FONT_BASE_SIZE,
+            ..default()
+        };
+        let text_color = TextColor(Color::srgba(0.05, 0.05, 0.05, 0.92));
+        let entity = commands
+            .spawn((
+                text_component,
+                text_font,
+                text_color,
+                transform,
+                Visibility::Visible,
+                MapLabelMarker,
+            ))
+            .id();
+        new_entities.push(entity);
+    }
+
+    if let Some(old_entities) = entities.insert(label.key.clone(), new_entities) {
+        for entity in old_entities {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 fn update_world_labels(
     mut commands: Commands,
     windows: Query<&Window>,
@@ -265,218 +526,23 @@ fn update_world_labels(
     };
 
     let viewport = viewport_bounds(camera_transform.translation, projection.scale, window);
-    let mut accepted_boxes: Vec<AcceptedLabelBounds> = Vec::new();
-    let mut desired_labels: Vec<VisibleLabel> = Vec::new();
 
-    bevy::log::debug!(
-        target: "daboyi::labels",
-        "ActiveCountry: {:?}",
-        active_country.0
-    );
-
-    bevy::log::debug!(
-        target: "daboyi::labels",
-        "Entities before: {:?}",
-        entities.0.keys().collect::<Vec<_>>()
-    );
-
-    bevy::log::debug!(
-        target: "daboyi::labels",
-        "projection.scale = {:.4}, PROVINCE_LABEL_SCALE_MAX = {:.4}, will_show_provinces = {}",
+    let desired_labels = collect_desired_labels(
+        &province_cache,
+        &ownership_cache,
+        &active_country,
         projection.scale,
-        PROVINCE_LABEL_SCALE_MAX,
-        projection.scale <= PROVINCE_LABEL_SCALE_MAX
+        [window.width(), window.height()],
+        camera_transform.translation.x,
+        viewport,
     );
-    
-    if projection.scale <= PROVINCE_LABEL_SCALE_MAX {
-        // 到达显示省份的阀值，只显示省份，消去其他名字
-        bevy::log::debug!(target: "daboyi::labels", "Showing provinces only");
-        let mut province_candidates: Vec<VisibleLabel> = Vec::new();
-        for entry in &province_cache.entries {
-            match visible_label_from_geometry(
-                LabelKey::Province(entry.province_id),
-                entry.text.clone(),
-                entry.geometry.clone(),
-                LabelPriority::Province,
-                projection.scale,
-                [window.width(), window.height()],
-                camera_transform.translation.x,
-                viewport,
-            ) {
-                LabelCandidateOutcome::Visible(label) => {
-                    province_candidates.push(label);
-                }
-                LabelCandidateOutcome::OffViewport => {}
-            }
-        }
-        bevy::log::debug!(
-            target: "daboyi::labels",
-            "province_candidates count: {}",
-            province_candidates.len()
-        );
-        province_candidates.sort_by(compare_visible_labels);
-        for candidate in province_candidates {
-            let bounds = collision_label_bounds(&candidate);
-            accepted_boxes.push(AcceptedLabelBounds { bounds });
-            desired_labels.push(candidate);
-        }
-    } else {
-        // 未到达显示省份的阀值，显示国家和行政区（如果选择了国家），消去省份
-        bevy::log::debug!(target: "daboyi::labels", "Showing countries and admins only");
-        
-        // 首先显示国家
-        let mut country_candidates: Vec<VisibleLabel> = Vec::new();
-        for entry in &ownership_cache.countries {
-            match visible_label_from_geometry(
-                entry.key.clone(),
-                entry.text.clone(),
-                entry.geometry.clone(),
-                entry.priority,
-                projection.scale,
-                [window.width(), window.height()],
-                camera_transform.translation.x,
-                viewport,
-            ) {
-                LabelCandidateOutcome::Visible(label) => country_candidates.push(label),
-                LabelCandidateOutcome::OffViewport => {}
-            }
-        }
-        country_candidates.sort_by(compare_visible_labels);
-        let country_candidate_count = country_candidates.len();
-        for candidate in country_candidates {
-            let bounds = collision_label_bounds(&candidate);
-            if overlapping_label(bounds, &accepted_boxes).is_some() {
-                bevy::log::trace!(
-                    target: "daboyi::labels",
-                    "Country label '{}' skipped due to collision",
-                    candidate.text
-                );
-                continue;
-            }
-            accepted_boxes.push(AcceptedLabelBounds { bounds });
-            desired_labels.push(candidate);
-        }
 
-        bevy::log::debug!(
-            target: "daboyi::labels",
-            "Country labels: {} candidates, {} accepted",
-            country_candidate_count,
-            desired_labels.iter().filter(|l| matches!(l.priority, LabelPriority::Country)).count()
-        );
-
-        // 然后显示行政区（如果选择了国家）
-        if active_country.0.is_some() {
-            let mut admin_candidates: Vec<VisibleLabel> = Vec::new();
-            for entry in &ownership_cache.admins {
-                match visible_label_from_geometry(
-                    entry.key.clone(),
-                    entry.text.clone(),
-                    entry.geometry.clone(),
-                    entry.priority,
-                    projection.scale,
-                    [window.width(), window.height()],
-                    camera_transform.translation.x,
-                    viewport,
-                ) {
-                    LabelCandidateOutcome::Visible(label) => admin_candidates.push(label),
-                    LabelCandidateOutcome::OffViewport => {}
-                }
-            }
-            admin_candidates.sort_by(compare_visible_labels);
-            let admin_candidate_count = admin_candidates.len();
-            bevy::log::debug!(
-                target: "daboyi::labels",
-                "Admin label candidates ({}): {}",
-                admin_candidate_count,
-                admin_candidates.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(", ")
-            );
-            for candidate in admin_candidates {
-                let bounds = collision_label_bounds(&candidate);
-                // 行政区标签跳过碰撞检测，让它们都能显示
-                bevy::log::trace!(
-                    target: "daboyi::labels",
-                    "Accepting admin label '{}'",
-                    candidate.text
-                );
-                accepted_boxes.push(AcceptedLabelBounds { bounds });
-                desired_labels.push(candidate);
-            }
-
-            bevy::log::debug!(
-                target: "daboyi::labels",
-                "Admin labels: {} candidates, {} accepted",
-                admin_candidate_count,
-                desired_labels.iter().filter(|l| matches!(l.priority, LabelPriority::Admin)).count()
-            );
-        }
-    }
-
-    let desired_keys: HashSet<LabelKey> = desired_labels
-        .iter()
-        .map(|label| label.key.clone())
-        .collect();
-    
-    let stale_keys: Vec<LabelKey> = entities
-        .0
-        .keys()
-        .filter(|key| !desired_keys.contains(*key))
-        .cloned()
-        .collect();
-    
-    bevy::log::debug!(
-        target: "daboyi::labels",
-        "desired_keys count: {}, stale_keys count: {}, entities count before: {}",
-        desired_keys.len(),
-        stale_keys.len(),
-        entities.0.len()
+    sync_label_entities(
+        &mut commands,
+        &desired_labels,
+        &mut entities.0,
+        province_font.0.clone(),
     );
-    
-    for key in stale_keys {
-        if let Some(entity) = entities.0.remove(&key) {
-            bevy::log::debug!(
-                target: "daboyi::labels",
-                "Despawning stale label: {:?}",
-                key
-            );
-            commands.entity(entity).despawn();
-        }
-    }
-
-    for label in desired_labels {
-        let transform = Transform {
-            translation: Vec3::new(label.center[0], label.center[1], label_z(label.priority)),
-            rotation: Quat::from_rotation_z(label.angle),
-            scale: Vec3::splat(label.font_world_size / LABEL_FONT_BASE_SIZE),
-        };
-        let text_component = Text2d::new(label.text.clone());
-        let text_font = TextFont {
-            font: province_font.0.clone(),
-            font_size: LABEL_FONT_BASE_SIZE,
-            ..default()
-        };
-        let text_color = TextColor(Color::srgba(0.05, 0.05, 0.05, 0.92));
-        if let Some(entity) = entities.0.get(&label.key).copied() {
-            commands.entity(entity).insert((
-                text_component,
-                text_font,
-                text_color,
-                transform,
-                Visibility::Visible,
-            ));
-        } else {
-            let entity = commands
-                .spawn((
-                    text_component,
-                    text_font,
-                    text_color,
-                    transform,
-                    Visibility::Visible,
-                    MapLabelMarker,
-                ))
-                .id();
-            entities.0.insert(label.key, entity);
-        }
-    }
 }
 
 fn update_label_loading_progress(
@@ -531,7 +597,7 @@ fn build_region_entries_from_country_map(
             };
             entries.push(RegionLabelEntry {
                 key: LabelKey::CountryPart(tag.to_owned(), component_index as u32),
-                text: name.to_owned(),
+                text: name.trim().to_owned(),
                 geometry,
                 priority: LabelPriority::Country,
             });
@@ -578,7 +644,7 @@ fn build_region_entries_from_admin_map(
             };
             entries.push(RegionLabelEntry {
                 key: LabelKey::AdminPart(admin_id, component_index as u32),
-                text: name.to_owned(),
+                text: name.trim().to_owned(),
                 geometry,
                 priority: LabelPriority::Admin,
             });
@@ -673,27 +739,38 @@ fn component_bounds_for_provinces(
     map: &shared::map::MapData,
     province_ids: &[u32],
 ) -> ([f32; 2], [f32; 2]) {
-    let mut min_x = f32::MAX;
-    let mut max_x = f32::MIN;
+    let mut centroids_x = Vec::new();
     let mut min_y = f32::MAX;
     let mut max_y = f32::MIN;
     for &province_id in province_ids {
         if let Some(province) = map.provinces.get(province_id as usize) {
+            centroids_x.push(province.centroid[0]);
             if let Some((aabb_min, aabb_max)) =
                 bounds_from_points(&boundary_points(&province.boundary))
             {
-                min_x = min_x.min(aabb_min[0]);
-                max_x = max_x.max(aabb_max[0]);
                 min_y = min_y.min(aabb_min[1]);
                 max_y = max_y.max(aabb_max[1]);
             }
         }
     }
-    if min_x == f32::MAX {
-        ([0.0, 0.0], [0.0, 0.0])
-    } else {
-        ([min_x, min_y], [max_x, max_y])
+    if centroids_x.is_empty() {
+        return ([0.0, 0.0], [0.0, 0.0]);
     }
+    let ref_x = centroids_x[0];
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    for &cx in &centroids_x {
+        let mut x = cx;
+        let dx = x - ref_x;
+        if dx > MAP_WIDTH * 0.5 {
+            x -= MAP_WIDTH;
+        } else if dx < -MAP_WIDTH * 0.5 {
+            x += MAP_WIDTH;
+        }
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+    }
+    ([min_x, min_y], [max_x, max_y])
 }
 
 fn component_points_and_centroid(
@@ -714,10 +791,23 @@ fn component_points_and_centroid(
         return None;
     }
     let divisor = count as f32;
-    Some((
-        points,
-        [centroid_sum[0] / divisor, centroid_sum[1] / divisor],
-    ))
+    let raw_centroid = [centroid_sum[0] / divisor, centroid_sum[1] / divisor];
+    for point in &mut points {
+        let dx = point[0] - raw_centroid[0];
+        if dx > MAP_WIDTH * 0.5 {
+            point[0] -= MAP_WIDTH;
+        } else if dx < -MAP_WIDTH * 0.5 {
+            point[0] += MAP_WIDTH;
+        }
+    }
+    let mut cx = 0.0_f32;
+    let mut cy = 0.0_f32;
+    let n = points.len() as f32;
+    for p in &points {
+        cx += p[0];
+        cy += p[1];
+    }
+    Some((points, [cx / n, cy / n]))
 }
 
 fn visible_label_from_geometry(
@@ -765,6 +855,9 @@ fn visible_label_from_geometry(
     let base_font_world_size = fitted_font_world_size(&shifted_geometry, &text)
         .unwrap_or_else(|| fallback_font_world_size(&shifted_geometry));
     let mut font_world_size = base_font_world_size * label_fit_margin(priority);
+    if matches!(priority, LabelPriority::Admin) {
+        font_world_size *= ADMIN_LABEL_SCALE_FACTOR;
+    }
     let mut font_pixels = font_world_size / projection_scale;
 
     if !matches!(priority, LabelPriority::Province) {
@@ -779,6 +872,28 @@ fn visible_label_from_geometry(
         }
     }
     
+    let mut char_offsets: Vec<f32> = Vec::new();
+    let mut extra_width_units = 0.0_f32;
+    if matches!(priority, LabelPriority::Admin) {
+        let char_count = text.chars().count();
+        if char_count > 1 {
+            let target_width = shifted_geometry.axis_length * ADMIN_LABEL_FIT_MARGIN;
+            let natural_width = font_world_size * char_count as f32;
+            if natural_width > target_width {
+                font_world_size = target_width / char_count as f32;
+                font_pixels = font_world_size / projection_scale;
+            }
+            let max_advance = font_world_size * MAX_ADVANCE_TO_CHAR_WIDTH_RATIO;
+            let ideal_advance = (target_width - font_world_size) / (char_count - 1) as f32;
+            let advance = ideal_advance.min(max_advance);
+            for i in 0..char_count {
+                char_offsets.push(i as f32 * advance);
+            }
+            let total_visual_span = char_offsets.last().copied().unwrap_or(0.0) + font_world_size;
+            extra_width_units = total_visual_span / font_world_size - bounds_width_units;
+        }
+    }
+
     LabelCandidateOutcome::Visible(VisibleLabel {
         key,
         text,
@@ -788,8 +903,10 @@ fn visible_label_from_geometry(
         font_pixels,
         bounds_width_units,
         bounds_height_units,
+        extra_width_units,
         collision_padding_units: collision_padding_units(priority),
         priority,
+        char_offsets,
     })
 }
 
@@ -914,7 +1031,8 @@ fn region_axis_follow_factor(axis_length: f32, perp_span: f32) -> f32 {
 fn label_fit_margin(priority: LabelPriority) -> f32 {
     match priority {
         LabelPriority::Province => PROVINCE_LABEL_FIT_MARGIN,
-        LabelPriority::Country | LabelPriority::Admin => REGION_LABEL_FIT_MARGIN,
+        LabelPriority::Country => REGION_LABEL_FIT_MARGIN,
+        LabelPriority::Admin => ADMIN_LABEL_FIT_MARGIN,
     }
 }
 
@@ -1041,7 +1159,7 @@ fn label_bounds(
 fn collision_label_bounds(label: &VisibleLabel) -> ([f32; 2], [f32; 2]) {
     label_bounds(
         label.center,
-        label.bounds_width_units + label.collision_padding_units * 2.0,
+        label.bounds_width_units + label.extra_width_units + label.collision_padding_units * 2.0,
         label.bounds_height_units + label.collision_padding_units,
         label.font_world_size,
         label.angle,

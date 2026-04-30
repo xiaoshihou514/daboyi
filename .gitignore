@@ -1,5 +1,6 @@
 /target
 assets/*.bin
+assets/coloring.json
 tools/.venv
 /.trae
 /*.json
